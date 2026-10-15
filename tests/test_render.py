@@ -65,6 +65,22 @@ def test_extrusion_depth_adds_visible_side_walls(compositor):
     assert changed_mask(deep).sum() > changed_mask(flat).sum() * 1.1
 
 
+def test_shadow_darkens_ground_beyond_the_text(compositor):
+    light = {"azimuth": -110, "elevation": 30}
+    without = render(compositor, make_document(light=light, shadow={"enabled": False}))
+    with_shadow = render(compositor, make_document(light=light, shadow={"softness": 0.1, "opacity": 0.8}))
+    darker = without[..., :3].astype(int).sum(-1) - with_shadow[..., :3].astype(int).sum(-1)
+    assert (darker > 30).sum() > 500
+
+
+def test_grazing_light_still_casts_shadow_via_side_walls(compositor):
+    # Light nearly parallel to the text face: layer slices alone would cast almost nothing.
+    doc = make_document(transform={"rot_y": 0}, light={"azimuth": 90, "elevation": 20}, shadow={"softness": 0.05})
+    no_shadow = make_document(transform={"rot_y": 0}, light={"azimuth": 90, "elevation": 20}, shadow={"enabled": False})
+    darker = render(compositor, no_shadow)[..., :3].astype(int).sum(-1) - render(compositor, doc)[..., :3].astype(int).sum(-1)
+    assert (darker > 30).sum() > 500
+
+
 def test_lighting_azimuth_changes_text_shading(compositor):
     lit_front = render(compositor, make_document(light={"azimuth": 0, "elevation": 20}, shadow={"enabled": False}))
     lit_back = render(compositor, make_document(light={"azimuth": 180, "elevation": 20}, shadow={"enabled": False}))
