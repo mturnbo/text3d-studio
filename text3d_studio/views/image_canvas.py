@@ -50,7 +50,7 @@ class EmptyStateOverlay(QFrame):
         shortcut = QKeySequence(QKeySequence.StandardKey.Open).toString(QKeySequence.SequenceFormat.NativeText)
         title = QLabel("No image loaded")
         title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        self.message = QLabel(f"Open a photo to place 3D text on it ({shortcut})")
+        self.message = QLabel(f"Open a photo ({shortcut}) or drop one here to place 3D text on it")
         self.button = QPushButton("Open Image…")
         self.button.clicked.connect(lambda: self.open_requested.emit())
 
