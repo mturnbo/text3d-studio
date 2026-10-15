@@ -7,6 +7,7 @@ from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
 
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
+from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
 from .image_canvas import ImageCanvas
@@ -15,9 +16,10 @@ EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, viewmodel: SceneViewModel):
+    def __init__(self, viewmodel: SceneViewModel, preferences: Preferences):
         super().__init__()
         self.vm = viewmodel
+        self.preferences = preferences
         self.setWindowTitle("Text3D Studio")
         self.resize(1440, 900)
 
@@ -69,7 +71,8 @@ class MainWindow(QMainWindow):
 
     def open_image(self, path: str | None = None) -> None:
         if not path:
-            path, _ = QFileDialog.getOpenFileName(self, "Open background image", "", SUPPORTED_LOAD)
+            start_dir = self.preferences.last_directory()
+            path, _ = QFileDialog.getOpenFileName(self, "Open background image", start_dir, SUPPORTED_LOAD)
         if not path:
             return
         try:
@@ -77,6 +80,7 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "Could not open image", str(exc))
             return
+        self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
         self.setWindowTitle(f"Text3D Studio — {os.path.basename(path)}")
 
     def export_image(self) -> None:

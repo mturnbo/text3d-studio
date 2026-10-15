@@ -1,10 +1,11 @@
 import numpy as np
 import pytest
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 
 from text3d_studio.image_io import save_image
 from text3d_studio.model import Document
+from text3d_studio.preferences import Preferences
 from text3d_studio.viewmodel import SceneViewModel
 from text3d_studio.views.image_canvas import ImageCanvas, dropped_image_path
 from text3d_studio.views.main_window import MainWindow
@@ -16,8 +17,13 @@ def vm(qapp):
 
 
 @pytest.fixture
-def window(vm):
-    win = MainWindow(vm)
+def preferences(tmp_path):
+    return Preferences(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
+
+
+@pytest.fixture
+def window(vm, preferences):
+    win = MainWindow(vm, preferences)
     yield win
     win.close()
 
