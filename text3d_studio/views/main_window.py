@@ -32,11 +32,10 @@ class MainWindow(QMainWindow):
 
         self.size_label = QLabel()
         self.fps_label = QLabel()
-        self.statusBar().addWidget(self.size_label)
+        hint = QLabel("Left-drag: move · Right-drag: rotate · Shift-drag: roll · Wheel: scale · Ctrl/Cmd+wheel: depth")
+        self.statusBar().addPermanentWidget(self.size_label)
+        self.statusBar().addPermanentWidget(hint)
         self.statusBar().addPermanentWidget(self.fps_label)
-        self.statusBar().showMessage(
-            "Left-drag: move · Right-drag: rotate · Shift-drag: roll · Wheel: scale · Ctrl/Cmd+wheel: depth", 0
-        )
 
         self.canvas.fps_changed.connect(lambda fps: self.fps_label.setText(f"{fps:5.1f} FPS"))
         self.canvas.error.connect(lambda msg: QMessageBox.warning(self, "Rendering problem", msg))
