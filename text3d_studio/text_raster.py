@@ -18,6 +18,7 @@ from .model import TextParams
 
 FONT_PIXEL_SIZE = 384
 MAX_TEXTURE_WIDTH = 8192
+WALL_STEP = 2  # outline tracing resolution (texels per step); the shadow is blurred, so coarse is fine
 
 
 @dataclass
@@ -25,6 +26,7 @@ class GlyphRaster:
     rgba: np.ndarray  # (H, W, 4) uint8, top row first
     origin: tuple[float, float]  # bottom-left corner of the quad, in em units; ink bottom sits at y=0
     size: tuple[float, float]  # quad size in em units
+    walls: np.ndarray  # (N, 3) float32 side-wall triangles used by the shadow pass
 
 
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
@@ -48,11 +50,55 @@ def rasterize_text(params: TextParams) -> GlyphRaster | None:
         return None
 
     height, width = cropped.shape
+    origin = (-(width / 2) / font_px, -pad / font_px)
+    size = (width / font_px, height / font_px)
     return GlyphRaster(
         rgba=_encode_mask(cropped, params.bevel_width),
-        origin=(-(width / 2) / font_px, -pad / font_px),
-        size=(width / font_px, height / font_px),
+        origin=origin,
+        size=size,
+        walls=extract_walls(cropped, origin, size),
     )
+
+
+def extract_walls(alpha: np.ndarray, origin, size, step: int = WALL_STEP) -> np.ndarray:
+    """Traces the glyph outline into side-wall quads, as (N, 3) float32 triangle vertices.
+
+    Each vertex is (local x, local y, back flag); the shader maps the flag to z = -depth.
+    Layer slices alone cast no shadow when the light runs parallel to them, so the shadow
+    pass uses these walls (plus the front/back slices) as a closed caster.
+    """
+    inside = np.pad(alpha[::step, ::step] >= 0.5, 1)
+    tex_h, tex_w = alpha.shape
+
+    # Vertical walls: a pixel boundary at x=c between padded columns c and c+1, spanning rows.
+    cols, starts, ends = _runs(inside[:, 1:] != inside[:, :-1])
+    vertical = np.stack([cols, starts - 1, cols, ends - 1], axis=1)
+    # Horizontal walls: a boundary at y=r between padded rows r and r+1, spanning columns.
+    rows, starts, ends = _runs((inside[1:, :] != inside[:-1, :]).T)
+    horizontal = np.stack([starts - 1, rows, ends - 1, rows], axis=1)
+
+    segments = np.concatenate([vertical, horizontal]).astype(np.float64) * step
+    xs = origin[0] + segments[:, [0, 2]] / tex_w * size[0]
+    ys = origin[1] + (1.0 - segments[:, [1, 3]] / tex_h) * size[1]
+    p0 = np.stack([xs[:, 0], ys[:, 0]], axis=1)
+    p1 = np.stack([xs[:, 1], ys[:, 1]], axis=1)
+
+    front, back = np.zeros((len(p0), 1)), np.ones((len(p0), 1))
+    corners = [
+        np.hstack([p0, front]), np.hstack([p1, front]), np.hstack([p1, back]),
+        np.hstack([p0, front]), np.hstack([p1, back]), np.hstack([p0, back]),
+    ]
+    return np.stack(corners, axis=1).reshape(-1, 3).astype(np.float32)
+
+
+def _runs(boundary: np.ndarray):
+    """Finds runs of True down each column. Returns (column, start row, end row exclusive)."""
+    edges = np.diff(np.pad(boundary, ((1, 1), (0, 0))).astype(np.int8), axis=0)
+    start_rows, start_cols = np.nonzero(edges == 1)
+    end_rows, end_cols = np.nonzero(edges == -1)
+    start_order = np.lexsort((start_rows, start_cols))
+    end_order = np.lexsort((end_rows, end_cols))
+    return start_cols[start_order], start_rows[start_order], end_rows[end_order]
 
 
 def _make_font(params: TextParams, pixel_size: int) -> QFont:
