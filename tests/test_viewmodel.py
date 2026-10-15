@@ -1,0 +1,61 @@
+import numpy as np
+import pytest
+
+from text3d_studio.model import Document
+from text3d_studio.viewmodel import SceneViewModel
+
+
+@pytest.fixture
+def vm(qapp):
+    return SceneViewModel(Document())
+
+
+def record(signal):
+    events = []
+    signal.connect(lambda *args: events.append(args))
+    return events
+
+
+def test_set_updates_model_and_emits_scene_changed(vm):
+    events = record(vm.scene_changed)
+    vm.set("light", "azimuth", 120.0)
+    assert vm.scene.light.azimuth == 120.0
+    assert events == [("light", "azimuth")]
+
+
+def test_setting_same_value_emits_nothing(vm):
+    events = record(vm.scene_changed)
+    vm.set("transform", "x", vm.scene.transform.x)
+    assert events == []
+
+
+def test_raster_fields_emit_text_changed_but_transform_does_not(vm):
+    text_events = record(vm.text_changed)
+    vm.set("text", "content", "World")
+    vm.set("text", "bevel_width", 9.0)
+    vm.set("transform", "size", 5.0)
+    assert len(text_events) == 2
+
+
+def test_nudge_adds_delta(vm):
+    vm.set("transform", "rot_y", 10.0)
+    vm.nudge("transform", "rot_y", -2.5)
+    assert vm.scene.transform.rot_y == 7.5
+
+
+@pytest.mark.parametrize("section, field", [("nope", "x"), ("transform", "nope"), ("background", "x")])
+def test_unknown_section_or_field_raises(vm, section, field):
+    with pytest.raises(KeyError):
+        vm.set(section, field, 1)
+
+
+def test_set_background_updates_native_size_and_emits(vm):
+    events = record(vm.background_changed)
+    vm.set_background(np.zeros((300, 500, 4), np.uint8), "/tmp/bg.png")
+    assert vm.document.native_size == (500, 300)
+    assert vm.document.background_path == "/tmp/bg.png"
+    assert len(events) == 1
+
+
+def test_default_native_size_without_background():
+    assert Document().native_size == (1600, 1000)
