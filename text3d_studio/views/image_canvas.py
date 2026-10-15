@@ -16,6 +16,7 @@ from ..viewmodel import SceneViewModel
 TEXT_DEBOUNCE_MS = 60
 ROTATE_DEG_PER_PX = 0.4
 WHEEL_SCALE_STEP = 1.06
+FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
 
 
 class ImageCanvas(QOpenGLWidget):
@@ -83,7 +84,10 @@ class ImageCanvas(QOpenGLWidget):
         self.update()
 
     def _track_fps(self) -> None:
-        self._frame_times.append(time.perf_counter())
+        now = time.perf_counter()
+        if self._frame_times and now - self._frame_times[-1] > FPS_IDLE_RESET_S:
+            self._frame_times.clear()
+        self._frame_times.append(now)
         if len(self._frame_times) >= 2:
             span = self._frame_times[-1] - self._frame_times[0]
             if span > 0:
@@ -121,7 +125,6 @@ class ImageCanvas(QOpenGLWidget):
     def mouseReleaseEvent(self, event) -> None:
         self._drag_origin = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self._frame_times.clear()
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_origin is None:

@@ -62,7 +62,7 @@ COLORS = {
 
 GROUP_TITLES = [
     ("text", "Text"),
-    ("transform", "Position & Perspective"),
+    ("transform", "Position && Perspective"),
     ("camera", "Camera"),
     ("light", "Lighting"),
     ("material", "Material"),
