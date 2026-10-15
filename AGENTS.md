@@ -42,7 +42,8 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
 math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32
 lighting.py         LightingEngine: params → world light dir, colours, ground plane, shadow matrix
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
-image_io.py         QImage ⇄ numpy RGBA (top row first)
+image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
+preferences.py      QSettings-backed last folder + recent files (max 8). MainWindow requires one.
 app.py              configure_opengl() + main()
 ```
 
@@ -131,6 +132,11 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   render rather than hard-coding pixel values.
 - `test_interactive_frame_rate_exceeds_30_fps` guards the 30+ FPS target. Keep it passing.
 - Widgets can be built in tests without being shown. Check visibility with `isVisibleTo(parent)`.
+- Never let tests touch the user's real settings. Build `Preferences` on a temporary INI file
+  (`QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)`), as the `preferences`
+  fixture in `tests/test_views.py` does.
+- Modal dialogs (`QFileDialog`, `QMessageBox`) block a test run. Monkeypatch them on the
+  `text3d_studio.views.main_window` module. This is the one acceptable kind of mock.
 - **Visual check:** to confirm a UI or render change by eye, script a `MainWindow`, load an image,
   then `window.grab().save(...)` and `save_image(window.canvas.render_export(), ...)` from a
   `QTimer.singleShot`, and look at the PNGs.
@@ -156,6 +162,6 @@ UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs.
 
 - Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
-- In progress: easier image opening (recent files, open-handler cleanup). Done: empty-state prompt, toolbar, drag-and-drop.
+- In progress: easier image opening (open-handler cleanup). Done: empty-state prompt, toolbar, drag-and-drop, last folder, Open Recent.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
   multiple text objects with undo, tiled export, packaging.
