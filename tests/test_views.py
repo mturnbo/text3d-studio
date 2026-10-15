@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 
+from text3d_studio.image_io import save_image
 from text3d_studio.model import Document
 from text3d_studio.viewmodel import SceneViewModel
-from text3d_studio.views.image_canvas import ImageCanvas
+from text3d_studio.views.image_canvas import ImageCanvas, dropped_image_path
 from text3d_studio.views.main_window import MainWindow
 
 
@@ -82,3 +84,108 @@ def test_toolbar_shares_open_and_export_actions_with_file_menu(window):
 
 def test_open_action_keeps_standard_shortcut(window):
     assert window.open_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Open)
+
+
+# ----- Drag and drop ----------------------------------------------------------------------------
+
+
+def image_file(tmp_path, name="photo.png"):
+    path = tmp_path / name
+    save_image(background(), str(path))
+    return str(path)
+
+
+def mime_with(*urls):
+    mime = QMimeData()
+    mime.setUrls([QUrl(u) if "://" in u else QUrl.fromLocalFile(u) for u in urls])
+    return mime
+
+
+def drag_enter(canvas, mime):
+    event = QDragEnterEvent(
+        QPoint(10, 10), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    canvas.dragEnterEvent(event)
+    return event.isAccepted()
+
+
+def drop(canvas, mime):
+    event = QDropEvent(
+        QPointF(10, 10), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    canvas.dropEvent(event)
+    return event.isAccepted()
+
+
+def test_canvas_accepts_drops(vm):
+    assert ImageCanvas(vm).acceptDrops()
+
+
+@pytest.mark.parametrize("name", ["photo.png", "photo.JPG", "scan.tiff", "pic.webp"])
+def test_single_supported_local_file_is_accepted(vm, tmp_path, name):
+    path = image_file(tmp_path, name)
+    canvas = ImageCanvas(vm)
+    assert dropped_image_path(mime_with(path)) == path
+    assert drag_enter(canvas, mime_with(path))
+
+
+def test_drop_emits_file_dropped_with_local_path(vm, tmp_path):
+    path = image_file(tmp_path)
+    canvas = ImageCanvas(vm)
+    dropped = []
+    canvas.file_dropped.connect(dropped.append)
+    assert drop(canvas, mime_with(path))
+    assert dropped == [path]
+
+
+def test_unsupported_extension_is_rejected(vm, tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("hello")
+    canvas = ImageCanvas(vm)
+    assert dropped_image_path(mime_with(str(path))) is None
+    assert not drag_enter(canvas, mime_with(str(path)))
+
+
+def test_multiple_files_are_rejected(vm, tmp_path):
+    first, second = image_file(tmp_path, "a.png"), image_file(tmp_path, "b.png")
+    assert not drag_enter(ImageCanvas(vm), mime_with(first, second))
+
+
+def test_remote_url_is_rejected(vm):
+    assert not drag_enter(ImageCanvas(vm), mime_with("https://example.com/photo.png"))
+
+
+def test_missing_file_is_rejected(vm, tmp_path):
+    assert not drag_enter(ImageCanvas(vm), mime_with(str(tmp_path / "gone.png")))
+
+
+def test_directory_with_image_extension_is_rejected(vm, tmp_path):
+    folder = tmp_path / "album.png"
+    folder.mkdir()
+    assert not drag_enter(ImageCanvas(vm), mime_with(str(folder)))
+
+
+def test_non_file_drag_is_rejected(vm):
+    mime = QMimeData()
+    mime.setText("just some text")
+    assert not drag_enter(ImageCanvas(vm), mime)
+
+
+def test_rejected_drop_emits_nothing(vm, tmp_path):
+    canvas = ImageCanvas(vm)
+    dropped = []
+    canvas.file_dropped.connect(dropped.append)
+    assert not drop(canvas, mime_with("https://example.com/photo.png"))
+    assert dropped == []
+
+
+def test_dropping_onto_window_loads_the_background(window, tmp_path):
+    path = image_file(tmp_path)
+    drop(window.canvas, mime_with(path))
+    assert window.vm.document.background_path == path
+    assert window.vm.document.native_size == (60, 40)
+    assert not window.canvas.empty_state.isVisibleTo(window.canvas)
+
+
+def test_empty_state_mentions_dropping(vm):
+    assert "drop" in ImageCanvas(vm).empty_state.message.text().lower()
