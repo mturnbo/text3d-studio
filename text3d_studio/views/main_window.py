@@ -41,14 +41,17 @@ class MainWindow(QMainWindow):
 
         self.canvas.fps_changed.connect(lambda fps: self.fps_label.setText(f"{fps:5.1f} FPS"))
         self.canvas.error.connect(lambda msg: QMessageBox.warning(self, "Rendering problem", msg))
-        self.canvas.open_requested.connect(lambda: self.open_image())
-        self.canvas.file_dropped.connect(self.open_image)
+        self.canvas.open_requested.connect(lambda: self.open_image_dialog())
+        self.canvas.file_dropped.connect(self.load_image_path)
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
         self._build_actions()
 
     def _build_actions(self) -> None:
-        self.open_action = self._make_action("&Open Image…", QKeySequence.StandardKey.Open, self.open_image)
+        # Wrapped in a lambda: QAction.triggered passes a `checked` bool the handler must not receive.
+        self.open_action = self._make_action(
+            "&Open Image…", QKeySequence.StandardKey.Open, lambda: self.open_image_dialog()
+        )
         self.export_action = self._make_action("&Export…", QKeySequence("Ctrl+E"), self.export_image)
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
@@ -90,7 +93,7 @@ class MainWindow(QMainWindow):
                 self, "Image not found", f"{path}\n\nThis file no longer exists and was removed from Open Recent."
             )
             return
-        self.open_image(path)
+        self.load_image_path(path)
 
     def clear_recent_files(self) -> None:
         self.preferences.clear_recent_files()
@@ -102,12 +105,13 @@ class MainWindow(QMainWindow):
         action.triggered.connect(handler)
         return action
 
-    def open_image(self, path: str | None = None) -> None:
-        if not path:
-            start_dir = self.preferences.last_directory()
-            path, _ = QFileDialog.getOpenFileName(self, "Open background image", start_dir, SUPPORTED_LOAD)
-        if not path:
-            return
+    def open_image_dialog(self) -> None:
+        start_dir = self.preferences.last_directory()
+        path, _ = QFileDialog.getOpenFileName(self, "Open background image", start_dir, SUPPORTED_LOAD)
+        if path:
+            self.load_image_path(path)
+
+    def load_image_path(self, path: str) -> None:
         try:
             self.vm.set_background(load_image(path), path)
         except ValueError as exc:

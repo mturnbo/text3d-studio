@@ -68,11 +68,11 @@ def test_empty_state_button_emits_open_requested_once(vm):
     assert emitted == [True]
 
 
-def test_empty_state_button_opens_dialog_without_a_path(window):
+def test_empty_state_button_opens_the_dialog(window):
     calls = []
-    window.open_image = lambda path=None: calls.append(path)
+    window.open_image_dialog = lambda: calls.append(True)
     window.canvas.empty_state.button.click()
-    assert calls == [None]
+    assert calls == [True]
 
 
 def test_empty_state_is_centered_on_canvas(window, qapp):
@@ -213,13 +213,13 @@ def test_open_dialog_starts_in_last_folder(window, preferences, tmp_path, monkey
         "text3d_studio.views.main_window.QFileDialog.getOpenFileName",
         lambda parent, caption, directory, filters: seen.append(directory) or ("", ""),
     )
-    window.open_image()
+    window.open_image_dialog()
     assert seen == [str(tmp_path)]
 
 
 def test_opening_an_image_remembers_folder_and_recent_entry(window, preferences, tmp_path):
     path = image_file(tmp_path)
-    window.open_image(path)
+    window.load_image_path(path)
     assert preferences.last_directory() == str(tmp_path)
     assert [a.data() for a in recent_entries(window)] == [path]
 
@@ -235,7 +235,7 @@ def test_failed_load_is_not_added_to_recent(window, preferences, tmp_path, monke
     broken.write_text("not an image")
     warnings = []
     monkeypatch.setattr("text3d_studio.views.main_window.QMessageBox.warning", lambda *args: warnings.append(args))
-    window.open_image(str(broken))
+    window.load_image_path(str(broken))
     assert len(warnings) == 1
     assert preferences.recent_files() == []
 
@@ -247,8 +247,8 @@ def test_empty_recent_menu_shows_disabled_placeholder_and_clear(window):
 
 def test_recent_menu_lists_newest_first(window, tmp_path):
     first, second = image_file(tmp_path, "first.png"), image_file(tmp_path, "second.png")
-    window.open_image(first)
-    window.open_image(second)
+    window.load_image_path(first)
+    window.load_image_path(second)
     assert [a.data() for a in recent_entries(window)] == [second, first]
 
 
@@ -281,7 +281,7 @@ def test_missing_recent_file_is_removed_with_message(window, preferences, tmp_pa
 
 
 def test_clear_menu_empties_recent_files(window, preferences, tmp_path):
-    window.open_image(image_file(tmp_path))
+    window.load_image_path(image_file(tmp_path))
     clear = next(a for a in window.recent_menu.actions() if a.text() == "Clear Menu")
     assert clear.isEnabled()
     clear.trigger()
