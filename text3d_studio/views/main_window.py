@@ -4,7 +4,7 @@ import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
 
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
@@ -115,10 +115,11 @@ class MainWindow(QMainWindow):
         had_background = self.vm.document.background is not None
         previous_size = self.vm.document.native_size
         try:
-            self.vm.set_background(load_image(path), path)
+            pixels = _load_with_busy_cursor(path)
         except ValueError as exc:
             QMessageBox.warning(self, "Could not open image", str(exc))
             return
+        self.vm.set_background(pixels, path)
         self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
         self.preferences.add_recent_file(path)
         self._rebuild_recent_menu()
@@ -154,6 +155,15 @@ class MainWindow(QMainWindow):
         width, height = self.vm.document.native_size
         has_image = self.vm.document.background is not None
         self.size_label.setText(f"{width}×{height}" if has_image else f"No image · canvas {width}×{height}")
+
+
+def _load_with_busy_cursor(path: str):
+    """Decoding a large photo blocks the UI for a moment; show a wait cursor meanwhile."""
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    try:
+        return load_image(path)
+    finally:
+        QApplication.restoreOverrideCursor()
 
 
 def _menu_label(path: str) -> str:
