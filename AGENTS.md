@@ -162,6 +162,8 @@ UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs.
 
 - Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
-- In progress: easier image opening (open-handler cleanup). Done: empty-state prompt, toolbar, drag-and-drop, last folder, Open Recent.
+- Image opening is done (v0.5.0). `MainWindow.open_image_dialog()` asks for a file, and
+  `load_image_path(path)` is the single load path used by the menu, toolbar, prompt, drops, Open Recent and the CLI.
+  Image decoding is synchronous (busy cursor only). Moving it to a worker thread is a possible follow-up.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
   multiple text objects with undo, tiled export, packaging.
