@@ -86,6 +86,37 @@ class UnitQuad:
         GL.glDeleteVertexArrays(1, [self.vao])
 
 
+class TriangleBuffer:
+    """A VAO of float32 vec3 triangle vertices (attribute 0), replaceable at runtime."""
+
+    def __init__(self):
+        self.vao = GL.glGenVertexArrays(1)
+        self.vbo = GL.glGenBuffers(1)
+        self.count = 0
+        GL.glBindVertexArray(self.vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, ctypes.c_void_p(0))
+        GL.glBindVertexArray(0)
+
+    def upload(self, vertices: np.ndarray) -> None:
+        vertices = np.ascontiguousarray(vertices, dtype=np.float32)
+        self.count = len(vertices)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, max(vertices.nbytes, 4), vertices if self.count else None, GL.GL_DYNAMIC_DRAW)
+
+    def draw(self) -> None:
+        if self.count == 0:
+            return
+        GL.glBindVertexArray(self.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, self.count)
+        GL.glBindVertexArray(0)
+
+    def delete(self) -> None:
+        GL.glDeleteBuffers(1, [self.vbo])
+        GL.glDeleteVertexArrays(1, [self.vao])
+
+
 class Texture2D:
     def __init__(self, internal_format=GL.GL_RGBA8, pixel_format=GL.GL_RGBA, mipmaps: bool = False):
         self.handle = GL.glGenTextures(1)
