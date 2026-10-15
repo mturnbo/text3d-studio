@@ -1,6 +1,6 @@
 [project]
 name = "text3d-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop app for compositing layer-stacked 3D text into photographs"
 requires-python = ">=3.11"
 dependencies = [
