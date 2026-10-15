@@ -24,6 +24,7 @@ class Compositor:
         self.quad = UnitQuad()
         self.background_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.BACKGROUND_FS)
         self.background = Texture2D(mipmaps=True)
+        self.background.upload(np.zeros((1, 1, 4), np.uint8))  # keeps the sampler complete before a photo loads
         self.has_background = False
         self.text = Text3DRenderer(self.quad)
         self.shadows = ShadowRenderer(self.quad)
