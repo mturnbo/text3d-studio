@@ -6,7 +6,9 @@ from collections import deque
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QKeySequence
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
 
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
@@ -19,9 +21,37 @@ WHEEL_SCALE_STEP = 1.06
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
 
 
+class EmptyStateOverlay(QFrame):
+    """Centered prompt shown over the canvas until a background image is loaded."""
+
+    open_requested = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("emptyState")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setStyleSheet(
+            "#emptyState { background: rgba(20, 20, 22, 210); border-radius: 12px; }"
+            "QLabel { color: #e8e8e8; }"
+        )
+        shortcut = QKeySequence(QKeySequence.StandardKey.Open).toString(QKeySequence.SequenceFormat.NativeText)
+        title = QLabel("No image loaded")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        self.message = QLabel(f"Open a photo to place 3D text on it ({shortcut})")
+        self.button = QPushButton("Open Image…")
+        self.button.clicked.connect(lambda: self.open_requested.emit())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(32, 24, 32, 24)
+        layout.setSpacing(10)
+        for widget in (title, self.message, self.button):
+            layout.addWidget(widget, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+
 class ImageCanvas(QOpenGLWidget):
     fps_changed = pyqtSignal(float)
     error = pyqtSignal(str)
+    open_requested = pyqtSignal()
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -37,6 +67,11 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.scene_changed.connect(lambda *_: self.update())
         self.vm.text_changed.connect(self._text_timer.start)
         self.vm.background_changed.connect(self._mark_background_dirty)
+
+        self.empty_state = EmptyStateOverlay(self)
+        self.empty_state.open_requested.connect(self.open_requested)
+        self.vm.background_changed.connect(self._update_empty_state)
+        self._update_empty_state()
 
         self.setMinimumSize(480, 320)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -94,6 +129,20 @@ class ImageCanvas(QOpenGLWidget):
                 self.fps_changed.emit((len(self._frame_times) - 1) / span)
 
     # ----- Layout -------------------------------------------------------------------------------
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._center_empty_state()
+
+    def _update_empty_state(self) -> None:
+        self.empty_state.setVisible(self.vm.document.background is None)
+        self._center_empty_state()
+
+    def _center_empty_state(self) -> None:
+        self.empty_state.adjustSize()
+        x = (self.width() - self.empty_state.width()) // 2
+        y = (self.height() - self.empty_state.height()) // 2
+        self.empty_state.move(max(0, x), max(0, y))
 
     def _image_rect(self, scale: float = 1.0) -> tuple[int, int, int, int]:
         """Largest rect with the document's aspect ratio centered in the widget (GL coords)."""
