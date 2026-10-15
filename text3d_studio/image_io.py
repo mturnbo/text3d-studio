@@ -3,7 +3,8 @@
 import numpy as np
 from PyQt6.QtGui import QImage
 
-SUPPORTED_LOAD = "Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)"
+SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
+SUPPORTED_LOAD = "Images (" + " ".join(f"*{ext}" for ext in SUPPORTED_EXTENSIONS) + ")"
 
 
 def qimage_to_rgba(image: QImage) -> np.ndarray:

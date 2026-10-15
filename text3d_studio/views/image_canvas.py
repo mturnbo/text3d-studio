@@ -1,5 +1,6 @@
 """ImageCanvas: QOpenGLWidget that hosts the Compositor and translates mouse input into scene edits."""
 
+import os
 import time
 from collections import deque
 
@@ -10,6 +11,7 @@ from PyQt6.QtGui import QKeySequence
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
 
+from ..image_io import SUPPORTED_EXTENSIONS
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
 from ..text_raster import rasterize_text
@@ -19,6 +21,17 @@ TEXT_DEBOUNCE_MS = 60
 ROTATE_DEG_PER_PX = 0.4
 WHEEL_SCALE_STEP = 1.06
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
+
+
+def dropped_image_path(mime_data) -> str | None:
+    """Returns the path when the drag holds exactly one local file with a supported image extension."""
+    urls = mime_data.urls() if mime_data.hasUrls() else []
+    if len(urls) != 1 or not urls[0].isLocalFile():
+        return None
+    path = urls[0].toLocalFile()
+    if not os.path.isfile(path) or not path.lower().endswith(SUPPORTED_EXTENSIONS):
+        return None
+    return path
 
 
 class EmptyStateOverlay(QFrame):
@@ -37,7 +50,7 @@ class EmptyStateOverlay(QFrame):
         shortcut = QKeySequence(QKeySequence.StandardKey.Open).toString(QKeySequence.SequenceFormat.NativeText)
         title = QLabel("No image loaded")
         title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        self.message = QLabel(f"Open a photo to place 3D text on it ({shortcut})")
+        self.message = QLabel(f"Open a photo ({shortcut}) or drop one here to place 3D text on it")
         self.button = QPushButton("Open Image…")
         self.button.clicked.connect(lambda: self.open_requested.emit())
 
@@ -52,6 +65,7 @@ class ImageCanvas(QOpenGLWidget):
     fps_changed = pyqtSignal(float)
     error = pyqtSignal(str)
     open_requested = pyqtSignal()
+    file_dropped = pyqtSignal(str)
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -76,6 +90,7 @@ class ImageCanvas(QOpenGLWidget):
         self.setMinimumSize(480, 320)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setAcceptDrops(True)
 
     # ----- GL lifecycle -------------------------------------------------------------------------
 
@@ -162,6 +177,24 @@ class ImageCanvas(QOpenGLWidget):
             return render_document(self.compositor, self.vm.document)
         finally:
             self.doneCurrent()
+
+    # ----- Drag and drop ------------------------------------------------------------------------
+
+    # Ignoring the drag makes the OS show its not-allowed cursor.
+
+    def dragEnterEvent(self, event) -> None:
+        if dropped_image_path(event.mimeData()) is None:
+            event.ignore()
+        else:
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        path = dropped_image_path(event.mimeData())
+        if path is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.file_dropped.emit(path)
 
     # ----- Mouse interaction --------------------------------------------------------------------
     # Left drag: move X/Y   Right drag: rotate X/Y   Shift+drag: rotate Z
