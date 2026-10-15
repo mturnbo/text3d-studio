@@ -52,6 +52,7 @@ class ImageCanvas(QOpenGLWidget):
     fps_changed = pyqtSignal(float)
     error = pyqtSignal(str)
     open_requested = pyqtSignal()
+    file_dropped = pyqtSignal(str)
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -76,6 +77,7 @@ class ImageCanvas(QOpenGLWidget):
         self.setMinimumSize(480, 320)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setAcceptDrops(True)
 
     # ----- GL lifecycle -------------------------------------------------------------------------
 
@@ -162,6 +164,22 @@ class ImageCanvas(QOpenGLWidget):
             return render_document(self.compositor, self.vm.document)
         finally:
             self.doneCurrent()
+
+    # ----- Drag and drop ------------------------------------------------------------------------
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        urls = event.mimeData().urls()
+        if not urls:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.file_dropped.emit(urls[0].toLocalFile())
 
     # ----- Mouse interaction --------------------------------------------------------------------
     # Left drag: move X/Y   Right drag: rotate X/Y   Shift+drag: rotate Z
