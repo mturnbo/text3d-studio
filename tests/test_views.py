@@ -295,3 +295,92 @@ def test_recent_label_shortens_home_and_escapes_ampersands():
     home = os.path.expanduser("~")
     assert _menu_label(os.path.join(home, "Pictures", "R&D.png")) == "R&&D.png — ~/Pictures"
     assert _menu_label("/Volumes/Card/photo.jpg") == "photo.jpg — /Volumes/Card"
+
+
+# ----- Open handling, size notice and busy cursor -----------------------------------------------
+
+
+def sized_image(tmp_path, name, width, height):
+    pixels = np.zeros((height, width, 4), np.uint8)
+    pixels[..., 3] = 255
+    path = tmp_path / name
+    save_image(pixels, str(path))
+    return str(path)
+
+
+def fake_dialog(monkeypatch, result):
+    calls = []
+
+    def get_open_file_name(*args):
+        calls.append(args)
+        return (result, "")
+
+    monkeypatch.setattr("text3d_studio.views.main_window.QFileDialog.getOpenFileName", get_open_file_name)
+    return calls
+
+
+def test_open_action_shows_dialog_and_loads_chosen_file(window, tmp_path, monkeypatch):
+    path = image_file(tmp_path)
+    calls = fake_dialog(monkeypatch, path)
+    window.open_action.trigger()
+    assert len(calls) == 1
+    assert window.vm.document.background_path == path
+
+
+def test_cancelled_dialog_loads_nothing(window, preferences, monkeypatch):
+    fake_dialog(monkeypatch, "")
+    window.open_action.trigger()
+    assert window.vm.document.background is None
+    assert preferences.recent_files() == []
+
+
+def test_first_load_reports_export_size(window, tmp_path):
+    window.load_image_path(sized_image(tmp_path, "a.png", 300, 200))
+    assert window.statusBar().currentMessage() == "Loaded a.png · export size 300×200"
+
+
+def test_loading_a_different_size_reports_the_change(window, tmp_path):
+    window.load_image_path(sized_image(tmp_path, "a.png", 300, 200))
+    window.load_image_path(sized_image(tmp_path, "b.png", 120, 90))
+    assert window.statusBar().currentMessage() == "Loaded b.png · export size is now 120×90 (was 300×200)"
+
+
+def test_loading_the_same_size_does_not_report_a_change(window, tmp_path):
+    window.load_image_path(sized_image(tmp_path, "a.png", 300, 200))
+    window.load_image_path(sized_image(tmp_path, "b.png", 300, 200))
+    assert window.statusBar().currentMessage() == "Loaded b.png · export size 300×200"
+
+
+def test_loading_a_new_image_keeps_the_text_transform(window, tmp_path):
+    window.vm.set("transform", "x", 2.5)
+    window.vm.set("transform", "rot_y", 33.0)
+    before = dict(vars(window.vm.scene.transform))
+    window.load_image_path(sized_image(tmp_path, "a.png", 300, 200))
+    window.load_image_path(sized_image(tmp_path, "b.png", 120, 900))
+    assert vars(window.vm.scene.transform) == before
+
+
+def test_busy_cursor_shown_during_decode_and_restored(window, tmp_path, monkeypatch, qapp):
+    import text3d_studio.views.main_window as main_window
+
+    path = image_file(tmp_path)
+    seen = []
+    real_load = main_window.load_image
+
+    def spy_load(p):
+        seen.append(qapp.overrideCursor().shape())
+        return real_load(p)
+
+    monkeypatch.setattr(main_window, "load_image", spy_load)
+    window.load_image_path(path)
+    assert seen == [Qt.CursorShape.WaitCursor]
+    assert qapp.overrideCursor() is None
+
+
+def test_busy_cursor_restored_when_decode_fails(window, tmp_path, monkeypatch, qapp):
+    broken = tmp_path / "broken.png"
+    broken.write_text("not an image")
+    monkeypatch.setattr("text3d_studio.views.main_window.QMessageBox.warning", lambda *args: None)
+    window.load_image_path(str(broken))
+    assert qapp.overrideCursor() is None
+    assert window.vm.document.background is None
