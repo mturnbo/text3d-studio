@@ -123,3 +123,17 @@ def test_interactive_frame_rate_exceeds_30_fps(compositor, gl_context):
         target.delete()
     assert fps > 30, f"only {fps:.1f} FPS"
 
+
+def test_layer_count_auto_increases_when_extrusion_spans_many_pixels():
+    from text3d_studio.render.text3d_renderer import MAX_LAYERS, Text3DRenderer
+
+    doc = make_document()
+    doc.scene.transform.layers = 8
+    doc.scene.transform.depth = 0.5
+    assert Text3DRenderer.effective_layers(doc.scene, 4000) > 8
+    doc.scene.transform.z = -1000
+    assert Text3DRenderer.effective_layers(doc.scene, 400) == 8  # far away: user count suffices
+    doc.scene.transform.z = -0.01
+    assert Text3DRenderer.effective_layers(doc.scene, 4000) == MAX_LAYERS
+    doc.scene.transform.depth = 0.0
+    assert Text3DRenderer.effective_layers(doc.scene, 4000) == 1
