@@ -1,5 +1,7 @@
 """Text3DRenderer: draws the glyph mask as an instanced stack of duplicated layers."""
 
+import math
+
 import numpy as np
 
 from .. import math3d
@@ -10,6 +12,8 @@ from . import shaders
 from .gl_utils import ShaderProgram, Texture2D, TriangleBuffer, UnitQuad
 
 IDENTITY_GL = math3d.to_gl(math3d.identity())
+MAX_LAYERS = 2048
+LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on screen
 
 
 class Text3DRenderer:
@@ -32,9 +36,9 @@ class Text3DRenderer:
     def has_text(self) -> bool:
         return self.raster is not None
 
-    def draw_beauty(self, scene: Scene, proj: np.ndarray, lighting: LightingState) -> None:
+    def draw_beauty(self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int) -> None:
         program = self.beauty
-        layers = self._layer_count(scene)
+        layers = self.effective_layers(scene, viewport_height)
         self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
         m = scene.material
@@ -67,6 +71,17 @@ class Text3DRenderer:
             program.set_int("u_use_mask", 0)
             program.set_float("u_falloff", scene.shadow.falloff)
             self.walls.draw()
+
+    @staticmethod
+    def effective_layers(scene: Scene, viewport_height: int) -> int:
+        """The user's layer count, raised if needed so slices never separate into visible bands."""
+        t = scene.transform
+        if t.depth <= 1e-4:
+            return 1
+        focal_px = (viewport_height / 2) / math.tan(math.radians(scene.camera.fov) / 2)
+        depth_px = t.depth * t.size * focal_px / max(abs(t.z), 1e-3)
+        needed = math.ceil(depth_px * LAYERS_PER_PIXEL)
+        return min(MAX_LAYERS, max(int(t.layers), needed))
 
     @staticmethod
     def _layer_count(scene: Scene) -> int:
