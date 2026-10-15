@@ -114,16 +114,37 @@ void main() {
 }
 """
 
+# Side walls traced from the glyph outline; only used as shadow casters (see text_raster.extract_walls).
+WALL_VS = """
+#version 410 core
+layout(location = 0) in vec3 a_wall;  // (local x, local y, 0 = front / 1 = back)
+uniform mat4 u_model;
+uniform mat4 u_proj;
+uniform mat4 u_flatten;
+uniform float u_depth;
+uniform vec4 u_ground_plane;
+uniform float u_world_size;
+out vec2 v_uv;
+out float v_height;
+void main() {
+    vec4 world = u_model * vec4(a_wall.xy, -a_wall.z * u_depth, 1.0);
+    v_uv = vec2(0.0);
+    v_height = (dot(u_ground_plane.xyz, world.xyz) + u_ground_plane.w) / u_world_size;
+    gl_Position = u_proj * (u_flatten * world);
+}
+"""
+
 SHADOW_FS = """
 #version 410 core
 in vec2 v_uv;
 in float v_height;
 uniform sampler2D u_mask;
+uniform bool u_use_mask;
 uniform float u_falloff;
 out vec4 frag;
 void main() {
     // The flattened quad is heavily foreshortened, so sample full resolution instead of a mip level.
-    if (textureLod(u_mask, v_uv, 0.0).a < 0.5) discard;
+    if (u_use_mask && textureLod(u_mask, v_uv, 0.0).a < 0.5) discard;
     // Parts of the text further from the ground cast weaker shadow (blended with MAX).
     frag = vec4(clamp(1.0 - max(v_height, 0.0) * u_falloff, 0.0, 1.0));
 }

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from text3d_studio.model import TextParams
-from text3d_studio.text_raster import MAX_TEXTURE_WIDTH, rasterize_text
+from text3d_studio.text_raster import MAX_TEXTURE_WIDTH, extract_walls, rasterize_text
 
 
 def decode_direction(rgba):
@@ -62,3 +62,27 @@ def test_very_long_text_is_clamped_to_max_texture_width(qapp):
 def test_unknown_font_family_falls_back_instead_of_failing(qapp):
     assert rasterize_text(TextParams(content="Ok", font_family="No Such Font 12345")) is not None
 
+
+def test_walls_trace_a_closed_square_outline():
+    alpha = np.zeros((20, 20), dtype=np.float32)
+    alpha[5:15, 5:15] = 1.0
+    walls = extract_walls(alpha, origin=(0.0, 0.0), size=(20.0, 20.0), step=1).reshape(-1, 6, 3)
+    assert len(walls) == 4  # one merged quad per side of the square
+    xs, ys = walls[..., 0], walls[..., 1]
+    assert xs.min() == pytest.approx(5) and xs.max() == pytest.approx(15)
+    assert ys.min() == pytest.approx(5) and ys.max() == pytest.approx(15)
+    assert set(np.unique(walls[..., 2])) == {0.0, 1.0}
+
+
+def test_walls_include_inner_hole_outline():
+    alpha = np.zeros((30, 30), dtype=np.float32)
+    alpha[5:25, 5:25] = 1.0
+    alpha[12:18, 12:18] = 0.0
+    walls = extract_walls(alpha, origin=(0.0, 0.0), size=(30.0, 30.0), step=1).reshape(-1, 6, 3)
+    assert len(walls) == 8
+
+
+def test_walls_handle_glyph_touching_mask_border():
+    alpha = np.ones((4, 4), dtype=np.float32)
+    walls = extract_walls(alpha, origin=(0.0, 0.0), size=(4.0, 4.0), step=1).reshape(-1, 6, 3)
+    assert len(walls) == 4
