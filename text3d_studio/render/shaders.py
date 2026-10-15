@@ -82,7 +82,9 @@ uniform float u_specular;
 uniform float u_shininess;
 out vec4 frag;
 void main() {
-    vec4 m = texture(u_mask, v_uv);
+    // Cap the mip level: grazing-angle layers would otherwise average thin strokes below the 0.5 cutoff.
+    float lod = min(textureQueryLod(u_mask, v_uv).y, 1.5);
+    vec4 m = textureLod(u_mask, v_uv, lod);
     float edge = max(fwidth(m.a), 1e-4);
     float coverage = clamp((m.a - 0.5) / edge + 0.5, 0.0, 1.0);
     if (coverage <= 0.0) discard;
@@ -120,7 +122,8 @@ uniform sampler2D u_mask;
 uniform float u_falloff;
 out vec4 frag;
 void main() {
-    if (texture(u_mask, v_uv).a < 0.5) discard;
+    // The flattened quad is heavily foreshortened, so sample full resolution instead of a mip level.
+    if (textureLod(u_mask, v_uv, 0.0).a < 0.5) discard;
     // Parts of the text further from the ground cast weaker shadow (blended with MAX).
     frag = vec4(clamp(1.0 - max(v_height, 0.0) * u_falloff, 0.0, 1.0));
 }
