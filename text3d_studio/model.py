@@ -54,6 +54,7 @@ class ShadowParams:
     enabled: bool = True
     opacity: float = 0.6
     softness: float = 0.35
+    falloff: float = 0.8  # how quickly the shadow fades for parts of the text far from the ground
     color: Color = (0.08, 0.10, 0.14)
 
 
