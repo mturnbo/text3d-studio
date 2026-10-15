@@ -42,19 +42,29 @@ class MainWindow(QMainWindow):
         self.canvas.open_requested.connect(lambda: self.open_image())
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
-        self._build_menu()
+        self._build_actions()
 
-    def _build_menu(self) -> None:
+    def _build_actions(self) -> None:
+        self.open_action = self._make_action("&Open Image…", QKeySequence.StandardKey.Open, self.open_image)
+        self.export_action = self._make_action("&Export…", QKeySequence("Ctrl+E"), self.export_image)
+        quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
+
         file_menu = self.menuBar().addMenu("&File")
-        for text, shortcut, handler in (
-            ("&Open Image…", QKeySequence.StandardKey.Open, self.open_image),
-            ("&Export…", QKeySequence("Ctrl+E"), self.export_image),
-            ("&Quit", QKeySequence.StandardKey.Quit, self.close),
-        ):
-            action = QAction(text, self)
-            action.setShortcut(shortcut)
-            action.triggered.connect(handler)
+        for action in (self.open_action, self.export_action, quit_action):
             file_menu.addAction(action)
+
+        self.toolbar = self.addToolBar("Main")
+        self.toolbar.setObjectName("mainToolbar")
+        self.toolbar.setMovable(False)
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.toolbar.addAction(self.open_action)
+        self.toolbar.addAction(self.export_action)
+
+    def _make_action(self, text, shortcut, handler) -> QAction:
+        action = QAction(text, self)
+        action.setShortcut(shortcut)
+        action.triggered.connect(handler)
+        return action
 
     def open_image(self, path: str | None = None) -> None:
         if not path:
