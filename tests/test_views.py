@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
@@ -195,3 +197,101 @@ def test_dropping_onto_window_loads_the_background(window, tmp_path):
 
 def test_empty_state_mentions_dropping(vm):
     assert "drop" in ImageCanvas(vm).empty_state.message.text().lower()
+
+
+# ----- Last folder and recent files -------------------------------------------------------------
+
+
+def recent_entries(window):
+    return [a for a in window.recent_menu.actions() if a.data()]
+
+
+def test_open_dialog_starts_in_last_folder(window, preferences, tmp_path, monkeypatch):
+    preferences.set_last_directory(str(tmp_path))
+    seen = []
+    monkeypatch.setattr(
+        "text3d_studio.views.main_window.QFileDialog.getOpenFileName",
+        lambda parent, caption, directory, filters: seen.append(directory) or ("", ""),
+    )
+    window.open_image()
+    assert seen == [str(tmp_path)]
+
+
+def test_opening_an_image_remembers_folder_and_recent_entry(window, preferences, tmp_path):
+    path = image_file(tmp_path)
+    window.open_image(path)
+    assert preferences.last_directory() == str(tmp_path)
+    assert [a.data() for a in recent_entries(window)] == [path]
+
+
+def test_dropped_image_is_added_to_recent(window, preferences, tmp_path):
+    path = image_file(tmp_path)
+    drop(window.canvas, mime_with(path))
+    assert preferences.recent_files() == [path]
+
+
+def test_failed_load_is_not_added_to_recent(window, preferences, tmp_path, monkeypatch):
+    broken = tmp_path / "broken.png"
+    broken.write_text("not an image")
+    warnings = []
+    monkeypatch.setattr("text3d_studio.views.main_window.QMessageBox.warning", lambda *args: warnings.append(args))
+    window.open_image(str(broken))
+    assert len(warnings) == 1
+    assert preferences.recent_files() == []
+
+
+def test_empty_recent_menu_shows_disabled_placeholder_and_clear(window):
+    texts = {a.text(): a.isEnabled() for a in window.recent_menu.actions() if not a.isSeparator()}
+    assert texts == {"No Recent Images": False, "Clear Menu": False}
+
+
+def test_recent_menu_lists_newest_first(window, tmp_path):
+    first, second = image_file(tmp_path, "first.png"), image_file(tmp_path, "second.png")
+    window.open_image(first)
+    window.open_image(second)
+    assert [a.data() for a in recent_entries(window)] == [second, first]
+
+
+def test_recent_menu_restores_saved_entries_on_startup(vm, preferences, tmp_path):
+    path = image_file(tmp_path)
+    preferences.add_recent_file(path)
+    win = MainWindow(vm, preferences)
+    assert [a.data() for a in recent_entries(win)] == [path]
+
+
+def test_choosing_a_recent_entry_loads_it(window, preferences, tmp_path):
+    path = image_file(tmp_path)
+    preferences.add_recent_file(path)
+    window._rebuild_recent_menu()
+    recent_entries(window)[0].trigger()
+    assert window.vm.document.background_path == path
+
+
+def test_missing_recent_file_is_removed_with_message(window, preferences, tmp_path, monkeypatch):
+    missing = str(tmp_path / "deleted.png")
+    preferences.add_recent_file(missing)
+    window._rebuild_recent_menu()
+    messages = []
+    monkeypatch.setattr("text3d_studio.views.main_window.QMessageBox.information", lambda *args: messages.append(args))
+    recent_entries(window)[0].trigger()
+    assert len(messages) == 1 and missing in messages[0][2]
+    assert preferences.recent_files() == []
+    assert recent_entries(window) == []
+    assert window.vm.document.background is None
+
+
+def test_clear_menu_empties_recent_files(window, preferences, tmp_path):
+    window.open_image(image_file(tmp_path))
+    clear = next(a for a in window.recent_menu.actions() if a.text() == "Clear Menu")
+    assert clear.isEnabled()
+    clear.trigger()
+    assert preferences.recent_files() == []
+    assert recent_entries(window) == []
+
+
+def test_recent_label_shortens_home_and_escapes_ampersands():
+    from text3d_studio.views.main_window import _menu_label
+
+    home = os.path.expanduser("~")
+    assert _menu_label(os.path.join(home, "Pictures", "R&D.png")) == "R&&D.png — ~/Pictures"
+    assert _menu_label("/Volumes/Card/photo.jpg") == "photo.jpg — /Volumes/Card"
