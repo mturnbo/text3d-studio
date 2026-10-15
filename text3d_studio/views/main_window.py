@@ -7,6 +7,7 @@ from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
 
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
+from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
 from .image_canvas import ImageCanvas
@@ -15,9 +16,10 @@ EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, viewmodel: SceneViewModel):
+    def __init__(self, viewmodel: SceneViewModel, preferences: Preferences):
         super().__init__()
         self.vm = viewmodel
+        self.preferences = preferences
         self.setWindowTitle("Text3D Studio")
         self.resize(1440, 900)
 
@@ -51,8 +53,12 @@ class MainWindow(QMainWindow):
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
         file_menu = self.menuBar().addMenu("&File")
-        for action in (self.open_action, self.export_action, quit_action):
-            file_menu.addAction(action)
+        file_menu.addAction(self.open_action)
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        file_menu.addAction(self.export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(quit_action)
+        self._rebuild_recent_menu()
 
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setObjectName("mainToolbar")
@@ -60,6 +66,35 @@ class MainWindow(QMainWindow):
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.toolbar.addAction(self.open_action)
         self.toolbar.addAction(self.export_action)
+
+    def _rebuild_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        paths = self.preferences.recent_files()
+        if not paths:
+            self.recent_menu.addAction("No Recent Images").setEnabled(False)
+        for path in paths:
+            action = self.recent_menu.addAction(_menu_label(path))
+            action.setData(path)
+            action.setStatusTip(path)
+            action.triggered.connect(lambda _checked=False, p=path: self.open_recent(p))
+        self.recent_menu.addSeparator()
+        clear_action = self.recent_menu.addAction("Clear Menu")
+        clear_action.setEnabled(bool(paths))
+        clear_action.triggered.connect(self.clear_recent_files)
+
+    def open_recent(self, path: str) -> None:
+        if not os.path.isfile(path):
+            self.preferences.remove_recent_file(path)
+            self._rebuild_recent_menu()
+            QMessageBox.information(
+                self, "Image not found", f"{path}\n\nThis file no longer exists and was removed from Open Recent."
+            )
+            return
+        self.open_image(path)
+
+    def clear_recent_files(self) -> None:
+        self.preferences.clear_recent_files()
+        self._rebuild_recent_menu()
 
     def _make_action(self, text, shortcut, handler) -> QAction:
         action = QAction(text, self)
@@ -69,7 +104,8 @@ class MainWindow(QMainWindow):
 
     def open_image(self, path: str | None = None) -> None:
         if not path:
-            path, _ = QFileDialog.getOpenFileName(self, "Open background image", "", SUPPORTED_LOAD)
+            start_dir = self.preferences.last_directory()
+            path, _ = QFileDialog.getOpenFileName(self, "Open background image", start_dir, SUPPORTED_LOAD)
         if not path:
             return
         try:
@@ -77,6 +113,9 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "Could not open image", str(exc))
             return
+        self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
+        self.preferences.add_recent_file(path)
+        self._rebuild_recent_menu()
         self.setWindowTitle(f"Text3D Studio — {os.path.basename(path)}")
 
     def export_image(self) -> None:
@@ -100,3 +139,12 @@ class MainWindow(QMainWindow):
         width, height = self.vm.document.native_size
         has_image = self.vm.document.background is not None
         self.size_label.setText(f"{width}×{height}" if has_image else f"No image · canvas {width}×{height}")
+
+
+def _menu_label(path: str) -> str:
+    """"photo.jpg — ~/Pictures", with "&" escaped so Qt doesn't treat it as a mnemonic."""
+    folder = os.path.dirname(path)
+    home = os.path.expanduser("~")
+    if folder == home or folder.startswith(home + os.sep):
+        folder = "~" + folder[len(home):]
+    return f"{os.path.basename(path)} — {folder}".replace("&", "&&")

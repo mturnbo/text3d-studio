@@ -2,10 +2,12 @@
 
 import sys
 
+from PyQt6.QtCore import QSettings
 from PyQt6.QtGui import QSurfaceFormat
 from PyQt6.QtWidgets import QApplication
 
 from .model import Document
+from .preferences import Preferences
 from .viewmodel import SceneViewModel
 from .views.main_window import MainWindow
 
@@ -24,9 +26,10 @@ def configure_opengl() -> None:
 def main() -> int:
     configure_opengl()
     app = QApplication(sys.argv)
+    app.setOrganizationName("Text3D Studio")
     app.setApplicationName("Text3D Studio")
 
-    window = MainWindow(SceneViewModel(Document()))
+    window = MainWindow(SceneViewModel(Document()), Preferences(QSettings()))
     window.show()
     if len(sys.argv) > 1:
         window.open_image(sys.argv[1])
