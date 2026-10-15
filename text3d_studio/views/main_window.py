@@ -83,6 +83,13 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self.clear_recent_files)
 
     def open_recent(self, path: str) -> None:
+        if not os.path.isfile(path):
+            self.preferences.remove_recent_file(path)
+            self._rebuild_recent_menu()
+            QMessageBox.information(
+                self, "Image not found", f"{path}\n\nThis file no longer exists and was removed from Open Recent."
+            )
+            return
         self.open_image(path)
 
     def clear_recent_files(self) -> None:
