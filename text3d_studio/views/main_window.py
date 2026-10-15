@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
 
         self.canvas.fps_changed.connect(lambda fps: self.fps_label.setText(f"{fps:5.1f} FPS"))
         self.canvas.error.connect(lambda msg: QMessageBox.warning(self, "Rendering problem", msg))
+        self.canvas.open_requested.connect(lambda: self.open_image())
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
         self._build_menu()
