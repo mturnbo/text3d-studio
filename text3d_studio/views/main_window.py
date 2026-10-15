@@ -112,6 +112,8 @@ class MainWindow(QMainWindow):
             self.load_image_path(path)
 
     def load_image_path(self, path: str) -> None:
+        had_background = self.vm.document.background is not None
+        previous_size = self.vm.document.native_size
         try:
             self.vm.set_background(load_image(path), path)
         except ValueError as exc:
@@ -121,6 +123,15 @@ class MainWindow(QMainWindow):
         self.preferences.add_recent_file(path)
         self._rebuild_recent_menu()
         self.setWindowTitle(f"Text3D Studio — {os.path.basename(path)}")
+        self.statusBar().showMessage(self._load_message(path, previous_size if had_background else None), 8000)
+
+    def _load_message(self, path: str, previous_size: tuple[int, int] | None) -> str:
+        """Export size follows the image, so call out when it changed; the text keeps its position."""
+        width, height = self.vm.document.native_size
+        name = os.path.basename(path)
+        if previous_size is None or previous_size == (width, height):
+            return f"Loaded {name} · export size {width}×{height}"
+        return f"Loaded {name} · export size is now {width}×{height} (was {previous_size[0]}×{previous_size[1]})"
 
     def export_image(self) -> None:
         source = self.vm.document.background_path
