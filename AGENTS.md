@@ -1,0 +1,161 @@
+# AGENTS.md
+
+Guidance for AI coding agents (and humans) working on **Text3D Studio**: a PyQt6 + OpenGL 4.1 core
+desktop app that composites extruded 3D text into a photo with the *layer-stack duplication*
+technique, then exports at the photo's native resolution. See `README.md` for the user-facing
+overview and roadmap.
+
+## Quick commands
+
+```bash
+uv sync                                  # install deps into .venv (never use pip)
+uv run text3d-studio [image]             # launch the app; must run from the repo root
+uv run python -m text3d_studio [image]   # same, without the console script
+uv run pytest -q                         # full suite (~2–5 s), includes real-GPU tests
+uv run pytest -q tests/test_render.py    # GPU/render tests only
+```
+
+- `uv run` only finds the console script from inside the project directory; elsewhere use
+  `uv run --project /path/to/text3d-studio text3d-studio`.
+- Python ≥ 3.11. Dependencies: `PyQt6`, `PyOpenGL`, `numpy`; dev: `pytest`. Do not add `scipy`,
+  `Pillow`, `moderngl`, etc. without a clear need. Blurs are implemented in numpy, and image I/O goes through `QImage`.
+
+## Architecture (MVVM)
+
+```
+model.py            Pure dataclasses: Scene{text, transform, material, light, shadow, camera}, Document.
+                    No Qt, no OpenGL. Document.native_size is the export size.
+viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
+                      set(section, field, value) / nudge(...) / set_background(pixels, path)
+                      signals: scene_changed(section, field), text_changed(), background_changed()
+views/              Qt widgets only. Never touch GL state or numpy image math here.
+  main_window.py      menus, status bar, file dialogs
+  control_panel.py    declarative slider/colour/checkbox layout, two-way bound to the ViewModel
+  image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing
+render/             OpenGL, no widget imports. Usable from any current GL context.
+  gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
+  shaders.py          all GLSL 4.10 sources as strings
+  text3d_renderer.py  instanced layer stack (beauty) + shadow casters (caps + side walls)
+  shadow_renderer.py  half-res shadow mask → separable Gaussian blur → multiply composite
+  compositor.py       frame orchestration: background → shadow → text
+  exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
+math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32
+lighting.py         LightingEngine: params → world light dir, colours, ground plane, shadow matrix
+text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
+image_io.py         QImage ⇄ numpy RGBA (top row first)
+app.py              configure_opengl() + main()
+```
+
+Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `paintGL()` →
+`Compositor.render(scene, fbo, viewport)`. The preview and the export call **the same**
+`Compositor.render`, which is why they match. Keep it that way.
+
+### Rendering pipeline
+
+1. **Background**: full-screen quad. The viewport is letterboxed to the photo's aspect ratio, and the
+   projection aspect always equals the photo aspect.
+2. **Shadow** (if enabled): the casters are flattened onto the ground plane with
+   `math3d.planar_shadow_matrix`, rendered at half resolution into an R8 target with `GL_MAX`
+   blending (strength fades with height above the ground, controlled by `shadow.falloff`). The
+   result is blurred twice in each direction, then **multiplied** onto the background.
+3. **Text**: the glyph quad is drawn as one instanced call, with `layers` instances. Instance 0 is the
+   beveled face, the middle instances are side walls (normal = outward edge direction, darkening
+   with depth) and the last instance is the back cap. Depth test is on, with alpha-to-coverage.
+
+### Coordinate conventions
+
+- The camera is fixed at the origin looking down −Z, so world space = view space. Vertical FOV comes from `camera.fov`.
+- Text local space is in em units, scaled by `transform.size`. The ink's bottom sits at local y=0 and is centered on x.
+  The front face is at z=0 and the extrusion goes to `z = -depth` (depth is a *fraction of size*).
+- Model matrix = `T · Rz(rot_z) · Rx(rot_x) · Ry(rot_y) · S`. Yaw is applied first, so it spins the
+  text **on its ground plane**. Tilt X / Roll Z tilt the ground itself.
+- The light is defined in the **ground frame** (`ground_frame(rot_x, rot_z)`): azimuth 0 = toward the
+  camera, elevation measured from the ground. Yaw does not move the light, but tilting the ground does.
+- Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
+  Exports flip rows after `glReadPixels`.
+
+## Hard-won gotchas (read before touching render code)
+
+- **macOS caps OpenGL at 4.1 core.** Keep shaders at `#version 410 core`. Every draw needs a bound
+  VAO. `configure_opengl()` must run **before** `QApplication` is created.
+- **QOpenGLWidget renders into its own FBO.** Always rebind `self.defaultFramebufferObject()` after
+  using offscreen targets. Viewport sizes must be multiplied by `devicePixelRatioF()` (HiDPI).
+- **Mipmaps and alpha cutoff.** Strongly foreshortened quads pick high mip levels whose averaged alpha
+  drops below 0.5, so every fragment is discarded. The shadow pass samples `textureLod(..., 0.0)`,
+  and the beauty pass caps the LOD at 1.5. Don't switch these back to plain `texture()`.
+- **Layer slices cast no shadow when the light is parallel to them.** Each slice projects to a
+  sub-pixel sliver. That's why the shadow pass also draws side-wall quads traced from the glyph
+  outline (`text_raster.extract_walls`). Removing them makes
+  `test_grazing_light_still_casts_shadow_via_side_walls` fail. That's intentional.
+- **Visible banding between slices.** `Text3DRenderer.effective_layers` raises the layer count to
+  about 1.5 slices per on-screen pixel of extrusion (capped at 2048). The user's `layers` value is a
+  minimum, not an exact count.
+- **The planar shadow blows up at grazing elevations.** `LightingEngine` clamps the shadow light to
+  `MIN_SHADOW_ELEVATION` (3°).
+- **Keep samplers complete.** Upload a 1×1 placeholder before real data. An incomplete bound texture
+  triggers macOS "unloadable texture" warnings.
+- **Rasterizing is CPU work (~0.2 s).** Only `text.{content, font_family, bold, italic, bevel_width}`
+  (`viewmodel.RASTER_FIELDS`) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`).
+  Everything else is a uniform and must stay cheap. Never re-rasterize per frame.
+- **PyQt signal arguments.** `QAction.triggered` and `QAbstractButton.clicked` pass a `checked`
+  bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
+- `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
+  harmless no-op (location −1).
+
+## Adding things
+
+- **A new scene parameter:**
+  1. Add a field with a default to the relevant dataclass in `model.py`.
+  2. If it changes the glyph mask, add it to `RASTER_FIELDS`.
+  3. Pass it as a uniform in `render/`.
+  4. Expose it by adding one tuple to `SLIDERS` or `COLORS` in `control_panel.py`. Binding and refresh are automatic.
+- **A new render pass:** add it to `Compositor.render` so preview and export both get it. Restore GL
+  state you change (blend, depth, scissor, alpha-to-coverage, blend equation).
+- **A new file:** only when it's a real module boundary. Prefer extending an existing module.
+
+## Coding conventions
+
+- Explicit over clever. Small focused functions, shallow nesting, no one-off helpers or wrappers.
+- Match the surrounding comment density. Don't add comments or docstrings to code you didn't change.
+- No error handling for impossible cases. Do surface real failures (bad image file, GPU size limits)
+  as `ValueError`/`OSError`, and have the views show them in a `QMessageBox`.
+- The Model stays Qt-free, `render/` stays widget-free, and views hold no math or GL.
+
+## Testing
+
+- **Every feature ships with tests**: happy path, boundary conditions and failure modes.
+- Don't mock the filesystem or OpenGL. Use `tmp_path` and the real offscreen context.
+- Fixtures (`tests/conftest.py`): `qapp` (session `QApplication`, OpenGL configured) and
+  `gl_context` (a real 4.1 core context on a `QOffscreenSurface`; skips the test if unavailable).
+- Render tests assert on actual exported pixels (`render_document`). Compare against a control
+  render rather than hard-coding pixel values.
+- `test_interactive_frame_rate_exceeds_30_fps` guards the 30+ FPS target. Keep it passing.
+- Widgets can be built in tests without being shown. Check visibility with `isVisibleTo(parent)`.
+- **Visual check:** to confirm a UI or render change by eye, script a `MainWindow`, load an image,
+  then `window.grab().save(...)` and `save_image(window.canvas.render_export(), ...)` from a
+  `QTimer.singleShot`, and look at the PNGs.
+
+## Git workflow
+
+- `main` is always releasable. Work on a branch per feature/fix: `feature/<name>`, `fix/<name>`,
+  `docs/<name>`.
+- Granular commits: one logical change each, with a **concise one-line, imperative** message
+  (e.g. `Add triangle buffer for wall geometry`). No bullet-list bodies. Tests pass before merge.
+- Integrate via PR (or `git merge --no-ff`) so feature boundaries stay visible in history.
+- **Versioning (SemVer, pre-1.0):** after a release-worthy merge, commit `Bump version to X.Y.Z`
+  on `main`. Update **both** `pyproject.toml` and `text3d_studio/__init__.py`, then run `uv lock`.
+  Then create an annotated tag `vX.Y.Z` with a one-line summary.
+  Minor = features, patch = fixes.
+- Never force-push `main`, never amend published commits, never skip hooks (`--no-verify`).
+  Ask before pushing unless the user has explicitly asked for a push.
+
+Release history: v0.1.0 core · v0.2.0 render pipeline · v0.2.1 side-wall shadows · v0.3.0 desktop
+UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs.
+
+## Known limitations / next work
+
+- Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
+  possible at near edge-on views.
+- In progress: easier image opening (empty-state prompt, toolbar, drag-and-drop, recent files).
+- Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
+  multiple text objects with undo, tiled export, packaging.
