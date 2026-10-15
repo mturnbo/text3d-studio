@@ -156,7 +156,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   Ask before pushing unless the user has explicitly asked for a push.
 
 Release history: v0.1.0 core · v0.2.0 render pipeline · v0.2.1 side-wall shadows · v0.3.0 desktop
-UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs.
+UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs · v0.5.0 image opening
+(empty-state prompt, toolbar, drag and drop, Open Recent, size notice).
 
 ## Known limitations / next work
 
