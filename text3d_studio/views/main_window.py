@@ -4,7 +4,7 @@ import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
 
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
@@ -41,14 +41,17 @@ class MainWindow(QMainWindow):
 
         self.canvas.fps_changed.connect(lambda fps: self.fps_label.setText(f"{fps:5.1f} FPS"))
         self.canvas.error.connect(lambda msg: QMessageBox.warning(self, "Rendering problem", msg))
-        self.canvas.open_requested.connect(lambda: self.open_image())
-        self.canvas.file_dropped.connect(self.open_image)
+        self.canvas.open_requested.connect(lambda: self.open_image_dialog())
+        self.canvas.file_dropped.connect(self.load_image_path)
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
         self._build_actions()
 
     def _build_actions(self) -> None:
-        self.open_action = self._make_action("&Open Image…", QKeySequence.StandardKey.Open, self.open_image)
+        # Wrapped in a lambda: QAction.triggered passes a `checked` bool the handler must not receive.
+        self.open_action = self._make_action(
+            "&Open Image…", QKeySequence.StandardKey.Open, lambda: self.open_image_dialog()
+        )
         self.export_action = self._make_action("&Export…", QKeySequence("Ctrl+E"), self.export_image)
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
@@ -90,7 +93,7 @@ class MainWindow(QMainWindow):
                 self, "Image not found", f"{path}\n\nThis file no longer exists and was removed from Open Recent."
             )
             return
-        self.open_image(path)
+        self.load_image_path(path)
 
     def clear_recent_files(self) -> None:
         self.preferences.clear_recent_files()
@@ -102,21 +105,34 @@ class MainWindow(QMainWindow):
         action.triggered.connect(handler)
         return action
 
-    def open_image(self, path: str | None = None) -> None:
-        if not path:
-            start_dir = self.preferences.last_directory()
-            path, _ = QFileDialog.getOpenFileName(self, "Open background image", start_dir, SUPPORTED_LOAD)
-        if not path:
-            return
+    def open_image_dialog(self) -> None:
+        start_dir = self.preferences.last_directory()
+        path, _ = QFileDialog.getOpenFileName(self, "Open background image", start_dir, SUPPORTED_LOAD)
+        if path:
+            self.load_image_path(path)
+
+    def load_image_path(self, path: str) -> None:
+        had_background = self.vm.document.background is not None
+        previous_size = self.vm.document.native_size
         try:
-            self.vm.set_background(load_image(path), path)
+            pixels = _load_with_busy_cursor(path)
         except ValueError as exc:
             QMessageBox.warning(self, "Could not open image", str(exc))
             return
+        self.vm.set_background(pixels, path)
         self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
         self.preferences.add_recent_file(path)
         self._rebuild_recent_menu()
         self.setWindowTitle(f"Text3D Studio — {os.path.basename(path)}")
+        self.statusBar().showMessage(self._load_message(path, previous_size if had_background else None), 8000)
+
+    def _load_message(self, path: str, previous_size: tuple[int, int] | None) -> str:
+        """Export size follows the image, so call out when it changed; the text keeps its position."""
+        width, height = self.vm.document.native_size
+        name = os.path.basename(path)
+        if previous_size is None or previous_size == (width, height):
+            return f"Loaded {name} · export size {width}×{height}"
+        return f"Loaded {name} · export size is now {width}×{height} (was {previous_size[0]}×{previous_size[1]})"
 
     def export_image(self) -> None:
         source = self.vm.document.background_path
@@ -139,6 +155,15 @@ class MainWindow(QMainWindow):
         width, height = self.vm.document.native_size
         has_image = self.vm.document.background is not None
         self.size_label.setText(f"{width}×{height}" if has_image else f"No image · canvas {width}×{height}")
+
+
+def _load_with_busy_cursor(path: str):
+    """Decoding a large photo blocks the UI for a moment; show a wait cursor meanwhile."""
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    try:
+        return load_image(path)
+    finally:
+        QApplication.restoreOverrideCursor()
 
 
 def _menu_label(path: str) -> str:

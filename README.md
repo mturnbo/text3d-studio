@@ -54,6 +54,16 @@ the ground for a natural contact-shadow look.
 plane*. Tilt X / Roll Z tilt the ground and the light with it, while Yaw Y spins the text on the
 ground without moving the sun.
 
+## Opening an image
+
+Any of these loads a PNG, JPG, BMP, WebP or TIFF as the background:
+- **Open Image…** on the toolbar, in the File menu, or on the canvas prompt (⌘O / Ctrl+O)
+- Drag a single image file onto the canvas
+- **File → Open Recent** (last 8 images). The Open dialog starts in the folder you last used.
+- Pass a path on the command line: `uv run text3d-studio photo.jpg`
+
+Exports render at the loaded image's size. The status bar shows it, and says so when a new image changes it.
+
 ## Getting a natural look
 
 1. **Match the ground first.** Lower the text onto a floor in the photo. Use **Tilt X** until the bottom edges of the letters run parallel to floor lines, then **Field of view** to match lens distortion: wide-angle photos need 60–80°, telephoto 15–30°.

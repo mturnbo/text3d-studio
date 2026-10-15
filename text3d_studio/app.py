@@ -32,7 +32,7 @@ def main() -> int:
     window = MainWindow(SceneViewModel(Document()), Preferences(QSettings()))
     window.show()
     if len(sys.argv) > 1:
-        window.open_image(sys.argv[1])
+        window.load_image_path(sys.argv[1])
     return app.exec()
 
 
