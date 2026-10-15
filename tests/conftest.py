@@ -1,15 +1,13 @@
 import pytest
-from PyQt6.QtGui import QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+from PyQt6.QtGui import QOffscreenSurface, QOpenGLContext
 from PyQt6.QtWidgets import QApplication
+
+from text3d_studio.app import configure_opengl
 
 
 @pytest.fixture(scope="session")
 def qapp():
-    fmt = QSurfaceFormat()
-    fmt.setVersion(4, 1)
-    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
-    fmt.setDepthBufferSize(24)
-    QSurfaceFormat.setDefaultFormat(fmt)
+    configure_opengl()
     app = QApplication.instance() or QApplication([])
     yield app
 
