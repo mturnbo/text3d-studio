@@ -16,6 +16,7 @@ from .. import math3d
 from ..image_io import SUPPORTED_EXTENSIONS
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
+from ..render.grid_renderer import GridRenderer
 from ..text_raster import rasterize_text
 from ..viewmodel import SceneViewModel
 
@@ -73,6 +74,7 @@ class ImageCanvas(QOpenGLWidget):
         super().__init__(parent)
         self.vm = viewmodel
         self.compositor: Compositor | None = None
+        self.grid_renderer: GridRenderer | None = None
         self._glyph_dirty = True
         self._background_dirty = True
         self._drag_origin: QPointF | None = None
@@ -100,6 +102,7 @@ class ImageCanvas(QOpenGLWidget):
 
     def initializeGL(self) -> None:
         self.compositor = Compositor()
+        self.grid_renderer = GridRenderer(self.compositor.quad)
         self.context().aboutToBeDestroyed.connect(self._release_gl)
 
     def paintGL(self) -> None:
@@ -109,7 +112,13 @@ class ImageCanvas(QOpenGLWidget):
         GL.glViewport(0, 0, int(self.width() * dpr), int(self.height() * dpr))
         GL.glClearColor(0.11, 0.11, 0.12, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-        self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), self._image_rect(dpr))
+        rect = self._image_rect(dpr)
+        self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), rect)
+        if self.vm.scene.grid.visible:
+            # Editor overlay: drawn here, after the composite, so exports never contain it.
+            self.grid_renderer.render(
+                self.vm.scene, self.compositor.text.raster, self.defaultFramebufferObject(), rect, dpr
+            )
         self._track_fps()
 
     def _sync_resources(self) -> None:
@@ -125,6 +134,8 @@ class ImageCanvas(QOpenGLWidget):
 
     def _release_gl(self) -> None:
         self.makeCurrent()
+        self.grid_renderer.delete()
+        self.grid_renderer = None
         self.compositor.delete()
         self.compositor = None
         self.doneCurrent()
