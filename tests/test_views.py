@@ -900,3 +900,34 @@ def test_dropdown_follows_the_model(vm):
     panel = ControlPanel(vm)
     vm.apply_material("glass")
     assert material_combo(panel).currentData() == "glass"
+
+
+def material_row_visible(panel, field):
+    from PyQt6.QtWidgets import QWidget
+
+    return panel.findChild(QWidget, f"material.{field}").isVisibleTo(panel)
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+def test_each_material_shows_its_controls_and_hides_metallic(vm, kind):
+    from text3d_studio.views.control_panel import MATERIAL_CONTROLS, ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material(kind)
+    assert not material_row_visible(panel, "metallic")
+    for field in MATERIAL_CONTROLS[kind]:
+        assert material_row_visible(panel, field), field
+
+
+def test_glass_relabels_its_colors_and_others_restore_them(vm):
+    from PyQt6.QtWidgets import QWidget
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    tint = panel.findChild(QWidget, "material.face_color")
+    form = tint.parentWidget().layout()
+    vm.apply_material("glass")
+    assert form.labelForField(tint).text() == "Tint"
+    vm.apply_material("plastic")
+    assert form.labelForField(tint).text() == "Face color"

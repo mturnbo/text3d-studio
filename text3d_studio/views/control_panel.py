@@ -80,6 +80,16 @@ COLORS = {
     "shadow": [("color", "Shadow color")],
 }
 
+# Material fields shown for each kind (the kind itself decides `metallic`, so that slider never shows).
+MATERIAL_CONTROLS = {
+    kind: ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength") for kind in KINDS
+}
+
+# Per-kind label overrides where the generic name would mislead.
+MATERIAL_LABELS = {
+    "glass": {"face_color": "Tint", "side_color": "Edge tint"},
+}
+
 GROUP_TITLES = [
     ("text", "Text"),
     ("transform", "Text Placement"),
@@ -158,6 +168,7 @@ class ControlPanel(QScrollArea):
         super().__init__()
         self.vm = viewmodel
         self._setters: dict[tuple[str, str], callable] = {}
+        self._material_rows: dict[str, tuple[QFormLayout, QWidget, str]] = {}  # field -> (form, widget, label)
         self.setWidgetResizable(True)
         self.setMinimumWidth(340)
 
@@ -174,12 +185,15 @@ class ControlPanel(QScrollArea):
             for field, label in CHECKBOXES.get(section, []):
                 self._add_checkbox(form, section, field, label)
             for field, label, lo, hi, decimals in SLIDERS.get(section, []):
-                self._add_slider(form, section, field, label, lo, hi, decimals)
+                row = self._add_slider(form, section, field, label, lo, hi, decimals)
+                self._remember_material_row(section, field, label, form, row)
             for field, label in COLORS.get(section, []):
-                self._add_color(form, section, field, label)
+                button = self._add_color(form, section, field, label)
+                self._remember_material_row(section, field, label, form, button)
             column.addWidget(group)
         column.addStretch(1)
         self.setWidget(content)
+        self._show_material_controls(self.vm.get("material", "kind"))
 
         self.vm.scene_changed.connect(self._refresh)
 
@@ -234,21 +248,36 @@ class ControlPanel(QScrollArea):
         self._bind(section, field, lambda v: _set_quietly(box, box.setChecked, v), box.toggled)
         form.addRow("", box)
 
-    def _add_slider(self, form, section, field, label, lo, hi, decimals) -> None:
+    def _add_slider(self, form, section, field, label, lo, hi, decimals) -> QWidget:
         row = SliderRow(lo, hi, decimals)
         row.setObjectName(f"{section}.{field}")
         self._bind(section, field, row.set_value, row.value_changed)
         form.addRow(label, row)
+        return row
 
-    def _add_color(self, form, section, field, label) -> None:
+    def _add_color(self, form, section, field, label) -> QWidget:
         button = ColorButton()
+        button.setObjectName(f"{section}.{field}")
         self._bind(section, field, button.set_color, button.color_changed)
         form.addRow(label, button)
+        return button
+
+    def _remember_material_row(self, section, field, label, form, widget) -> None:
+        if section == "material":
+            self._material_rows[field] = (form, widget, label)
+
+    def _show_material_controls(self, kind: str) -> None:
+        labels = MATERIAL_LABELS.get(kind, {})
+        for field, (form, widget, default_label) in self._material_rows.items():
+            form.setRowVisible(widget, field in MATERIAL_CONTROLS[kind])
+            form.labelForField(widget).setText(labels.get(field, default_label))
 
     def _refresh(self, section: str, field: str) -> None:
         setter = self._setters.get((section, field))
         if setter is not None:
             setter(self.vm.get(section, field))
+        if (section, field) == ("material", "kind"):
+            self._show_material_controls(self.vm.get(section, field))
 
 
 def _set_quietly(widget: QWidget, setter, value) -> None:
