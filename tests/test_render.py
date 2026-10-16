@@ -328,3 +328,41 @@ def test_reflection_strength_scales_metal_brightness(compositor):
         return text_pixels(compositor, doc).mean()
 
     assert brightness(0.0) < brightness(1.0) < brightness(2.0)
+
+
+def test_every_material_preset_renders_distinctly(compositor):
+    from itertools import combinations
+
+    from text3d_studio.materials import KINDS, PRESETS
+
+    means = {kind: text_pixels(compositor, material_document(**PRESETS[kind])).mean(axis=0) for kind in KINDS}
+    for a, b in combinations(KINDS, 2):
+        assert np.abs(means[a] - means[b]).max() > 8, (a, b)
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "glass"])
+def test_neutral_materials_stay_neutral_at_grazing_angles(compositor, kind):
+    # On a neutral gray photo with white light, a near-neutral material can't produce saturated pixels.
+    from text3d_studio.materials import PRESETS
+
+    neutral = (0.85, 0.85, 0.85)
+    doc = material_document(background_rgb=(128, 128, 128), **{**PRESETS[kind], "face_color": neutral, "side_color": neutral})
+    doc.scene.light.color = (1.0, 1.0, 1.0)
+    doc.scene.light.ambient_color = (1.0, 1.0, 1.0)
+    doc.scene.transform.rot_y = -60  # plenty of grazing side walls
+    pixels = text_pixels(compositor, doc)
+    saturation = (pixels.max(-1) - pixels.min(-1)) / np.maximum(pixels.max(-1), 1)
+    assert saturation.max() < 0.2
+
+
+
+@pytest.mark.parametrize("kind", ["glass", "metal"])
+def test_preview_framebuffer_stays_opaque(compositor, kind):
+    # Qt composites the canvas as premultiplied color: any alpha below 1 lets bright channels overflow and
+    # wrap (e.g. a 245 blue becoming 9). The text's coverage and the grid's blending must not touch alpha.
+    from text3d_studio.materials import PRESETS
+
+    doc = grid_document(material={**PRESETS[kind], "kind": kind})
+    doc.background = make_document().background
+    pixels = render_preview(compositor, doc, with_grid=True)
+    assert pixels[..., 3].min() == 255

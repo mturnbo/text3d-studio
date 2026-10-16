@@ -6,6 +6,7 @@ import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from . import ground as ground_model
+from .materials import KINDS, PRESETS
 from .model import Document
 
 # Fields that change the rasterized glyph mask (expensive, CPU) rather than just uniforms (cheap, GPU).
@@ -68,6 +69,14 @@ class SceneViewModel(QObject):
             placement = (base_transform.x, base_transform.z, base_transform.rot_y, base_transform.size)
         for name, value in zip(("x", "z", "rot_y", "size"), placement):
             self.set("transform", name, value)
+
+    def apply_material(self, kind: str) -> None:
+        """Switches the material kind and loads its preset values (replacing any adjustments)."""
+        if kind not in KINDS:
+            raise ValueError(f"Unknown material: {kind!r}")
+        self.set("material", "kind", kind)
+        for name, value in PRESETS[kind].items():
+            self.set("material", name, value)
 
     def nudge(self, section: str, name: str, delta: float) -> None:
         self.set(section, name, self.get(section, name) + delta)

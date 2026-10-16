@@ -129,3 +129,34 @@ def test_set_ground_pose_keeps_text_that_one_by_one_edits_would_lose(qapp):
     np.testing.assert_allclose((t.x, t.z, t.rot_y, t.size), expected, atol=1e-12)
     u = one_by_one.scene.transform
     assert not np.allclose((u.x, u.z, u.size), (t.x, t.z, t.size))
+
+
+@pytest.mark.parametrize("kind", ["plastic", "stone", "wood", "glass", "metal"])
+def test_apply_material_loads_the_preset(vm, kind):
+    from text3d_studio.materials import PRESETS
+
+    vm.apply_material(kind)
+    material = vm.scene.material
+    assert material.kind == kind
+    assert {name: getattr(material, name) for name in PRESETS[kind]} == PRESETS[kind]
+
+
+def test_apply_material_replaces_adjustments_and_reports_each_field(vm):
+    vm.set("material", "roughness", 0.9)
+    events = record(vm.scene_changed)
+    vm.apply_material("plastic")
+    assert vm.scene.material.roughness == 0.3
+    assert ("material", "kind") in events and ("material", "roughness") in events
+
+
+def test_reapplying_the_same_material_resets_it(vm):
+    vm.apply_material("wood")
+    vm.set("material", "face_color", (0.1, 0.2, 0.3))
+    vm.apply_material("wood")
+    assert vm.scene.material.face_color == (0.72, 0.50, 0.30)
+
+
+def test_unknown_material_is_rejected(vm):
+    with pytest.raises(ValueError):
+        vm.apply_material("cheese")
+    assert vm.scene.material.kind == "metal"
