@@ -11,6 +11,8 @@ from PyQt6.QtGui import QKeySequence
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
 
+from .. import ground as ground_model
+from .. import math3d
 from ..image_io import SUPPORTED_EXTENSIONS
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
@@ -74,6 +76,8 @@ class ImageCanvas(QOpenGLWidget):
         self._glyph_dirty = True
         self._background_dirty = True
         self._drag_origin: QPointF | None = None
+        self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
+        self._drag_text_start: tuple[float, float] | None = None
         self._frame_times: deque[float] = deque(maxlen=30)
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
@@ -197,15 +201,19 @@ class ImageCanvas(QOpenGLWidget):
         self.file_dropped.emit(path)
 
     # ----- Mouse interaction --------------------------------------------------------------------
-    # Left drag: move X/Y   Right drag: rotate X/Y   Shift+drag: rotate Z
-    # Wheel: scale          Ctrl/Cmd+wheel: push/pull along Z
+    # Left drag: slide the text along the ground   Right drag: yaw
+    # Wheel: scale                                 Ctrl/Cmd+wheel: move nearer/farther along the ground
 
     def mousePressEvent(self, event) -> None:
         self._drag_origin = event.position()
+        self._drag_ground_start = self.ground_point_at(event.position())
+        t = self.vm.scene.transform
+        self._drag_text_start = (t.x, t.z)
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseReleaseEvent(self, event) -> None:
         self._drag_origin = None
+        self._drag_ground_start = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
 
     def mouseMoveEvent(self, event) -> None:
@@ -213,17 +221,20 @@ class ImageCanvas(QOpenGLWidget):
             return
         delta = event.position() - self._drag_origin
         self._drag_origin = event.position()
-        buttons, mods = event.buttons(), event.modifiers()
 
-        if mods & Qt.KeyboardModifier.ShiftModifier:
-            self.vm.nudge("transform", "rot_z", -delta.x() * ROTATE_DEG_PER_PX)
-        elif buttons & Qt.MouseButton.RightButton:
+        if event.buttons() & Qt.MouseButton.RightButton:
             self.vm.nudge("transform", "rot_y", delta.x() * ROTATE_DEG_PER_PX)
-            self.vm.nudge("transform", "rot_x", delta.y() * ROTATE_DEG_PER_PX)
-        elif buttons & Qt.MouseButton.LeftButton:
-            units = self._world_units_per_pixel()
-            self.vm.nudge("transform", "x", delta.x() * units)
-            self.vm.nudge("transform", "y", -delta.y() * units)
+        elif event.buttons() & Qt.MouseButton.LeftButton:
+            self._slide_text_to(event.position())
+
+    def _slide_text_to(self, position: QPointF) -> None:
+        """Moves the text so the ground point grabbed on press stays under the cursor."""
+        current = self.ground_point_at(position)
+        if self._drag_ground_start is None or current is None:
+            return  # grabbed or dragged above the horizon: there is no ground there
+        start_x, start_z = self._drag_text_start
+        self.vm.set("transform", "x", start_x + current[0] - self._drag_ground_start[0])
+        self.vm.set("transform", "z", start_z + current[1] - self._drag_ground_start[1])
 
     def wheelEvent(self, event) -> None:
         steps = event.angleDelta().y() / 120.0
@@ -232,7 +243,15 @@ class ImageCanvas(QOpenGLWidget):
         else:
             self.vm.set("transform", "size", self.vm.scene.transform.size * WHEEL_SCALE_STEP**steps)
 
-    def _world_units_per_pixel(self) -> float:
-        _, _, _, rect_h = self._image_rect()
-        half_height = abs(self.vm.scene.transform.z) * np.tan(np.radians(self.vm.scene.camera.fov) / 2)
-        return 2.0 * half_height / rect_h
+    def ground_point_at(self, position: QPointF) -> tuple[float, float] | None:
+        """Ground (x, z) under a widget position, or None when that pixel shows sky or lies off the image."""
+        rect_x, rect_y, rect_w, rect_h = self._image_rect()
+        pixel = (position.x() - rect_x, position.y() - rect_y)
+        if not (0 <= pixel[0] <= rect_w and 0 <= pixel[1] <= rect_h):
+            return None
+        scene = self.vm.scene
+        ray = math3d.image_ray(pixel, scene.camera.fov, (rect_w, rect_h))
+        hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), ray, ground_model.ground_plane(scene.ground))
+        if hit is None:
+            return None
+        return ground_model.world_to_ground(scene.ground, hit)

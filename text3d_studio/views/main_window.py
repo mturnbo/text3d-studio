@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
 
         self.size_label = QLabel()
         self.fps_label = QLabel()
-        hint = QLabel("Left-drag: move · Right-drag: rotate · Shift-drag: roll · Wheel: scale · Ctrl/Cmd+wheel: depth")
+        hint = QLabel("Left-drag: slide on ground · Right-drag: yaw · Wheel: scale · Ctrl/Cmd+wheel: distance")
         self.statusBar().addPermanentWidget(self.size_label)
         self.statusBar().addPermanentWidget(hint)
         self.statusBar().addPermanentWidget(self.fps_label)
