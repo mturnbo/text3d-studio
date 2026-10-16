@@ -627,6 +627,44 @@ def test_g_key_on_canvas_toggles_grid(window, qapp):
     assert window.vm.scene.grid.visible
 
 
+@pytest.mark.parametrize("field", ["transform.size", "ground.pitch"])
+def test_g_toggles_the_grid_while_a_number_field_has_focus(window, qapp, field):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    window.show()
+    window.activateWindow()
+    assert QTest.qWaitForWindowActive(window)
+    spin = window.panel.findChild(SliderRow, field).spin
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert spin.hasFocus()
+    QTest.keyClick(spin, Qt.Key.Key_G)
+    assert window.vm.scene.grid.visible
+    QTest.keyClick(spin, Qt.Key.Key_G)
+    assert not window.vm.scene.grid.visible
+
+
+def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+    from text3d_studio.views.image_canvas import GRID_TOOL
+
+    window.show()
+    window.activateWindow()
+    assert QTest.qWaitForWindowActive(window)
+    spin = window.panel.findChild(SliderRow, "transform.size").spin
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton)
+    spin.selectAll()
+    QTest.keyClicks(spin, "5")
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert window.vm.scene.transform.size == 5.0
+    QTest.keyClick(spin, Qt.Key.Key_P)
+    assert window.canvas.tool == GRID_TOOL
+
+
 def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QLineEdit
