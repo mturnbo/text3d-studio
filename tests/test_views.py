@@ -931,3 +931,43 @@ def test_glass_relabels_its_colors_and_others_restore_them(vm):
     assert form.labelForField(tint).text() == "Tint"
     vm.apply_material("plastic")
     assert form.labelForField(tint).text() == "Face color"
+
+
+def test_every_material_control_table_covers_all_kinds_with_real_fields():
+    import dataclasses
+
+    from text3d_studio.materials import KINDS
+    from text3d_studio.model import MaterialParams
+    from text3d_studio.views.control_panel import MATERIAL_CONTROLS, MATERIAL_LABELS
+
+    fields = {f.name for f in dataclasses.fields(MaterialParams)}
+    assert set(MATERIAL_CONTROLS) == set(KINDS)
+    for kind, shown in MATERIAL_CONTROLS.items():
+        assert set(shown) <= fields - {"kind", "metallic"}, kind
+        assert set(MATERIAL_LABELS.get(kind, {})) <= set(shown), kind
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "glass"])
+def test_untextured_materials_hide_texture_controls(vm, kind):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material(kind)
+    for field in ("secondary_color", "texture_scale", "texture_strength", "grain_angle", "bump_strength", "varnish"):
+        assert not material_row_visible(panel, field), field
+
+
+def test_wood_shows_grain_controls_and_hides_side_color(vm):
+    from PyQt6.QtWidgets import QWidget
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("wood")
+    assert material_row_visible(panel, "grain_angle") and material_row_visible(panel, "varnish")
+    assert not material_row_visible(panel, "side_color")
+    secondary = panel.findChild(QWidget, "material.secondary_color")
+    assert secondary.parentWidget().layout().labelForField(secondary).text() == "Dark wood"
+    vm.apply_material("stone")
+    assert secondary.parentWidget().layout().labelForField(secondary).text() == "Vein color"
+    assert not material_row_visible(panel, "grain_angle")
