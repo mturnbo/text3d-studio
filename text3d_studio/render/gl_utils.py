@@ -152,6 +152,13 @@ class Texture2D:
             self.pixel_format, GL.GL_UNSIGNED_BYTE, None,
         )
 
+    @property
+    def max_lod(self) -> float:
+        """Index of the smallest mip level (0 without mipmaps)."""
+        if not self.mipmaps or self.width == 0:
+            return 0.0
+        return float(int(np.log2(max(self.width, self.height))))
+
     def bind(self, unit: int = 0) -> None:
         GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.handle)
@@ -161,10 +168,10 @@ class Texture2D:
 
 
 class ColorTarget:
-    """Framebuffer with a single sampleable color texture and no depth (used for shadow passes)."""
+    """Framebuffer with a single sampleable color texture and no depth (shadow passes, the glass backdrop)."""
 
-    def __init__(self, internal_format=GL.GL_R8, pixel_format=GL.GL_RED):
-        self.texture = Texture2D(internal_format, pixel_format)
+    def __init__(self, internal_format=GL.GL_R8, pixel_format=GL.GL_RED, mipmaps: bool = False):
+        self.texture = Texture2D(internal_format, pixel_format, mipmaps)
         self.fbo = GL.glGenFramebuffers(1)
         self.width = self.height = 0
 

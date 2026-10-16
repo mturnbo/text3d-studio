@@ -57,12 +57,21 @@ class GridParams:
 
 @dataclass
 class MaterialParams:
+    kind: str = "metal"  # one of materials.KINDS; picking a kind loads its preset (see materials.py)
     face_color: Color = (0.92, 0.78, 0.45)
     side_color: Color = (0.70, 0.52, 0.25)
     side_darkening: float = 0.45  # how much darker the back of the stack gets
     bevel_strength: float = 1.6
-    specular: float = 0.35
-    shininess: float = 32.0
+    metallic: float = 1.0  # 0 = dielectric (plastic, stone, wood), 1 = metal; colors the highlight
+    roughness: float = 0.35  # 0 = mirror-polished, 1 = fully matte
+    # Procedural textures (stone, wood). Patterns live in the text's own space, in em units.
+    secondary_color: Color = (0.70, 0.52, 0.25)  # stone veins, wood's dark rings
+    texture_scale: float = 1.0  # feature size (stone grain, wood ring spacing)
+    texture_strength: float = 0.0  # how strongly the pattern shows
+    bump_strength: float = 0.0  # surface relief from the pattern
+    grain_angle: float = 0.0  # wood grain direction on the face, degrees (0 = horizontal)
+    varnish: float = 0.0  # glossy clear coat over the material
+    absorption: float = 0.0  # glass: how quickly the tint deepens with the thickness light passes through
 
 
 @dataclass
@@ -73,6 +82,8 @@ class LightParams:
     color: Color = (1.0, 0.97, 0.90)
     ambient_color: Color = (0.55, 0.62, 0.75)
     ambient_intensity: float = 0.35
+    reflect_photo: bool = True  # glossy surfaces reflect a blurred copy of the background photo
+    reflection_strength: float = 1.0
 
 
 @dataclass

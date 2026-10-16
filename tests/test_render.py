@@ -257,3 +257,360 @@ def test_grid_offset_slides_lines_and_wraps_every_cell(compositor):
     whole = render_preview(compositor, grid_document(text={"content": ""}, grid={"offset_x": 1.0, "offset_z": -2.0}), True)
     assert np.abs(base.astype(int) - half).max() > 50  # lines visibly moved
     assert np.abs(base.astype(int) - whole).max() <= 1  # a whole-cell shift lands on the same lines (float rounding aside)
+
+
+# ----- Physically based materials -----------------------------------------------------------------
+
+RED = (0.8, 0.08, 0.08)
+
+
+def material_document(background_rgb=BG_COLOR, **material):
+    doc = make_document(shadow={"enabled": False}, material=material, light={"azimuth": 10, "elevation": 20})
+    doc.background[..., :3] = background_rgb
+    return doc
+
+
+def text_image(compositor, doc, erode=2):
+    """The rendered colors and a mask of pixels well inside the text. The background is a flat color, so
+    anything else is text; eroding the mask drops antialiased edges, which blend in the background."""
+    pixels = render(compositor, doc)[..., :3].astype(float)
+    covered = np.any(pixels != doc.background[0, 0, :3], axis=-1)
+    interior = covered.copy()
+    for axis in (0, 1):
+        for shift in range(1, erode + 1):
+            interior &= np.roll(covered, shift, axis) & np.roll(covered, -shift, axis)
+    return pixels, interior
+
+
+def text_pixels(compositor, doc, erode=2):
+    pixels, interior = text_image(compositor, doc, erode)
+    return pixels[interior]
+
+
+def highlight_saturation(colors, count=5):
+    """Saturation of the brightest few pixels (the light's highlight): ~0 when white, high when tinted."""
+    brightest = colors[np.argsort(colors.sum(-1))[-count:]]
+    return float(np.mean((brightest.max(-1) - brightest.min(-1)) / np.maximum(brightest.max(-1), 1)))
+
+
+def test_metal_tints_highlights_while_plastic_keeps_them_white(compositor):
+    def saturation(metallic):
+        doc = material_document(metallic=metallic, face_color=RED, side_color=RED, roughness=0.2)
+        doc.scene.light.reflect_photo = False  # isolate the light's own highlight
+        return highlight_saturation(text_pixels(compositor, doc))
+
+    assert saturation(0.0) < 0.1
+    assert saturation(1.0) > 0.3
+
+
+def test_rougher_surfaces_have_dimmer_highlights(compositor):
+    shared = dict(metallic=0.0, face_color=(0.5, 0.5, 0.5), side_color=(0.5, 0.5, 0.5))
+    smooth = text_pixels(compositor, material_document(roughness=0.08, **shared)).sum(-1)
+    rough = text_pixels(compositor, material_document(roughness=0.9, **shared)).sum(-1)
+    assert smooth.max() > rough.max() + 40
+
+
+@pytest.mark.parametrize("reflect", [True, False])
+def test_reflections_follow_the_photo_only_when_enabled(compositor, reflect):
+    def on(background):
+        doc = material_document(background_rgb=background, metallic=1.0, roughness=0.1,
+                                face_color=(0.9, 0.9, 0.9), side_color=(0.9, 0.9, 0.9))
+        doc.scene.light.reflect_photo = reflect
+        return text_pixels(compositor, doc).mean(axis=0)
+
+    red_scene, blue_scene = on((200, 40, 40)), on((40, 40, 200))
+    red_minus_blue = (red_scene[0] - red_scene[2]) - (blue_scene[0] - blue_scene[2])
+    if reflect:
+        assert red_minus_blue > 40  # a mirror-like metal takes on the scene's color
+    else:
+        assert abs(red_minus_blue) < 1
+
+
+def test_reflection_strength_scales_metal_brightness(compositor):
+    def brightness(strength):
+        doc = material_document(metallic=1.0, roughness=0.3)
+        doc.scene.light.reflection_strength = strength
+        return text_pixels(compositor, doc).mean()
+
+    assert brightness(0.0) < brightness(1.0) < brightness(2.0)
+
+
+def test_every_material_preset_renders_distinctly(compositor):
+    from itertools import combinations
+
+    from text3d_studio.materials import KINDS, PRESETS
+
+    means = {kind: text_pixels(compositor, material_document(**PRESETS[kind])).mean(axis=0) for kind in KINDS}
+    for a, b in combinations(KINDS, 2):
+        assert np.abs(means[a] - means[b]).max() > 8, (a, b)
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "glass"])
+def test_neutral_materials_stay_neutral_at_grazing_angles(compositor, kind):
+    # On a neutral gray photo with white light, a near-neutral material can't produce saturated pixels.
+    from text3d_studio.materials import PRESETS
+
+    neutral = (0.85, 0.85, 0.85)
+    doc = material_document(background_rgb=(128, 128, 128), **{**PRESETS[kind], "face_color": neutral, "side_color": neutral})
+    doc.scene.light.color = (1.0, 1.0, 1.0)
+    doc.scene.light.ambient_color = (1.0, 1.0, 1.0)
+    doc.scene.transform.rot_y = -60  # plenty of grazing side walls
+    pixels = text_pixels(compositor, doc)
+    saturation = (pixels.max(-1) - pixels.min(-1)) / np.maximum(pixels.max(-1), 1)
+    assert saturation.max() < 0.2
+
+
+
+@pytest.mark.parametrize("kind", ["glass", "metal"])
+def test_preview_framebuffer_stays_opaque(compositor, kind):
+    # Qt composites the canvas as premultiplied color: any alpha below 1 lets bright channels overflow and
+    # wrap (e.g. a 245 blue becoming 9). The text's coverage and the grid's blending must not touch alpha.
+    from text3d_studio.materials import PRESETS
+
+    doc = grid_document(material={**PRESETS[kind], "kind": kind})
+    doc.background = make_document().background
+    pixels = render_preview(compositor, doc, with_grid=True)
+    assert pixels[..., 3].min() == 255
+
+
+# ----- Depth pre-pass -----------------------------------------------------------------------------
+
+
+def compositor_with_prepass(monkeypatch, enabled):
+    import text3d_studio.render.text3d_renderer as text3d_renderer
+
+    monkeypatch.setattr(text3d_renderer, "DEPTH_PREPASS", enabled)
+    return Compositor()
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, kind):
+    from text3d_studio.materials import PRESETS
+
+    doc = make_document(material={**PRESETS[kind], "kind": kind}, transform={"depth": 0.8, "rot_y": -45})
+    single, prepass = compositor_with_prepass(monkeypatch, False), compositor_with_prepass(monkeypatch, True)
+    try:
+        np.testing.assert_array_equal(render(prepass, doc), render(single, doc))
+    finally:
+        single.delete()
+        prepass.delete()
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
+    from OpenGL import GL
+
+    from text3d_studio.materials import PRESETS
+    from text3d_studio.render.gl_utils import RenderTarget
+
+    doc = make_document(width=1600, height=1000, material={**PRESETS[kind], "kind": kind},
+                        transform={"size": 6.0, "depth": 1.2, "z": -10.0})
+    compositor.set_background(doc.background)
+    compositor.set_glyph(rasterize_text(doc.scene.text))
+    target = RenderTarget(1600, 1000, samples=4)
+    try:
+        compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        start = time.perf_counter()
+        for i in range(20):
+            doc.scene.transform.rot_y = -40 + i
+            compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        fps = 20 / (time.perf_counter() - start)
+    finally:
+        target.delete()
+    assert fps > 30, f"{kind}: only {fps:.1f} FPS"
+
+
+
+# ----- Procedural stone and wood ------------------------------------------------------------------
+
+
+def textured_document(kind, **material):
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
+    doc.scene.transform.rot_y = 0.0  # face the camera so the face fills most of the text
+    doc.scene.transform.size = 4.0
+    doc.scene.light.reflect_photo = False
+    return doc
+
+
+def directional_detail(compositor, doc):
+    """Mean luminance change between vertical and between horizontal neighbours inside the text."""
+    pixels, interior = text_image(compositor, doc)
+    luminance = pixels.sum(-1) / 3.0
+    vertical = np.abs(np.diff(luminance, axis=0))[interior[1:] & interior[:-1]].mean()
+    horizontal = np.abs(np.diff(luminance, axis=1))[interior[:, 1:] & interior[:, :-1]].mean()
+    return vertical, horizontal
+
+
+def test_stone_has_far_more_fine_detail_than_plain_material(compositor):
+    stone = sum(directional_detail(compositor, textured_document("stone")))
+    plain = sum(directional_detail(compositor, textured_document("stone", texture_strength=0.0, bump_strength=0.0)))
+    assert stone > 2 * plain  # plain text still has bevel and edge shading, so 2x is a clear margin
+
+
+def test_stone_veining_strength_darkens_more_of_the_surface(compositor):
+    def dark_fraction(strength):
+        doc = textured_document("stone", texture_strength=strength, bump_strength=0.0)
+        luminance = text_pixels(compositor, doc).sum(-1)
+        return np.mean(luminance < 0.75 * np.median(luminance))  # veins and dark speckle
+
+    assert dark_fraction(1.0) > dark_fraction(0.3) + 0.06
+
+
+def test_stone_bump_adds_detail(compositor):
+    flat = sum(directional_detail(compositor, textured_document("stone", bump_strength=0.0)))
+    bumpy = sum(directional_detail(compositor, textured_document("stone", bump_strength=1.0)))
+    assert bumpy > 1.2 * flat
+
+
+@pytest.mark.parametrize("angle, across", [(0.0, "vertical"), (90.0, "horizontal")])
+def test_wood_rings_vary_across_the_grain(compositor, angle, across):
+    vertical, horizontal = directional_detail(compositor, textured_document("wood", grain_angle=angle, bump_strength=0.0))
+    if across == "vertical":
+        assert vertical > 1.5 * horizontal  # horizontal grain: rings stack up the letters
+    else:
+        assert horizontal > 1.5 * vertical
+
+
+def test_tighter_ring_spacing_means_more_rings(compositor):
+    def ring_detail(spacing):
+        return directional_detail(compositor, textured_document("wood", texture_scale=spacing, bump_strength=0.0))[0]
+
+    assert ring_detail(0.05) > 1.5 * ring_detail(0.25)
+
+
+def test_varnish_adds_a_sharp_highlight(compositor):
+    def highlight(varnish):
+        doc = textured_document("wood", varnish=varnish)
+        # Light from the camera's direction puts the coat's mirror-sharp highlight on the flat face.
+        doc.scene.light.azimuth, doc.scene.light.elevation = 0.0, 12.0
+        return np.sort(text_pixels(compositor, doc).sum(-1))[-30:].mean()
+
+    assert highlight(1.0) > highlight(0.0) + 150
+
+
+# ----- Glass --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind, expected", [
+    ("plastic", (0.0, 0.0, 0.0)),
+    ("glass", (0.65 * 0.8, 0.65 * 0.9, 0.65 * 1.0)),
+])
+def test_shadow_color_lightens_and_tints_only_for_transmissive_materials(kind, expected):
+    from text3d_studio.render.shadow_renderer import shadow_color
+
+    doc = make_document(material={"kind": kind, "face_color": (0.8, 0.9, 1.0)}, shadow={"color": (0.0, 0.0, 0.0)})
+    assert shadow_color(doc.scene) == pytest.approx(expected)
+
+
+def test_glass_shadow_keeps_a_custom_shadow_color_in_proportion():
+    from text3d_studio.render.shadow_renderer import shadow_color
+
+    doc = make_document(material={"kind": "glass", "face_color": (1.0, 1.0, 1.0)}, shadow={"color": (0.2, 0.4, 0.6)})
+    assert shadow_color(doc.scene) == pytest.approx((0.72, 0.79, 0.86))
+
+
+def glass_document(kind="glass", background=None, **material):
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
+    doc.scene.transform.rot_y = 0.0
+    doc.scene.transform.size = 4.0
+    doc.scene.light.reflect_photo = False  # opaque materials then ignore the photo entirely
+    if background is not None:
+        doc.background = background
+    return doc
+
+
+def glass_interior(compositor):
+    """Pixels well inside the text. Found from opaque text on a flat background: glass on a patterned
+    background can't be told apart from it by color, and every material covers the same pixels."""
+    _, interior = text_image(compositor, glass_document("plastic"), erode=3)
+    return interior
+
+
+def stripes(period=16):
+    background = np.full((400, 640, 4), 255, np.uint8)
+    background[:, (np.arange(640) // (period // 2)) % 2 == 1, :3] = 0
+    return background
+
+
+def luminance(pixels):
+    return pixels[..., :3].astype(float).mean(-1)
+
+
+def test_glass_shows_the_background_through_the_text_but_plastic_hides_it(compositor):
+    interior = glass_interior(compositor)
+    glass = luminance(render(compositor, glass_document(background=stripes())))[interior]
+    plastic = luminance(render(compositor, glass_document("plastic", background=stripes())))[interior]
+    assert glass.std() > 60
+    assert glass.std() > 2 * plastic.std()  # plastic varies only with its own shading
+
+
+def test_glass_bends_the_background_rather_than_just_tinting_it(compositor):
+    # Pure tinting keeps every stripe exactly where it was; refraction moves bright stripes over dark ones.
+    interior = glass_interior(compositor)
+    background = stripes()
+    glass = luminance(render(compositor, glass_document(background=background)))[interior]
+    behind = luminance(np.flipud(background))[interior]  # exported rows are flipped relative to the photo
+    assert np.mean((glass > 150) & (behind < 50)) > 0.05  # bright stripes seen over dark ones...
+    assert np.mean((glass < 80) & (behind > 200)) > 0.05  # ...and dark over bright
+
+
+def test_changing_the_photo_changes_glass_but_not_opaque_materials(compositor):
+    interior = glass_interior(compositor)
+
+    def text_colors(kind, rgb):
+        doc = glass_document(kind)
+        doc.background[..., :3] = rgb
+        return render(compositor, doc)[..., :3].astype(float)[interior]
+
+    for kind in ("plastic", "stone"):
+        changed = np.any(text_colors(kind, (200, 180, 150)) != text_colors(kind, (60, 90, 230)), axis=-1)
+        assert changed.mean() < 1e-3  # only stray diagonal edge pixels, which the erosion keeps, blend the photo
+    glass_shift = text_colors("glass", (200, 180, 150)) - text_colors("glass", (60, 90, 230))
+    assert glass_shift[:, 0].mean() > 60 and glass_shift[:, 2].mean() < 0
+
+
+def test_frost_blurs_the_background_seen_through_glass(compositor):
+    interior = glass_interior(compositor)
+
+    def contrast(roughness):
+        doc = glass_document(background=stripes(), roughness=roughness)
+        return luminance(render(compositor, doc))[interior].std()
+
+    assert contrast(0.6) < 0.4 * contrast(0.05)
+
+
+def test_absorption_deepens_the_glass_tint(compositor):
+    interior = glass_interior(compositor)
+    tint = (0.6, 0.8, 1.0)
+
+    def mean_color(absorption):
+        doc = glass_document(background_rgb=(255, 255, 255), face_color=tint, side_color=tint, absorption=absorption)
+        doc.background[..., :3] = 255
+        return render(compositor, doc)[..., :3].astype(float)[interior].mean(axis=0)
+
+    clear, light, deep = mean_color(0.0), mean_color(1.0), mean_color(4.0)
+    assert clear[0] > 230 and abs(clear[0] - clear[2]) < 10  # no absorption: the white photo shows untinted
+    assert deep[0] < light[0] - 20 < clear[0] - 20  # red is absorbed more with every step
+    assert deep[2] > 230  # the tint passes blue untouched
+
+
+def test_glass_casts_a_lighter_shadow_than_plastic(compositor):
+    light = {"azimuth": -110, "elevation": 30}
+    _, text_area = text_image(compositor, make_document(light=light, shadow={"enabled": False}), erode=0)
+    ground = ~text_area
+
+    def darkening(kind):
+        from text3d_studio.materials import PRESETS
+
+        material = {**PRESETS[kind], "kind": kind}
+        lit = render(compositor, make_document(light=light, material=material, shadow={"enabled": False}))
+        shaded = render(compositor, make_document(light=light, material=material, shadow={"softness": 0.1, "opacity": 0.8}))
+        return (luminance(lit) - luminance(shaded))[ground].sum()
+
+    assert 0 < darkening("glass") < 0.5 * darkening("plastic")

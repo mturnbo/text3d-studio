@@ -47,6 +47,8 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
                     Also image-space perspective: project_to_image / image_ray (pixels, origin
                     top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
                     focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
+materials.py        Material KINDS (metal, plastic, stone, wood, glass) and their PRESETS (every MaterialParams
+                    field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset
 ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
                     placement on it (text_position, text_model_matrix, world_to_ground, text_distance)
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
@@ -96,6 +98,36 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
   Exports flip rows after `glReadPixels`.
 
+### Shading (physically based, since v0.7)
+
+- **Linear light.** Colors are picked in sRGB. `lighting.srgb_to_linear` converts the light, ambient
+  and material colors in Python, the text shader does all math in linear, and `linear_to_srgb` encodes
+  its output. The background pass is untouched, so the photo stays bit-exact. Convert in exactly one
+  place, never in both.
+- **Model.** Metallic-roughness microfacet BRDF: GGX distribution, Smith geometry, Schlick Fresnel.
+  `f0 = mix(0.04, base, metallic)`. The light is scaled by π, so a white matte face turned to the light
+  reaches 1.0.
+- **Reflections.** With `light.reflect_photo`, the reflection vector does a sphere-map lookup into the
+  background texture, blurred by `roughness × max_lod` via its mipmaps. Without a photo the ambient color
+  is reflected instead. The split-sum environment BRDF uses Karis's analytic fit (`environment_brdf`).
+- **Procedural textures** (stone, wood) sample `NOISE_GLSL` at `v_local` (text space, em units), so
+  patterns are continuous from face to side walls and stick to the text. Relief (bump) only runs on the
+  front and back slices. `u_pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
+- **Glass** (kinds in `materials.TRANSMISSION`). Before drawing the text, the compositor blits the
+  viewport (background + shadow, MSAA resolved) into the mipmapped `backdrop` texture. The shader samples
+  it along the refracted ray (IOR 1.5, `REFRACTION_DEPTH` em behind the surface, projected back to the
+  screen), blurs it by roughness (shown as **Frost**), tints it by Beer-Lambert absorption
+  (`tint^(path × absorption)`, path = depth along the view), and splits it from the surface reflection by
+  Fresnel. The output is still opaque. Glass only shows the backdrop, not the text's own far walls.
+  `shadow_renderer.shadow_color` lightens and tints the shadow by the transmission fraction.
+- **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
+  re-picking the current kind resets it. `control_panel.MATERIAL_CONTROLS` lists the fields shown per kind,
+  and `MATERIAL_LABELS` renames them (glass: Tint / Edge tint / Tint depth / Frost). `metallic` is set by the kind and never shown.
+  A new material parameter needs: a MaterialParams field, a value in **every** preset (a test enforces
+  this), a slider/colour entry, and the kinds that show it.
+- Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
+  using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
+
 ## Hard-won gotchas (read before touching render code)
 
 - **macOS caps OpenGL at 4.1 core.** Keep shaders at `#version 410 core`. Every draw needs a bound
@@ -121,6 +153,21 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   Everything else is a uniform and must stay cheap. Never re-rasterize per frame.
 - **PyQt signal arguments.** `QAction.triggered` and `QAbstractButton.clicked` pass a `checked`
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
+- **Never write alpha < 1 into the canvas framebuffer.** Qt composites the QOpenGLWidget as premultiplied
+  color, so a pixel brighter than its alpha overflows and *wraps* (a 245 blue shows as 9): bright reflections
+  turned into rainbow speckles. The text pass (alpha-to-coverage) and the grid pass mask alpha writes with
+  `glColorMask(..., GL_FALSE)`. Exports never showed it because the exporter forces alpha to 255, so test
+  the *preview* path: `test_preview_framebuffer_stays_opaque`.
+- **Depth pre-pass** (`text3d_renderer.DEPTH_PREPASS`). The stack is drawn once into depth only
+  (`LAYER_DEPTH_FS`), then shaded with `GL_EQUAL` and depth writes off, so expensive shading runs about
+  once per pixel instead of once per slice. Real gains are modest on Apple GPUs (~11% without MSAA, ~0
+  with it). The dominant cost is multisampled side-wall pixels shaded for several slices, so keep expensive
+  per-pixel work (e.g. bump) off side-wall slices.
+  - Both passes must compute identical depth and coverage: `LAYER_STACK_VS` declares
+    `invariant gl_Position`, and both fragment shaders share `MASK_COVERAGE`. Any new per-slice
+    geometry or coverage logic must go into both.
+  - `test_depth_prepass_matches_single_pass_rendering` guards bit-exact equality with the one-pass
+    path.
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
 

@@ -34,6 +34,9 @@ void main() {
 LAYER_STACK_VS = """
 #version 410 core
 layout(location = 0) in vec2 a_pos;
+// The depth pre-pass and the shading pass link this source into different programs; invariance guarantees
+// they compute bit-identical depths, so the shading pass can test with GL_EQUAL.
+invariant gl_Position;
 uniform mat4 u_model;
 uniform mat4 u_proj;
 uniform mat4 u_flatten;      // identity for the beauty pass, planar shadow projection for the shadow pass
@@ -45,6 +48,7 @@ uniform vec4 u_ground_plane;
 uniform float u_world_size;
 out vec2 v_uv;
 out vec3 v_pos;
+out vec3 v_local;   // position inside the text in em units (z = depth): procedural textures sample this
 out float v_t;
 out float v_height;
 flat out int v_layer;
@@ -54,6 +58,7 @@ void main() {
     vec4 local = vec4(u_origin + a_pos * u_size, -t * u_depth, 1.0);
     vec4 world = u_model * local;
     v_pos = world.xyz;
+    v_local = local.xyz;
     v_t = t;
     v_layer = layer;
     v_uv = vec2(a_pos.x, 1.0 - a_pos.y);
@@ -62,55 +67,345 @@ void main() {
 }
 """
 
+# 3D gradient noise (Perlin-style, arithmetic hash, no lookup textures) and fractional Brownian motion.
+# Procedural materials sample these at the text-local position, so patterns run continuously across the
+# face and around the side walls of the layer stack.
+NOISE_GLSL = """
+vec3 hash33(vec3 p) {
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return -1.0 + 2.0 * fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// Roughly in [-1, 1], zero at integer lattice points, smooth (quintic fade) everywhere.
+float gradient_noise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float n000 = dot(hash33(i), f);
+    float n100 = dot(hash33(i + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));
+    float n010 = dot(hash33(i + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));
+    float n110 = dot(hash33(i + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));
+    float n001 = dot(hash33(i + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));
+    float n101 = dot(hash33(i + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));
+    float n011 = dot(hash33(i + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));
+    float n111 = dot(hash33(i + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));
+    return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+               mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+}
+
+// Octaves of noise at doubling frequency and halving amplitude, normalized back to roughly [-1, 1].
+float fbm(vec3 p, int octaves) {
+    float sum = 0.0;
+    float amplitude = 1.0;
+    float total = 0.0;
+    for (int i = 0; i < octaves; ++i) {
+        sum += amplitude * gradient_noise(p);
+        total += amplitude;
+        p = p * 2.03 + vec3(17.1, 31.7, 7.3);  // offset so octaves don't share lattice zeros
+        amplitude *= 0.5;
+    }
+    return sum / total;
+}
+"""
+
+# Shared by the depth pre-pass and the shading pass so both derive exactly the same coverage.
+MASK_COVERAGE = """
+// Cap the mip level: grazing-angle layers would otherwise average thin strokes below the 0.5 cutoff.
+float mask_coverage(sampler2D mask, vec2 uv, out vec4 m) {
+    float lod = min(textureQueryLod(mask, uv).y, 1.5);
+    m = textureLod(mask, uv, lod);
+    float edge = max(fwidth(m.a), 1e-4);
+    return clamp((m.a - 0.5) / edge + 0.5, 0.0, 1.0);
+}
+"""
+
+# Depth pre-pass: finds the visible slice at each pixel (color writes are off).
+LAYER_DEPTH_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+out vec4 frag;
+""" + MASK_COVERAGE + """
+void main() {
+    vec4 m;
+    float coverage = mask_coverage(u_mask, v_uv, m);
+    if (coverage <= 0.0) discard;
+    frag = vec4(0.0, 0.0, 0.0, coverage);  // alpha drives alpha-to-coverage, as in the shading pass
+}
+"""
+
 LAYER_STACK_FS = """
 #version 410 core
 in vec2 v_uv;
 in vec3 v_pos;
+in vec3 v_local;
 in float v_t;
 flat in int v_layer;
 uniform sampler2D u_mask;
 uniform mat4 u_model;
 uniform int u_layers;
 uniform vec3 u_light_dir;
-uniform vec3 u_light_color;
-uniform vec3 u_ambient;
-uniform vec3 u_face_color;
-uniform vec3 u_side_color;
+uniform vec3 u_light_color;   // linear
+uniform vec3 u_ambient;       // linear
+uniform vec3 u_face_color;    // linear
+uniform vec3 u_side_color;    // linear
 uniform float u_side_darkening;
 uniform float u_bevel_strength;
-uniform float u_specular;
-uniform float u_shininess;
+uniform float u_metallic;
+uniform float u_roughness;
+uniform sampler2D u_environment;   // the background photo (sRGB), with mipmaps
+uniform bool u_has_environment;
+uniform float u_environment_lod;   // smallest mip level
+uniform float u_environment_strength;
+uniform int u_pattern;               // 0 none, 1 stone, 2 wood
+uniform vec3 u_secondary_color;      // linear
+uniform float u_texture_scale;       // em
+uniform float u_texture_strength;
+uniform float u_bump_strength;
+uniform float u_grain_angle;         // radians
+uniform float u_varnish;
+uniform bool u_transmissive;         // glass: shows the backdrop, refracted
+uniform sampler2D u_backdrop;        // the viewport behind the text (background and shadow), with mipmaps
+uniform float u_backdrop_lod;        // smallest mip level
+uniform float u_absorption;
+uniform mat4 u_proj;
+uniform float u_depth;
+uniform float u_world_size;
 out vec4 frag;
+
+const float PI = 3.14159265359;
+const float GLASS_IOR = 1.5;
+// How far behind the surface (in em) the refracted ray meets the backdrop. A screen-space stand-in for the
+// unknown distance to the scene behind: larger values bend the view through the glass further.
+const float REFRACTION_DEPTH = 0.6;
+const int PATTERN_STONE = 1;
+const int PATTERN_WOOD = 2;
+
+vec3 srgb_to_linear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
+// The photo stands in for the surroundings: a sphere-map lookup on the reflection direction, blurred by
+// roughness via coarser mip levels. A surface facing the camera reflects the photo's center.
+vec3 environment(vec3 dir, float roughness) {
+    float m = 2.0 * sqrt(dir.x * dir.x + dir.y * dir.y + (dir.z + 1.0) * (dir.z + 1.0));
+    vec2 uv = dir.xy / max(m, 1e-4) + 0.5;
+    uv.y = 1.0 - uv.y;  // texture row 0 is the top of the photo
+    return srgb_to_linear(textureLod(u_environment, uv, roughness * u_environment_lod).rgb);
+}
+
+vec3 linear_to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+// Metallic-roughness microfacet shading (GGX distribution, Smith geometry, Schlick Fresnel).
+float distribution_ggx(float n_dot_h, float alpha) {
+    float a2 = alpha * alpha;
+    float d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+float geometry_smith(float n_dot_v, float n_dot_l, float roughness) {
+    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    return (n_dot_v / (n_dot_v * (1.0 - k) + k)) * (n_dot_l / (n_dot_l * (1.0 - k) + k));
+}
+
+vec3 fresnel_schlick(float cos_theta, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(1.0 - cos_theta, 5.0);
+}
+
+// Analytic fit of the pre-integrated environment BRDF (Karis, "Physically Based Shading on Mobile").
+vec2 environment_brdf(float n_dot_v, float roughness) {
+    vec4 r = roughness * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+    float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+""" + MASK_COVERAGE + NOISE_GLSL + """
+// Tilts a normal against a height field's gradient (both in the text's own space).
+vec3 perturb(vec3 n, vec3 gradient, float strength) {
+    return normalize(n - strength * (gradient - dot(gradient, n) * n));
+}
+
+// Fine pitting plus a gentle undulation.
+float stone_height(vec3 p) {
+    return 0.3 * fbm(p * 1.5, 2) + 0.7 * gradient_noise(p * 22.0) * 0.4;
+}
+
+// Granite/marble-like stone: subtle mottling, fine speckle, and thin veins in the secondary color along the
+// zero lines of a turbulent, domain-warped field. `p` is in pattern units. `relief` adds bump (see main).
+void stone_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
+    float mottling = fbm(p * 0.8, 3);
+    float speckle = gradient_noise(p * 22.0) + 0.5 * gradient_noise(p * 47.0);
+    vec3 warp = vec3(fbm(p * 0.5 + 3.1, 3), fbm(p * 0.5 + 7.7, 3), fbm(p * 0.5 + 1.3, 3));
+    float turbulence = fbm(p * 0.6 + 2.0 * warp, 4);
+    float vein = 1.0 - smoothstep(0.0, 0.035, abs(turbulence));
+    float strength = u_texture_strength;
+    albedo = u_face_color * (1.0 + 0.12 * mottling * strength + 0.18 * speckle * strength);
+    albedo = mix(albedo, u_secondary_color, clamp(vein * strength + max(-speckle - 0.6, 0.0) * strength, 0.0, 1.0));
+    roughness = clamp(roughness + 0.08 * speckle, 0.02, 1.0);
+    if (!relief) return;
+
+    const float e = 0.004;
+    float h = stone_height(p);
+    vec3 gradient = vec3(stone_height(p + vec3(e, 0.0, 0.0)) - h,
+                         stone_height(p + vec3(0.0, e, 0.0)) - h,
+                         stone_height(p + vec3(0.0, 0.0, e)) - h) / e;
+    n = perturb(n, gradient, 0.06 * u_bump_strength);
+}
+
+// Growth rings: distance from a trunk axis that runs along the grain, slightly below and behind the text, so
+// the face shows gentle arcs. Returns the dark latewood amount; `streak` is the fine fibre grain. `p` in em.
+float wood_latewood(vec3 p, out float streak) {
+    vec3 axis = vec3(cos(u_grain_angle), sin(u_grain_angle), 0.0);
+    vec3 side = vec3(-axis.y, axis.x, 0.0);
+    vec3 q = p - (side * -2.5 + vec3(0.0, 0.0, -1.2));
+    float along = dot(q, axis);
+    vec2 across = vec2(dot(q, side), q.z);
+    float distortion = fbm(vec3(along * 0.2, across * 1.2), 3);
+    float rings = (length(across) + 0.12 * distortion) / u_texture_scale;
+    float ring = fract(rings);
+    streak = gradient_noise(vec3(along * 2.0, across * (14.0 / u_texture_scale)))
+        + 0.5 * gradient_noise(vec3(along * 5.0, across * (40.0 / u_texture_scale)));
+    // Each year differs a little in tone; within a year, earlywood darkens gradually into a thin latewood band.
+    float year_tone = 0.25 * gradient_noise(vec3(floor(rings) * 0.37, 0.5, 0.5));
+    float latewood = 0.35 * smoothstep(0.2, 0.75, ring) + 0.65 * smoothstep(0.75, 0.9, ring) * (1.0 - smoothstep(0.93, 1.0, ring));
+    return clamp(latewood + year_tone, 0.0, 1.0);
+}
+
+void wood_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
+    float streak;
+    float latewood = wood_latewood(p, streak);
+    float strength = u_texture_strength;
+    albedo = mix(u_face_color, u_secondary_color, clamp(latewood * strength + 0.22 * streak * strength, 0.0, 1.0));
+    roughness = clamp(roughness + 0.15 * latewood, 0.02, 1.0);
+    if (!relief) return;
+
+    // Latewood stands slightly proud of the softer earlywood.
+    const float e = 0.002;
+    float unused;
+    vec3 gradient = vec3(wood_latewood(p + vec3(e, 0.0, 0.0), unused) - latewood,
+                         wood_latewood(p + vec3(0.0, e, 0.0), unused) - latewood,
+                         wood_latewood(p + vec3(0.0, 0.0, e), unused) - latewood) / e;
+    n = perturb(n, gradient, 0.01 * u_bump_strength);
+}
+
+// Reflection off the glass surface: the photo (or ambient) and the light's highlight, both weighted by
+// a dielectric's Fresnel term.
+vec3 dielectric_reflection(vec3 n, vec3 v, vec3 l, vec3 h, float roughness) {
+    float n_dot_l = max(dot(n, l), 0.0);
+    float n_dot_v = max(dot(n, v), 1e-4);
+    float specular = distribution_ggx(max(dot(n, h), 0.0), max(roughness * roughness, 1e-3))
+        * geometry_smith(n_dot_v, n_dot_l, roughness)
+        * fresnel_schlick(max(dot(h, v), 0.0), vec3(0.04)).x / (4.0 * n_dot_v * n_dot_l + 1e-4);
+    vec2 env = environment_brdf(n_dot_v, roughness);
+    vec3 reflected = u_has_environment
+        ? environment(reflect(-v, n), roughness) * u_environment_strength
+        : u_ambient;
+    return specular * PI * u_light_color * n_dot_l + reflected * (0.04 * env.x + env.y);
+}
+
+// Glass: the backdrop seen along the refracted ray, blurred by roughness (frost) and tinted by Beer-Lambert
+// absorption over the thickness the ray crosses, plus the surface reflection. Fresnel splits the two, so
+// grazing angles reflect more and transmit less.
+vec3 glass(vec3 n, vec3 v, vec3 l, vec3 h, vec3 tint, float roughness) {
+    vec3 refracted = refract(-v, n, 1.0 / GLASS_IOR);
+    vec4 clip = u_proj * vec4(v_pos + refracted * (REFRACTION_DEPTH * u_world_size), 1.0);
+    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, 0.0, 1.0);
+    vec3 behind = srgb_to_linear(textureLod(u_backdrop, uv, roughness * u_backdrop_lod).rgb);
+
+    // Thickness along the view: the extrusion depth, longer when looking through the slab at an angle.
+    vec3 view_local = normalize(transpose(mat3(u_model)) * v);
+    float path = u_depth / max(abs(view_local.z), 0.3);
+    vec3 transmittance = pow(max(tint, vec3(1e-3)), vec3(path * u_absorption));
+
+    float fresnel = fresnel_schlick(max(dot(n, v), 0.0), vec3(0.04)).x;
+    return behind * transmittance * (1.0 - fresnel) + dielectric_reflection(n, v, l, h, roughness);
+}
+
 void main() {
-    // Cap the mip level: grazing-angle layers would otherwise average thin strokes below the 0.5 cutoff.
-    float lod = min(textureQueryLod(u_mask, v_uv).y, 1.5);
-    vec4 m = textureLod(u_mask, v_uv, lod);
-    float edge = max(fwidth(m.a), 1e-4);
-    float coverage = clamp((m.a - 0.5) / edge + 0.5, 0.0, 1.0);
+    vec4 m;
+    float coverage = mask_coverage(u_mask, v_uv, m);
     if (coverage <= 0.0) discard;
 
     vec2 dir = m.rg * 2.0 - 1.0;
     vec3 n_local;
-    vec3 base;
+    vec3 albedo;
+    float shade;  // the layer stack's depth darkening, applied on top of any texture
     if (v_layer == 0) {
         n_local = normalize(vec3(dir * m.b * u_bevel_strength, 1.0));
-        base = u_face_color;
+        albedo = u_face_color;
+        shade = 1.0;
     } else if (v_layer == u_layers - 1) {
         n_local = vec3(0.0, 0.0, -1.0);
-        base = u_side_color * (1.0 - u_side_darkening);
+        albedo = u_side_color;
+        shade = 1.0 - u_side_darkening;
     } else {
         n_local = length(dir) > 0.01 ? normalize(vec3(dir, 0.0)) : vec3(0.0, 0.0, 1.0);
-        base = u_side_color * (1.0 - u_side_darkening * v_t);
+        albedo = u_side_color;
+        shade = 1.0 - u_side_darkening * v_t;
     }
+
+    float roughness = u_roughness;
+    vec3 coat_local = n_local;  // varnish fills the texture's relief, so the coat uses the smooth normal
+    // Relief only on the front and back faces: side walls are seen nearly edge-on, where bump barely shows,
+    // and with multisampling each wall pixel is shaded for several slices, so skipping it there saves ~22%.
+    bool relief = v_layer == 0 || v_layer == u_layers - 1;
+    if (u_pattern == PATTERN_STONE) {
+        stone_surface(v_local / u_texture_scale, relief, albedo, roughness, n_local);
+    } else if (u_pattern == PATTERN_WOOD) {
+        wood_surface(v_local, relief, albedo, roughness, n_local);
+    }
+    vec3 base = albedo * shade;
 
     vec3 n = normalize(mat3(u_model) * n_local);
     vec3 l = normalize(u_light_dir);
     vec3 v = normalize(-v_pos);
-    float diffuse = max(dot(n, l), 0.0);
     vec3 h = normalize(l + v);
-    float spec = diffuse > 0.0 ? pow(max(dot(n, h), 0.0), u_shininess) * u_specular : 0.0;
-    vec3 color = base * (u_ambient + u_light_color * diffuse) + u_light_color * spec;
-    frag = vec4(color, coverage);
+    float n_dot_l = max(dot(n, l), 0.0);
+    float n_dot_v = max(dot(n, v), 1e-4);
+    float alpha = max(roughness * roughness, 1e-3);
+
+    if (u_transmissive) {
+        frag = vec4(linear_to_srgb(glass(n, v, l, h, base, roughness)), coverage);
+        return;
+    }
+
+    vec3 f0 = mix(vec3(0.04), base, u_metallic);  // metals tint their reflection; dielectrics reflect ~4% white
+    vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
+    vec3 specular = distribution_ggx(max(dot(n, h), 0.0), alpha) * geometry_smith(n_dot_v, n_dot_l, roughness)
+        * f / (4.0 * n_dot_v * n_dot_l + 1e-4);
+    vec3 diffuse = (1.0 - f) * (1.0 - u_metallic) * base;
+    // Light intensity is scaled by PI so a white matte surface facing the light reaches exactly 1.
+    vec3 direct = (diffuse + specular * PI) * u_light_color * n_dot_l;
+
+    vec2 env = environment_brdf(n_dot_v, roughness);
+    vec3 reflected = u_has_environment
+        ? environment(reflect(-v, n), roughness) * u_environment_strength
+        : u_ambient;
+    vec3 ambient = u_ambient * (1.0 - u_metallic) * base + reflected * (f0 * env.x + env.y);
+    vec3 color = direct + ambient;
+
+    if (u_varnish > 0.0) {
+        // Clear coat: a smooth dielectric layer over the base. It reflects light and the photo, and dims
+        // the base by what it reflects.
+        const float coat_roughness = 0.08;
+        vec3 nc = normalize(mat3(u_model) * coat_local);
+        float nc_dot_l = max(dot(nc, l), 0.0);
+        float nc_dot_v = max(dot(nc, v), 1e-4);
+        float coat_fresnel = fresnel_schlick(nc_dot_v, vec3(0.04)).x;
+        float coat_specular = distribution_ggx(max(dot(nc, h), 0.0), coat_roughness * coat_roughness)
+            * geometry_smith(nc_dot_v, nc_dot_l, coat_roughness)
+            * fresnel_schlick(max(dot(h, v), 0.0), vec3(0.04)).x / (4.0 * nc_dot_v * nc_dot_l + 1e-4);
+        vec2 coat_env = environment_brdf(nc_dot_v, coat_roughness);
+        vec3 coat_reflected = u_has_environment
+            ? environment(reflect(-v, nc), coat_roughness) * u_environment_strength
+            : u_ambient;
+        vec3 coat = coat_specular * PI * u_light_color * nc_dot_l + coat_reflected * (0.04 * coat_env.x + coat_env.y);
+        color = mix(color, color * (1.0 - coat_fresnel) + coat, u_varnish);
+    }
+    frag = vec4(linear_to_srgb(color), coverage);
 }
 """
 
@@ -306,3 +601,4 @@ void main() {
     frag = vec4(marker > horizon ? u_accent : u_color, a);
 }
 """
+

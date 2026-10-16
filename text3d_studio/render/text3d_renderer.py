@@ -3,24 +3,35 @@
 import math
 
 import numpy as np
+from OpenGL import GL
 
 from .. import ground as ground_model
 from .. import math3d
-from ..lighting import LightingState
+from ..lighting import LightingState, srgb_to_linear
 from ..model import Scene
 from ..text_raster import GlyphRaster
 from . import shaders
 from .gl_utils import ShaderProgram, Texture2D, TriangleBuffer, UnitQuad
 
 IDENTITY_GL = math3d.to_gl(math3d.identity())
+PATTERNS = {"stone": 1, "wood": 2}  # material kinds with a procedural texture (see LAYER_STACK_FS)
 MAX_LAYERS = 2048
 LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on screen
+
+# Depth pre-pass: draw the stack once into depth only, then shade with GL_EQUAL so each pixel is shaded for
+# its visible slice rather than every slice behind it. Measured gain is modest on Apple GPUs, which already
+# reject most hidden slices: ~11% for stone without MSAA, ~0 with it, where the real cost is side-wall pixels
+# whose samples belong to several slices. (An early synthetic benchmark suggested 2x; real textures did not.)
+# The shading pass keeps its alpha test. False renders the stack in one pass.
+DEPTH_PREPASS = True
 
 
 class Text3DRenderer:
     def __init__(self, quad: UnitQuad):
         self.quad = quad
+        self.depth_prepass = DEPTH_PREPASS
         self.beauty = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_STACK_FS)
+        self.depth = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_DEPTH_FS)
         self.cap_shadow = ShaderProgram(shaders.LAYER_STACK_VS, shaders.SHADOW_FS)
         self.wall_shadow = ShaderProgram(shaders.WALL_VS, shaders.SHADOW_FS)
         self.mask = Texture2D(mipmaps=True)
@@ -37,22 +48,60 @@ class Text3DRenderer:
     def has_text(self) -> bool:
         return self.raster is not None
 
-    def draw_beauty(self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int) -> None:
-        program = self.beauty
+    def draw_beauty(
+        self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int,
+        environment: Texture2D | None = None, backdrop: Texture2D | None = None,
+    ) -> None:
+        """`environment`: the background photo to reflect, or None to reflect the ambient color instead.
+        `backdrop`: what is behind the text in this viewport, for transmissive materials to show through."""
         layers = self.effective_layers(scene, viewport_height)
+        if self.depth_prepass:
+            self._bind_common(self.depth, scene, proj, IDENTITY_GL, lighting)
+            self.depth.set_int("u_layers", layers)
+            GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+            self.quad.draw(layers)
+            GL.glDepthFunc(GL.GL_EQUAL)
+            GL.glDepthMask(GL.GL_FALSE)
+
+        # Coverage drives antialiasing but must not reach the stored alpha: Qt composites the canvas as
+        # premultiplied color, so alpha < 1 under bright pixels overflows into wrapped colors.
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        program = self.beauty
         self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
         m = scene.material
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
-        program.set_vec3("u_face_color", m.face_color)
-        program.set_vec3("u_side_color", m.side_color)
+        program.set_vec3("u_face_color", srgb_to_linear(m.face_color))
+        program.set_vec3("u_side_color", srgb_to_linear(m.side_color))
         program.set_float("u_side_darkening", m.side_darkening)
         program.set_float("u_bevel_strength", m.bevel_strength)
-        program.set_float("u_specular", m.specular)
-        program.set_float("u_shininess", m.shininess)
+        program.set_float("u_metallic", m.metallic)
+        program.set_float("u_roughness", m.roughness)
+        program.set_int("u_pattern", PATTERNS.get(m.kind, 0))
+        program.set_vec3("u_secondary_color", srgb_to_linear(m.secondary_color))
+        program.set_float("u_texture_scale", m.texture_scale)
+        program.set_float("u_texture_strength", m.texture_strength)
+        program.set_float("u_bump_strength", m.bump_strength)
+        program.set_float("u_grain_angle", math.radians(m.grain_angle))
+        program.set_float("u_varnish", m.varnish)
+        program.set_float("u_absorption", m.absorption)
+        program.set_int("u_transmissive", int(backdrop is not None))
+        if backdrop is not None:
+            backdrop.bind(2)
+            program.set_int("u_backdrop", 2)
+            program.set_float("u_backdrop_lod", backdrop.max_lod)
+        program.set_int("u_has_environment", int(environment is not None))
+        if environment is not None:
+            environment.bind(1)
+            program.set_int("u_environment", 1)
+            program.set_float("u_environment_lod", environment.max_lod)
+            program.set_float("u_environment_strength", scene.light.reflection_strength)
         self.quad.draw(layers)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDepthMask(GL.GL_TRUE)
 
     def draw_shadow_caster(self, scene: Scene, proj: np.ndarray, lighting: LightingState) -> None:
         """Front and back slices plus the traced side walls form a closed caster for any light angle."""
@@ -106,6 +155,7 @@ class Text3DRenderer:
 
     def delete(self) -> None:
         self.beauty.delete()
+        self.depth.delete()
         self.cap_shadow.delete()
         self.wall_shadow.delete()
         self.mask.delete()

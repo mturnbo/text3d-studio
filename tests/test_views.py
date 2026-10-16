@@ -863,3 +863,127 @@ def test_horizon_drag_across_the_text_and_back_returns_it(vm):
         mouse(canvas, QEvent.Type.MouseMove, (400, row), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
     mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 250), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
     np.testing.assert_allclose((vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size), before, atol=1e-9)
+
+
+# ----- Materials ----------------------------------------------------------------------------------
+
+
+def material_combo(panel):
+    from PyQt6.QtWidgets import QComboBox
+
+    return panel.findChild(QComboBox, "material.kind")
+
+
+def test_material_dropdown_lists_every_kind(vm):
+    from text3d_studio.materials import KINDS
+    from text3d_studio.views.control_panel import ControlPanel
+
+    combo = material_combo(ControlPanel(vm))
+    assert [combo.itemData(i) for i in range(combo.count())] == list(KINDS)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Metal", "Plastic", "Stone", "Wood", "Glass"]
+    assert combo.currentData() == "metal"
+
+
+def test_choosing_a_material_applies_its_preset_and_updates_sliders(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    combo = material_combo(panel)
+    combo.activated.emit(combo.findData("stone"))
+    assert vm.scene.material.kind == "stone"
+    assert panel.findChild(SliderRow, "material.roughness").spin.value() == 0.85
+
+
+def test_dropdown_follows_the_model(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("glass")
+    assert material_combo(panel).currentData() == "glass"
+
+
+def material_row_visible(panel, field):
+    from PyQt6.QtWidgets import QWidget
+
+    return panel.findChild(QWidget, f"material.{field}").isVisibleTo(panel)
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+def test_each_material_shows_its_controls_and_hides_metallic(vm, kind):
+    from text3d_studio.views.control_panel import MATERIAL_CONTROLS, ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material(kind)
+    assert not material_row_visible(panel, "metallic")
+    for field in MATERIAL_CONTROLS[kind]:
+        assert material_row_visible(panel, field), field
+
+
+def test_glass_relabels_its_colors_and_others_restore_them(vm):
+    from PyQt6.QtWidgets import QWidget
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    tint = panel.findChild(QWidget, "material.face_color")
+    form = tint.parentWidget().layout()
+    vm.apply_material("glass")
+    assert form.labelForField(tint).text() == "Tint"
+    vm.apply_material("plastic")
+    assert form.labelForField(tint).text() == "Face color"
+
+
+def test_every_material_control_table_covers_all_kinds_with_real_fields():
+    import dataclasses
+
+    from text3d_studio.materials import KINDS
+    from text3d_studio.model import MaterialParams
+    from text3d_studio.views.control_panel import MATERIAL_CONTROLS, MATERIAL_LABELS
+
+    fields = {f.name for f in dataclasses.fields(MaterialParams)}
+    assert set(MATERIAL_CONTROLS) == set(KINDS)
+    for kind, shown in MATERIAL_CONTROLS.items():
+        assert set(shown) <= fields - {"kind", "metallic"}, kind
+        assert set(MATERIAL_LABELS.get(kind, {})) <= set(shown), kind
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "glass"])
+def test_untextured_materials_hide_texture_controls(vm, kind):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material(kind)
+    for field in ("secondary_color", "texture_scale", "texture_strength", "grain_angle", "bump_strength", "varnish"):
+        assert not material_row_visible(panel, field), field
+
+
+def test_glass_shows_frost_and_tint_depth_and_other_kinds_hide_them(vm):
+    from PyQt6.QtWidgets import QWidget
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("glass")
+    assert material_row_visible(panel, "absorption")
+    roughness = panel.findChild(QWidget, "material.roughness")
+    assert roughness.parentWidget().layout().labelForField(roughness).text() == "Frost"
+    for kind in ("metal", "plastic", "stone", "wood"):
+        vm.apply_material(kind)
+        assert not material_row_visible(panel, "absorption"), kind
+        assert roughness.parentWidget().layout().labelForField(roughness).text() == "Roughness", kind
+
+
+def test_wood_shows_grain_controls_and_hides_side_color(vm):
+    from PyQt6.QtWidgets import QWidget
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("wood")
+    assert material_row_visible(panel, "grain_angle") and material_row_visible(panel, "varnish")
+    assert not material_row_visible(panel, "side_color")
+    secondary = panel.findChild(QWidget, "material.secondary_color")
+    assert secondary.parentWidget().layout().labelForField(secondary).text() == "Dark wood"
+    vm.apply_material("stone")
+    assert secondary.parentWidget().layout().labelForField(secondary).text() == "Vein color"
+    assert not material_row_visible(panel, "grain_angle")
