@@ -223,8 +223,8 @@ float stone_height(vec3 p) {
 }
 
 // Granite/marble-like stone: subtle mottling, fine speckle, and thin veins in the secondary color along the
-// zero lines of a turbulent, domain-warped field. `p` is in pattern units.
-void stone_surface(vec3 p, inout vec3 albedo, inout float roughness, inout vec3 n) {
+// zero lines of a turbulent, domain-warped field. `p` is in pattern units. `relief` adds bump (see main).
+void stone_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
     float mottling = fbm(p * 0.8, 3);
     float speckle = gradient_noise(p * 22.0) + 0.5 * gradient_noise(p * 47.0);
     vec3 warp = vec3(fbm(p * 0.5 + 3.1, 3), fbm(p * 0.5 + 7.7, 3), fbm(p * 0.5 + 1.3, 3));
@@ -234,6 +234,7 @@ void stone_surface(vec3 p, inout vec3 albedo, inout float roughness, inout vec3 
     albedo = u_face_color * (1.0 + 0.12 * mottling * strength + 0.18 * speckle * strength);
     albedo = mix(albedo, u_secondary_color, clamp(vein * strength + max(-speckle - 0.6, 0.0) * strength, 0.0, 1.0));
     roughness = clamp(roughness + 0.08 * speckle, 0.02, 1.0);
+    if (!relief) return;
 
     const float e = 0.004;
     float h = stone_height(p);
@@ -262,12 +263,13 @@ float wood_latewood(vec3 p, out float streak) {
     return clamp(latewood + year_tone, 0.0, 1.0);
 }
 
-void wood_surface(vec3 p, inout vec3 albedo, inout float roughness, inout vec3 n) {
+void wood_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
     float streak;
     float latewood = wood_latewood(p, streak);
     float strength = u_texture_strength;
     albedo = mix(u_face_color, u_secondary_color, clamp(latewood * strength + 0.22 * streak * strength, 0.0, 1.0));
     roughness = clamp(roughness + 0.15 * latewood, 0.02, 1.0);
+    if (!relief) return;
 
     // Latewood stands slightly proud of the softer earlywood.
     const float e = 0.002;
@@ -303,10 +305,13 @@ void main() {
 
     float roughness = u_roughness;
     vec3 coat_local = n_local;  // varnish fills the texture's relief, so the coat uses the smooth normal
+    // Relief only on the front and back faces: side walls are seen nearly edge-on, where bump barely shows,
+    // and with multisampling each wall pixel is shaded for several slices, so skipping it there saves ~22%.
+    bool relief = v_layer == 0 || v_layer == u_layers - 1;
     if (u_pattern == PATTERN_STONE) {
-        stone_surface(v_local / u_texture_scale, albedo, roughness, n_local);
+        stone_surface(v_local / u_texture_scale, relief, albedo, roughness, n_local);
     } else if (u_pattern == PATTERN_WOOD) {
-        wood_surface(v_local, albedo, roughness, n_local);
+        wood_surface(v_local, relief, albedo, roughness, n_local);
     }
     vec3 base = albedo * shade;
 
