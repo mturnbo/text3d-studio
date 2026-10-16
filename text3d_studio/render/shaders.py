@@ -202,6 +202,7 @@ GRID_FS = """
 #version 410 core
 in vec2 v_ground;
 uniform float u_cell;
+uniform vec2 u_offset;
 uniform vec3 u_color;
 uniform vec3 u_accent;
 uniform float u_opacity;
@@ -224,7 +225,7 @@ float line(float value, float width) {
 }
 
 void main() {
-    vec2 cell = v_ground / u_cell;
+    vec2 cell = (v_ground - u_offset) / u_cell;
     vec2 cell_fw = fwidth(cell);
     vec2 to_line = fract(cell + 0.5) - 0.5;
     float grid = max(line(to_line.x, cell_fw.x, u_pixel_ratio), line(to_line.y, cell_fw.y, u_pixel_ratio));

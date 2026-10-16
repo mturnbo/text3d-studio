@@ -44,6 +44,8 @@ class GridParams:
 
     visible: bool = False
     cell_size: float = 1.0  # world units between grid lines
+    offset_x: float = 0.0  # slides the grid lines (not the ground) to line them up with floor seams
+    offset_z: float = 0.0
     opacity: float = 0.6
     color: Color = (0.85, 0.90, 1.0)
     accent_color: Color = (1.0, 0.70, 0.20)  # the text's footprint and the lanes it slides along

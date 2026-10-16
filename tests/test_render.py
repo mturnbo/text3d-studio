@@ -168,8 +168,9 @@ def render_preview(compositor, doc, with_grid):
     return np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1].copy()
 
 
-def grid_document(**overrides):
-    return make_document(grid={"visible": True, "opacity": 1.0}, shadow={"enabled": False}, **overrides)
+def grid_document(grid=None, **overrides):
+    grid = {"visible": True, "opacity": 1.0, **(grid or {})}
+    return make_document(grid=grid, shadow={"enabled": False}, **overrides)
 
 
 def test_grid_draws_lines_on_the_ground_only(compositor):
@@ -248,3 +249,11 @@ def test_preview_with_grid_still_exceeds_30_fps(compositor):
         grid.delete()
         target.delete()
     assert fps > 30, f"only {fps:.1f} FPS"
+
+
+def test_grid_offset_slides_lines_and_wraps_every_cell(compositor):
+    base = render_preview(compositor, grid_document(text={"content": ""}), True)
+    half = render_preview(compositor, grid_document(text={"content": ""}, grid={"offset_x": 0.5}), True)
+    whole = render_preview(compositor, grid_document(text={"content": ""}, grid={"offset_x": 1.0, "offset_z": -2.0}), True)
+    assert np.abs(base.astype(int) - half).max() > 50  # lines visibly moved
+    assert np.abs(base.astype(int) - whole).max() <= 1  # a whole-cell shift lands on the same lines (float rounding aside)
