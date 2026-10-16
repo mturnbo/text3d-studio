@@ -15,7 +15,8 @@ from .image_canvas import FIT_TOOL, GRID_TOOL, TEXT_TOOL, ImageCanvas
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
 
 TOOL_HINTS = {
-    TEXT_TOOL: "Left-drag: slide on ground · Right-drag: yaw · Wheel: scale · Ctrl/Cmd+wheel: distance",
+    TEXT_TOOL: "Drag: move · Shift: lock axis · Option/Alt: slide in perspective · Cmd/Ctrl or right-drag: yaw · "
+    "Wheel/pinch: scale",
     GRID_TOOL: "Drag horizon: tilt · Drag horizon ends: roll · Drag ground: shift lines · "
     "Right-drag: rotate grid · Wheel: cell size",
     FIT_TOOL: "Drag the four corners onto a rectangle in the photo (a tile, rug, table top) · "

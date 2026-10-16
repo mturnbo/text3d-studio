@@ -7,7 +7,7 @@ from collections import deque
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -22,6 +22,7 @@ from ..text_raster import rasterize_text
 from ..viewmodel import SceneViewModel
 
 TEXT_DEBOUNCE_MS = 60
+MAX_TEXT_DISTANCE = 150.0  # a plain drag won't push the text further than this (the Position Z range)
 ROTATE_DEG_PER_PX = 0.4
 WHEEL_SCALE_STEP = 1.06
 TEXT_TOOL = "text"
@@ -117,6 +118,19 @@ class FitHandlesOverlay(QWidget):
         painter.end()
 
 
+class PinchFilter(QObject):
+    """Turns trackpad pinches (macOS native zoom gestures) into scale factors."""
+
+    pinched = pyqtSignal(float)
+
+    def eventFilter(self, watched, event) -> bool:
+        if (event.type() == QEvent.Type.NativeGesture
+                and event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture):
+            self.pinched.emit(1.0 + event.value())  # value() is the change in magnification since the last event
+            return True
+        return False
+
+
 class ImageCanvas(QOpenGLWidget):
     fps_changed = pyqtSignal(float)
     error = pyqtSignal(str)
@@ -132,9 +146,11 @@ class ImageCanvas(QOpenGLWidget):
         self.grid_renderer: GridRenderer | None = None
         self._glyph_dirty = True
         self._background_dirty = True
-        self._drag_origin: QPointF | None = None
+        self._drag_origin: QPointF | None = None  # previous cursor position (yaw drags are incremental)
+        self._drag_press: QPointF | None = None
+        self._drag_mode: str | None = None  # "move", "slide" or "yaw", chosen by the button and modifiers on press
         self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
-        self._drag_text_start: tuple[float, float] | None = None
+        self._drag_transform = None  # the text's placement on press
         self.tool = TEXT_TOOL  # editor state, not part of the scene
         self._grid_drag: str | None = None  # "tilt", "roll", "shift" or "rotate" while dragging in the grid tool
         self._roll_pivot: tuple[float, float] | None = None
@@ -165,6 +181,9 @@ class ImageCanvas(QOpenGLWidget):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setAcceptDrops(True)
         self.setMouseTracking(True)  # hover feedback for the grid tool's handles
+        self.pinch_filter = PinchFilter(self)
+        self.pinch_filter.pinched.connect(self._scale_by)
+        self.installEventFilter(self.pinch_filter)
 
     # ----- GL lifecycle -------------------------------------------------------------------------
 
@@ -300,8 +319,9 @@ class ImageCanvas(QOpenGLWidget):
         self.tool_changed.emit(tool)
 
     # ----- Mouse interaction --------------------------------------------------------------------
-    # Left drag: slide the text along the ground   Right drag: yaw
-    # Wheel: scale                                 Ctrl/Cmd+wheel: move nearer/farther along the ground
+    # Drag: move the text on screen, keeping its on-screen size    Shift+drag: lock to horizontal/vertical
+    # Option/Alt+drag: slide along the ground in perspective        Cmd/Ctrl+drag or right drag: yaw
+    # Wheel or pinch: scale                                         Cmd/Ctrl+wheel: nearer/farther
 
     def mousePressEvent(self, event) -> None:
         if self.tool == GRID_TOOL:
@@ -312,14 +332,26 @@ class ImageCanvas(QOpenGLWidget):
             if self._pose_snapshot() != self._fit_settled:
                 self._capture_pose_base()  # something else moved the ground or text since the last fit
             return
-        self._drag_origin = event.position()
+        self._drag_origin = self._drag_press = event.position()
+        self._drag_mode = self._text_drag_mode(event)
         self._drag_ground_start = self.ground_point_at(event.position())
-        t = self.vm.scene.transform
-        self._drag_text_start = (t.x, t.z)
+        self._drag_transform = dataclasses.replace(self.vm.scene.transform)
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    @staticmethod
+    def _text_drag_mode(event) -> str:
+        # Qt reports macOS's Command key as ControlModifier and Option as AltModifier.
+        modifiers = event.modifiers()
+        if event.button() == Qt.MouseButton.RightButton or modifiers & Qt.KeyboardModifier.ControlModifier:
+            return "yaw"
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            return "slide"
+        return "move"
 
     def mouseReleaseEvent(self, event) -> None:
         self._drag_origin = None
+        self._drag_press = None
+        self._drag_mode = None
         self._drag_ground_start = None
         self._grid_drag = None
         self._fit_handle = None
@@ -345,32 +377,75 @@ class ImageCanvas(QOpenGLWidget):
         delta = event.position() - self._drag_origin
         self._drag_origin = event.position()
 
-        if event.buttons() & Qt.MouseButton.RightButton:
+        if self._drag_mode == "yaw":
             self.vm.nudge("transform", "rot_y", delta.x() * ROTATE_DEG_PER_PX)
-        elif event.buttons() & Qt.MouseButton.LeftButton:
-            self._slide_text_to(event.position())
+            return
+        position = event.position()
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            position = self._locked_to_axis(position)
+        if self._drag_mode == "slide":
+            self._slide_text_to(position)
+        else:
+            self._move_text_on_screen(position)
+
+    def _locked_to_axis(self, position: QPointF) -> QPointF:
+        """The cursor position with the smaller of its horizontal and vertical motion since the press removed."""
+        moved = position - self._drag_press
+        if abs(moved.x()) >= abs(moved.y()):
+            return QPointF(position.x(), self._drag_press.y())
+        return QPointF(self._drag_press.x(), position.y())
 
     def _slide_text_to(self, position: QPointF) -> None:
         """Moves the text so the ground point grabbed on press stays under the cursor."""
         current = self.ground_point_at(position)
         if self._drag_ground_start is None or current is None:
             return  # grabbed or dragged above the horizon: there is no ground there
-        start_x, start_z = self._drag_text_start
-        self.vm.set("transform", "x", start_x + current[0] - self._drag_ground_start[0])
-        self.vm.set("transform", "z", start_z + current[1] - self._drag_ground_start[1])
+        start = self._drag_transform
+        self.vm.set("transform", "x", start.x + current[0] - self._drag_ground_start[0])
+        self.vm.set("transform", "z", start.z + current[1] - self._drag_ground_start[1])
+
+    def _move_text_on_screen(self, position: QPointF) -> None:
+        """Moves the text by the cursor's on-screen motion, keeping its on-screen size.
+
+        The text's anchor moves by the same pixels as the cursor and lands on the ground under that pixel; the
+        size scales with the anchor's change in distance, so dragging up moves the text up rather than shrinking
+        it into the distance. Stops where the anchor would leave the ground or go past MAX_TEXT_DISTANCE.
+        """
+        if self._drag_ground_start is None:
+            return  # pressed on the sky
+        scene = self.vm.scene
+        start = self._drag_transform
+        _, _, rect_w, rect_h = self._image_rect()
+        anchor = ground_model.text_position(scene.ground, start)
+        anchor_px = math3d.project_to_image(anchor, scene.camera.fov, (rect_w, rect_h))
+        if anchor_px is None:
+            return
+        moved = position - self._drag_press
+        ray = math3d.image_ray(
+            (anchor_px[0] + moved.x(), anchor_px[1] + moved.y()), scene.camera.fov, (rect_w, rect_h)
+        )
+        hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), ray, ground_model.ground_plane(scene.ground))
+        if hit is None or np.linalg.norm(hit) > MAX_TEXT_DISTANCE:
+            return
+        x, z = ground_model.world_to_ground(scene.ground, hit)
+        self.vm.set("transform", "x", x)
+        self.vm.set("transform", "z", z)
+        self.vm.set("transform", "size", start.size * float(np.linalg.norm(hit) / np.linalg.norm(anchor)))
 
     def wheelEvent(self, event) -> None:
         steps = event.angleDelta().y() / 120.0
-        if self.tool == FIT_TOOL:
-            return
-        if self.tool == GRID_TOOL:
-            cell = self.vm.scene.grid.cell_size * WHEEL_SCALE_STEP**steps
-            self.vm.set("grid", "cell_size", float(np.clip(cell, MIN_CELL, MAX_CELL)))
-            return
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        if self.tool == TEXT_TOOL and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.vm.nudge("transform", "z", steps * 0.5)
         else:
-            self.vm.set("transform", "size", self.vm.scene.transform.size * WHEEL_SCALE_STEP**steps)
+            self._scale_by(WHEEL_SCALE_STEP**steps)
+
+    def _scale_by(self, factor: float) -> None:
+        """Scales the text in the text tool and the grid cells in the grid tool."""
+        if self.tool == GRID_TOOL:
+            cell = self.vm.scene.grid.cell_size * factor
+            self.vm.set("grid", "cell_size", float(np.clip(cell, MIN_CELL, MAX_CELL)))
+        elif self.tool == TEXT_TOOL:
+            self.vm.set("transform", "size", self.vm.scene.transform.size * factor)
 
     # ----- Grid tool --------------------------------------------------------------------------
     # Drag the horizon's middle: tilt   Drag its outer ends: roll around its center
