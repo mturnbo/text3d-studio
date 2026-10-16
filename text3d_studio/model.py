@@ -39,6 +39,17 @@ class GroundParams:
 
 
 @dataclass
+class GridParams:
+    """Editor overlay drawn on the ground plane. Never part of an export."""
+
+    visible: bool = False
+    cell_size: float = 1.0  # world units between grid lines
+    opacity: float = 0.6
+    color: Color = (0.85, 0.90, 1.0)
+    accent_color: Color = (1.0, 0.70, 0.20)  # the text's footprint and the lanes it slides along
+
+
+@dataclass
 class MaterialParams:
     face_color: Color = (0.92, 0.78, 0.45)
     side_color: Color = (0.70, 0.52, 0.25)
@@ -77,6 +88,7 @@ class Scene:
     text: TextParams = field(default_factory=TextParams)
     transform: TransformParams = field(default_factory=TransformParams)
     ground: GroundParams = field(default_factory=GroundParams)
+    grid: GridParams = field(default_factory=GridParams)
     material: MaterialParams = field(default_factory=MaterialParams)
     light: LightParams = field(default_factory=LightParams)
     shadow: ShadowParams = field(default_factory=ShadowParams)
