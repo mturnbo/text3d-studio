@@ -87,7 +87,8 @@ def test_empty_state_is_centered_on_canvas(window, qapp):
 
 def test_toolbar_shares_open_and_export_actions_with_file_menu(window):
     buttons = [a for a in window.toolbar.actions() if not a.isSeparator()]
-    assert buttons == [window.open_action, window.export_action, window.grid_action]
+    tools = list(window.tool_actions.values())
+    assert buttons == [window.open_action, window.export_action, window.grid_action, *tools]
     file_menu = window.menuBar().actions()[0].menu()
     assert window.open_action in file_menu.actions()
     assert window.export_action in file_menu.actions()
@@ -543,3 +544,52 @@ def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
     QTest.keyClick(edit, Qt.Key.Key_G)
     assert edit.text() == "HELLOg"
     assert not window.vm.scene.grid.visible
+
+
+
+# ----- Tools ----------------------------------------------------------------------------------------
+
+
+def test_text_tool_is_active_by_default(window):
+    from text3d_studio.views.image_canvas import TEXT_TOOL
+
+    assert window.canvas.tool == TEXT_TOOL
+    assert window.tool_actions[TEXT_TOOL].isChecked()
+
+
+def test_choosing_grid_tool_shows_grid_and_updates_hint(window):
+    from text3d_studio.views.image_canvas import GRID_TOOL, TEXT_TOOL
+    from text3d_studio.views.main_window import TOOL_HINTS
+
+    window.tool_actions[GRID_TOOL].trigger()
+    assert window.canvas.tool == GRID_TOOL
+    assert window.vm.scene.grid.visible
+    assert not window.tool_actions[TEXT_TOOL].isChecked()
+    assert window.hint_label.text() == TOOL_HINTS[GRID_TOOL]
+
+
+def test_tool_shortcuts(window):
+    from text3d_studio.views.image_canvas import GRID_TOOL, TEXT_TOOL
+
+    assert window.tool_actions[TEXT_TOOL].shortcut() == QKeySequence("V")
+    assert window.tool_actions[GRID_TOOL].shortcut() == QKeySequence("P")
+
+
+def test_switching_back_to_text_tool_keeps_grid_visible(window):
+    from text3d_studio.views.image_canvas import GRID_TOOL, TEXT_TOOL
+
+    window.canvas.set_tool(GRID_TOOL)
+    window.canvas.set_tool(TEXT_TOOL)
+    assert window.tool_actions[TEXT_TOOL].isChecked()
+    assert window.vm.scene.grid.visible
+
+
+def test_text_drags_do_nothing_in_grid_tool(vm):
+    from text3d_studio.views.image_canvas import GRID_TOOL
+
+    canvas = sized_canvas(vm)
+    canvas.set_tool(GRID_TOOL)
+    before = dict(vars(vm.scene.transform))
+    drag(canvas, text_anchor_on_screen(canvas), (600, 450))
+    drag(canvas, (400, 300), (480, 300), Qt.MouseButton.RightButton)
+    assert vars(vm.scene.transform) == before

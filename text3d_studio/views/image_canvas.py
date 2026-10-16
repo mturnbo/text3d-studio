@@ -23,6 +23,8 @@ from ..viewmodel import SceneViewModel
 TEXT_DEBOUNCE_MS = 60
 ROTATE_DEG_PER_PX = 0.4
 WHEEL_SCALE_STEP = 1.06
+TEXT_TOOL = "text"
+GRID_TOOL = "grid"
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
 
 
@@ -69,6 +71,7 @@ class ImageCanvas(QOpenGLWidget):
     error = pyqtSignal(str)
     open_requested = pyqtSignal()
     file_dropped = pyqtSignal(str)
+    tool_changed = pyqtSignal(str)
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -80,6 +83,7 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_origin: QPointF | None = None
         self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
         self._drag_text_start: tuple[float, float] | None = None
+        self.tool = TEXT_TOOL  # editor state, not part of the scene
         self._frame_times: deque[float] = deque(maxlen=30)
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
@@ -211,11 +215,23 @@ class ImageCanvas(QOpenGLWidget):
         event.acceptProposedAction()
         self.file_dropped.emit(path)
 
+    # ----- Tools --------------------------------------------------------------------------------
+
+    def set_tool(self, tool: str) -> None:
+        if tool == self.tool:
+            return
+        self.tool = tool
+        if tool == GRID_TOOL:
+            self.vm.set("grid", "visible", True)  # adjusting an invisible grid makes no sense
+        self.tool_changed.emit(tool)
+
     # ----- Mouse interaction --------------------------------------------------------------------
     # Left drag: slide the text along the ground   Right drag: yaw
     # Wheel: scale                                 Ctrl/Cmd+wheel: move nearer/farther along the ground
 
     def mousePressEvent(self, event) -> None:
+        if self.tool != TEXT_TOOL:
+            return
         self._drag_origin = event.position()
         self._drag_ground_start = self.ground_point_at(event.position())
         t = self.vm.scene.transform
@@ -248,6 +264,8 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.set("transform", "z", start_z + current[1] - self._drag_ground_start[1])
 
     def wheelEvent(self, event) -> None:
+        if self.tool != TEXT_TOOL:
+            return
         steps = event.angleDelta().y() / 120.0
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.vm.nudge("transform", "z", steps * 0.5)
