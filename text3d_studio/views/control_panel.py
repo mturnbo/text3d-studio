@@ -5,6 +5,7 @@ from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDoubleSpinBox,
     QFontComboBox,
     QFormLayout,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV
+from ..materials import KINDS
 from ..viewmodel import SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
@@ -167,6 +169,8 @@ class ControlPanel(QScrollArea):
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
             if section == "text":
                 self._add_text_inputs(form)
+            if section == "material":
+                self._add_material_picker(form)
             for field, label in CHECKBOXES.get(section, []):
                 self._add_checkbox(form, section, field, label)
             for field, label, lo, hi, decimals in SLIDERS.get(section, []):
@@ -209,6 +213,21 @@ class ControlPanel(QScrollArea):
             styles.addWidget(box)
         styles.addStretch(1)
         form.addRow("Style", styles)
+
+    def _add_material_picker(self, form: QFormLayout) -> None:
+        combo = QComboBox()
+        combo.setObjectName("material.kind")
+        for kind in KINDS:
+            combo.addItem(kind.capitalize(), kind)
+
+        def set_kind(kind: str) -> None:
+            _set_quietly(combo, combo.setCurrentIndex, combo.findData(kind))
+
+        set_kind(self.vm.get("material", "kind"))
+        self._setters[("material", "kind")] = set_kind
+        # `activated` fires only on user choice; picking the current material again resets it to its preset.
+        combo.activated.connect(lambda index: self.vm.apply_material(combo.itemData(index)))
+        form.addRow("Material", combo)
 
     def _add_checkbox(self, form, section, field, label) -> None:
         box = QCheckBox(label)

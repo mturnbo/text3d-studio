@@ -863,3 +863,40 @@ def test_horizon_drag_across_the_text_and_back_returns_it(vm):
         mouse(canvas, QEvent.Type.MouseMove, (400, row), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
     mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 250), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
     np.testing.assert_allclose((vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size), before, atol=1e-9)
+
+
+# ----- Materials ----------------------------------------------------------------------------------
+
+
+def material_combo(panel):
+    from PyQt6.QtWidgets import QComboBox
+
+    return panel.findChild(QComboBox, "material.kind")
+
+
+def test_material_dropdown_lists_every_kind(vm):
+    from text3d_studio.materials import KINDS
+    from text3d_studio.views.control_panel import ControlPanel
+
+    combo = material_combo(ControlPanel(vm))
+    assert [combo.itemData(i) for i in range(combo.count())] == list(KINDS)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Metal", "Plastic", "Stone", "Wood", "Glass"]
+    assert combo.currentData() == "metal"
+
+
+def test_choosing_a_material_applies_its_preset_and_updates_sliders(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    combo = material_combo(panel)
+    combo.activated.emit(combo.findData("stone"))
+    assert vm.scene.material.kind == "stone"
+    assert panel.findChild(SliderRow, "material.roughness").spin.value() == 0.85
+
+
+def test_dropdown_follows_the_model(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("glass")
+    assert material_combo(panel).currentData() == "glass"
