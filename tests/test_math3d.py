@@ -263,3 +263,20 @@ def test_crossed_corners_are_rejected():
 def test_collinear_corners_are_rejected():
     with pytest.raises(ValueError):
         math3d.ground_pose_from_rectangle([(100, 500), (300, 500), (500, 500), (300, 300)], (1.0, 1.0), 40, IMAGE)
+
+
+def test_parallel_lines_converge_on_their_vanishing_point():
+    direction = np.array([0.4, -0.1, -1.0])
+    vp = math3d.vanishing_point(direction, 50, IMAGE)
+    for start in ([1.0, -2.0, -5.0], [-3.0, -2.0, -8.0]):
+        far = math3d.project_to_image(np.array(start) + 1e9 * direction, 50, IMAGE)
+        np.testing.assert_allclose(far, vp, atol=1e-3)
+
+
+def test_vanishing_point_ignores_line_direction_sign():
+    d = np.array([0.3, 0.0, 1.0])
+    np.testing.assert_allclose(math3d.vanishing_point(d, 40, IMAGE), math3d.vanishing_point(-d, 40, IMAGE))
+
+
+def test_direction_parallel_to_image_plane_has_no_vanishing_point():
+    assert math3d.vanishing_point((1.0, 0.5, 0.0), 40, IMAGE) is None
