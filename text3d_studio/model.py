@@ -30,6 +30,16 @@ class TransformParams:
 
 
 @dataclass
+class GroundParams:
+    """Pose of the ground plane relative to the camera. The text stands on this plane."""
+
+    pitch: float = 0.0  # tilt toward the camera; positive looks down onto the ground
+    roll: float = 0.0  # tilt around the view axis
+    yaw: float = 0.0  # spins the ground's grid axes (and the text placed on them) within the plane
+    height: float = 1.5  # camera height above the ground, in world units
+
+
+@dataclass
 class MaterialParams:
     face_color: Color = (0.92, 0.78, 0.45)
     side_color: Color = (0.70, 0.52, 0.25)
@@ -67,6 +77,7 @@ class CameraParams:
 class Scene:
     text: TextParams = field(default_factory=TextParams)
     transform: TransformParams = field(default_factory=TransformParams)
+    ground: GroundParams = field(default_factory=GroundParams)
     material: MaterialParams = field(default_factory=MaterialParams)
     light: LightParams = field(default_factory=LightParams)
     shadow: ShadowParams = field(default_factory=ShadowParams)
