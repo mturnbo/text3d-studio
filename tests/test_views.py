@@ -519,3 +519,27 @@ def test_grid_panel_controls_are_bound(vm):
     assert {("grid", f) for f in ("visible", "cell_size", "opacity", "color", "accent_color")} <= set(panel._setters)
     panel.findChild(SliderRow, "grid.cell_size").spin.setValue(2.5)
     assert vm.scene.grid.cell_size == 2.5
+
+
+def test_g_key_on_canvas_toggles_grid(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    window.show()
+    window.canvas.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(window.canvas, Qt.Key.Key_G)
+    assert window.vm.scene.grid.visible
+
+
+def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit
+
+    window.show()
+    edit = window.panel.findChild(QLineEdit)
+    edit.setFocus()
+    edit.end(False)
+    qapp.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_G)
+    assert edit.text() == "HELLOg"
+    assert not window.vm.scene.grid.visible
