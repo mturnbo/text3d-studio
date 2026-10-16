@@ -220,3 +220,47 @@ def test_ground_angles_accept_4x4_matrices():
     m = math3d.ground_rotation(12, 34, -5)
     assert m.shape == (4, 4)
     np.testing.assert_allclose(math3d.ground_angles_from_rotation(m), (12, 34, -5), atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "fov, pitch, yaw, roll",
+    [(50.0, 20.0, 35.0, 5.0), (30.0, 8.0, -60.0, -3.0), (75.0, 45.0, 10.0, 12.0), (40.0, 15.0, 0.0, 0.0)],
+)
+def test_ground_pose_recovered_from_projected_rectangle(fov, pitch, yaw, roll):
+    origin = np.array([0.5, -2.0, -10.0])
+    quad = ground_square(fov, pitch, yaw, roll, origin=origin, side=3.0)
+    rotation, corner = math3d.ground_pose_from_rectangle(quad, (3.0, 3.0), fov, IMAGE)
+    np.testing.assert_allclose(rotation, math3d.ground_rotation(pitch, yaw, roll)[:3, :3], atol=1e-7)
+    np.testing.assert_allclose(corner, origin, atol=1e-6)
+    np.testing.assert_allclose(math3d.ground_angles_from_rotation(rotation), (pitch, yaw, roll), atol=1e-5)
+
+
+def test_non_square_rectangle_recovers_scale_from_known_size():
+    frame = math3d.ground_rotation(18, 25, 0)[:3, :3]
+    origin = np.array([-1.0, -1.5, -8.0])
+    corners = [origin + frame @ np.array([a, 0, -b]) for a, b in ((0, 0), (4, 0), (4, 1.5), (0, 1.5))]
+    quad = [math3d.project_to_image(c, 45, IMAGE) for c in corners]
+    rotation, corner = math3d.ground_pose_from_rectangle(quad, (4.0, 1.5), 45, IMAGE)
+    np.testing.assert_allclose(corner, origin, atol=1e-6)
+    np.testing.assert_allclose(rotation, frame, atol=1e-7)
+
+
+def test_reversed_corner_order_keeps_up_toward_camera():
+    quad = ground_square(50)
+    rotation, _ = math3d.ground_pose_from_rectangle(quad[::-1], (3.0, 3.0), 50, IMAGE)
+    expected_up = math3d.ground_rotation(20, 35, 5)[:3, 1]
+    np.testing.assert_allclose(rotation[:, 1], expected_up, atol=1e-7)
+    np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-12)
+    assert np.linalg.det(rotation) == pytest.approx(1.0)
+
+
+def test_crossed_corners_are_rejected():
+    a, b, c, d = ground_square(50)
+    with pytest.raises(ValueError, match="convex"):
+        math3d.ground_pose_from_rectangle([a, c, b, d], (3.0, 3.0), 50, IMAGE)
+
+
+
+def test_collinear_corners_are_rejected():
+    with pytest.raises(ValueError):
+        math3d.ground_pose_from_rectangle([(100, 500), (300, 500), (500, 500), (300, 300)], (1.0, 1.0), 40, IMAGE)

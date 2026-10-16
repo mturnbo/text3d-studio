@@ -219,3 +219,44 @@ def ground_angles_from_rotation(rotation: np.ndarray) -> tuple[float, float, flo
     yaw_only = (rotation_x(pitch)[:3, :3].T @ rotation_z(roll)[:3, :3].T) @ r
     yaw = np.degrees(np.arctan2(yaw_only[0, 2], yaw_only[0, 0]))
     return float(pitch), float(yaw), float(roll)
+
+
+def ground_pose_from_rectangle(quad, size, fov_y_degrees: float, image_size) -> tuple[np.ndarray, np.ndarray]:
+    """Pose of the ground plane from a rectangle on it, seen in the image as `quad`.
+
+    `quad` holds pixel corners in order around the rectangle; `size` is (length of edge 0-1, length of
+    edge 0-3) in world units. Returns (rotation, corner): rotation's columns are the ground's x, up and
+    z axes in camera space (x runs along edge 0-1, up points toward the camera), and corner is the
+    camera-space position of corner 0. Raises ValueError for shapes no rectangle could project to.
+    """
+    quad = np.asarray(quad, dtype=np.float64)
+    if not _is_convex(quad):
+        raise ValueError("The corners must form a convex shape, in order around it")
+    width, height = image_size
+    f = focal_length_px(fov_y_degrees, height)
+    normalized = np.column_stack([(quad[:, 0] - width / 2.0) / f, -(quad[:, 1] - height / 2.0) / f])
+    edge, depth = size
+    plane_corners = [(0, 0), (edge, 0), (edge, depth), (0, depth)]
+
+    # Ground point (a, b) sits at camera position a*e1 + b*e2 + corner, and its image is (x, y, -z).
+    m = np.diag([1.0, 1.0, -1.0]) @ homography_from_points(plane_corners, normalized)
+    m /= (np.linalg.norm(m[:, 0]) + np.linalg.norm(m[:, 1])) / 2.0
+    if m[2, 2] > 0:
+        m = -m  # corner 0 must be in front of the camera
+
+    x_axis = m[:, 0] / np.linalg.norm(m[:, 0])
+    up = np.cross(x_axis, m[:, 1])
+    up /= np.linalg.norm(up)
+    if up @ -m[:, 2] < 0:
+        up = -up  # the camera looks at the ground from its upper side
+    rotation = np.column_stack([x_axis, up, np.cross(x_axis, up)])
+    u, _, vt = np.linalg.svd(rotation)  # snap to the nearest exact rotation
+    return u @ vt, m[:, 2].copy()
+
+
+def _is_convex(quad: np.ndarray) -> bool:
+    crosses = []
+    for i in range(4):
+        a, b, c = quad[i], quad[(i + 1) % 4], quad[(i + 2) % 4]
+        crosses.append((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
+    return all(x > 0 for x in crosses) or all(x < 0 for x in crosses)
