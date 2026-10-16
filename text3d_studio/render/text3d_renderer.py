@@ -19,9 +19,10 @@ MAX_LAYERS = 2048
 LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on screen
 
 # Depth pre-pass: draw the stack once into depth only, then shade with GL_EQUAL so each pixel is shaded for
-# its visible slice rather than every slice behind it. With texture-like shading cost this halved frame
-# times (16.3 -> 7.7 ms for deep text at 1600x1000); the shading pass keeps its alpha test, which measured
-# no slower and avoids relying on slices never sharing a depth value. False renders the stack in one pass.
+# its visible slice rather than every slice behind it. Measured gain is modest on Apple GPUs, which already
+# reject most hidden slices: ~11% for stone without MSAA, ~0 with it, where the real cost is side-wall pixels
+# whose samples belong to several slices. (An early synthetic benchmark suggested 2x; real textures did not.)
+# The shading pass keeps its alpha test. False renders the stack in one pass.
 DEPTH_PREPASS = True
 
 
