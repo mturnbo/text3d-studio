@@ -37,11 +37,13 @@ class GridRenderer:
         GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glDepthFunc(GL.GL_LESS)
         GL.glDepthMask(GL.GL_FALSE)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)  # keep the canvas opaque (see Compositor)
 
         proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
         self._draw_grid(scene, raster, proj, pixel_ratio)
         self._draw_horizon(scene, viewport, pixel_ratio)
 
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         GL.glDepthMask(GL.GL_TRUE)
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDisable(GL.GL_BLEND)
