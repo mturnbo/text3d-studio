@@ -328,3 +328,13 @@ def test_reflection_strength_scales_metal_brightness(compositor):
         return text_pixels(compositor, doc).mean()
 
     assert brightness(0.0) < brightness(1.0) < brightness(2.0)
+
+
+def test_every_material_preset_renders_distinctly(compositor):
+    from itertools import combinations
+
+    from text3d_studio.materials import KINDS, PRESETS
+
+    means = {kind: text_pixels(compositor, material_document(**PRESETS[kind])).mean(axis=0) for kind in KINDS}
+    for a, b in combinations(KINDS, 2):
+        assert np.abs(means[a] - means[b]).max() > 8, (a, b)
