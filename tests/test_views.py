@@ -745,10 +745,10 @@ def fit_canvas(vm):
     return canvas
 
 
-def true_rectangle_px(canvas, truth, corners=((-1.0, -7.0), (1.0, -7.0), (1.0, -10.0), (-1.0, -10.0))):
-    """Widget positions of a 2 x 3 rectangle lying on ground `truth`."""
+def true_rectangle_px(canvas, truth, corners=((-1.0, -7.0), (1.0, -7.0), (1.0, -10.0), (-1.0, -10.0)), fov=None):
+    """Widget positions of a 2 x 3 rectangle lying on ground `truth`, seen through `fov` (default: the scene's)."""
     rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
-    fov = canvas.vm.scene.camera.fov
+    fov = canvas.vm.scene.camera.fov if fov is None else fov
     pixels = [math3d.project_to_image(ground_model.ground_to_world(truth, x, z), fov, (rect_w, rect_h)) for x, z in corners]
     return [(rect_x + u, rect_y + v) for u, v in pixels]
 
@@ -778,3 +778,88 @@ def test_tracing_a_rectangle_recovers_the_ground_and_keeps_the_text_in_place(vm)
     np.testing.assert_allclose((g.pitch, g.yaw, g.roll, g.height), (14.0, 30.0, -3.0, 1.8), atol=1e-6)
     assert canvas.fit_valid
     np.testing.assert_allclose(text_anchor_on_screen(canvas), anchor_before, atol=1e-6)
+
+
+
+def test_fit_tool_shortcut_and_handles_only_in_fit_tool(window):
+    from text3d_studio.views.image_canvas import FIT_TOOL, TEXT_TOOL
+
+    assert window.tool_actions[FIT_TOOL].shortcut() == QKeySequence("R")
+    window.tool_actions[FIT_TOOL].trigger()
+    assert window.canvas.fit_overlay.isVisibleTo(window.canvas)
+    window.tool_actions[TEXT_TOOL].trigger()
+    assert not window.canvas.fit_overlay.isVisibleTo(window.canvas)
+
+
+def test_starting_handles_describe_the_current_ground(vm):
+    vm.set_ground_pose(pitch=9.0, yaw=20.0, roll=2.0)
+    canvas = fit_canvas(vm)
+    _, _, rect_w, rect_h = canvas._image_rect()
+    fit = ground_model.fit_ground_to_rectangle(canvas.fit_corners_px(), (1.0, 1.0), vm.scene.camera.fov, (rect_w, rect_h), 1.0)
+    np.testing.assert_allclose((fit.pitch, fit.yaw, fit.roll), (9.0, 20.0, 2.0), atol=1e-6)
+    xs = [u for u, _ in canvas.fit_corners_px()]
+    assert (max(xs) - min(xs)) > 0.25 * rect_w  # big enough to grab
+
+
+def test_clicking_a_handle_without_dragging_changes_nothing(vm):
+    canvas = fit_canvas(vm)
+    before = (dict(vars(vm.scene.ground)), dict(vars(vm.scene.transform)))
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    u, v = canvas.fit_corners_px()[0]
+    mouse(canvas, QEvent.Type.MouseButtonPress, (rect_x + u, rect_y + v), Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (rect_x + u, rect_y + v), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    assert (dict(vars(vm.scene.ground)), dict(vars(vm.scene.transform))) == before
+
+
+def test_crossed_corners_turn_invalid_and_leave_the_scene_alone(vm):
+    canvas = fit_canvas(vm)
+    messages = []
+    canvas.fit_status.connect(messages.append)
+    before = dict(vars(vm.scene.ground))
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    corner_2 = canvas.fit_corners_px()[1]
+    # Straight to a crossed shape (corner 4 past corner 2): the scene keeps its last valid fit.
+    drag_fit_corner(canvas, 3, (rect_x + corner_2[0] + 60, rect_y + corner_2[1] + 20), steps=1)
+    assert not canvas.fit_valid
+    assert "convex" in messages[-1]
+    assert vars(vm.scene.ground) == before
+
+
+def test_tracing_can_estimate_the_field_of_view(vm):
+    from text3d_studio.model import GroundParams
+
+    vm.set("grid", "fit_width", 2.0)
+    vm.set("grid", "fit_depth", 3.0)
+    vm.set("grid", "fit_estimate_fov", True)
+    canvas = fit_canvas(vm)
+    truth = GroundParams(pitch=12.0, yaw=35.0, roll=2.0, height=1.6)
+    for index, target in enumerate(true_rectangle_px(canvas, truth, fov=55.0)):
+        drag_fit_corner(canvas, index, target)
+    assert vm.scene.camera.fov == pytest.approx(55.0, abs=1e-6)
+    np.testing.assert_allclose((vm.scene.ground.pitch, vm.scene.ground.height), (12.0, 1.6), atol=1e-6)
+
+
+def test_moving_the_text_between_corner_drags_is_respected(vm):
+    from text3d_studio.model import GroundParams
+
+    vm.set("grid", "fit_width", 2.0)
+    vm.set("grid", "fit_depth", 3.0)
+    canvas = fit_canvas(vm)
+    targets = true_rectangle_px(canvas, GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8))
+    drag_fit_corner(canvas, 0, targets[0])
+    drag_fit_corner(canvas, 1, targets[1])
+    vm.set("transform", "x", vm.scene.transform.x + 1.0)  # the user nudges the text mid-session
+    anchor = text_anchor_on_screen(canvas)
+    drag_fit_corner(canvas, 2, targets[2])
+    drag_fit_corner(canvas, 3, targets[3])
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), anchor, atol=1e-6)
+
+
+def test_horizon_drag_across_the_text_and_back_returns_it(vm):
+    canvas = grid_canvas(vm)
+    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size)
+    mouse(canvas, QEvent.Type.MouseButtonPress, (400, 250), Qt.MouseButton.LeftButton)
+    for row in (300, 380, 460, 380, 300, 250):  # the horizon sweeps down past the text, then back
+        mouse(canvas, QEvent.Type.MouseMove, (400, row), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 250), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    np.testing.assert_allclose((vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size), before, atol=1e-9)
