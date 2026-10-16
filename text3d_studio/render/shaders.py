@@ -80,9 +80,26 @@ uniform float u_side_darkening;
 uniform float u_bevel_strength;
 uniform float u_metallic;
 uniform float u_roughness;
+uniform sampler2D u_environment;   // the background photo (sRGB), with mipmaps
+uniform bool u_has_environment;
+uniform float u_environment_lod;   // smallest mip level
+uniform float u_environment_strength;
 out vec4 frag;
 
 const float PI = 3.14159265359;
+
+vec3 srgb_to_linear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
+// The photo stands in for the surroundings: a sphere-map lookup on the reflection direction, blurred by
+// roughness via coarser mip levels. A surface facing the camera reflects the photo's center.
+vec3 environment(vec3 dir, float roughness) {
+    float m = 2.0 * sqrt(dir.x * dir.x + dir.y * dir.y + (dir.z + 1.0) * (dir.z + 1.0));
+    vec2 uv = dir.xy / max(m, 1e-4) + 0.5;
+    uv.y = 1.0 - uv.y;  // texture row 0 is the top of the photo
+    return srgb_to_linear(textureLod(u_environment, uv, roughness * u_environment_lod).rgb);
+}
 
 vec3 linear_to_srgb(vec3 c) {
     c = clamp(c, 0.0, 1.0);
@@ -151,7 +168,10 @@ void main() {
     vec3 direct = (diffuse + specular * PI) * u_light_color * n_dot_l;
 
     vec2 env = environment_brdf(n_dot_v, u_roughness);
-    vec3 ambient = u_ambient * ((1.0 - u_metallic) * base + f0 * env.x + env.y);
+    vec3 reflected = u_has_environment
+        ? environment(reflect(-v, n), u_roughness) * u_environment_strength
+        : u_ambient;
+    vec3 ambient = u_ambient * (1.0 - u_metallic) * base + reflected * (f0 * env.x + env.y);
     frag = vec4(linear_to_srgb(direct + ambient), coverage);
 }
 """

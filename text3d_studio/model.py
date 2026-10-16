@@ -73,6 +73,8 @@ class LightParams:
     color: Color = (1.0, 0.97, 0.90)
     ambient_color: Color = (0.55, 0.62, 0.75)
     ambient_intensity: float = 0.35
+    reflect_photo: bool = True  # glossy surfaces reflect a blurred copy of the background photo
+    reflection_strength: float = 1.0
 
 
 @dataclass

@@ -70,7 +70,8 @@ class Compositor:
             GL.glEnable(GL.GL_DEPTH_TEST)
             GL.glDepthFunc(GL.GL_LESS)
             GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
-            self.text.draw_beauty(scene, proj, lighting, height)
+            reflect = self.has_background and scene.light.reflect_photo
+            self.text.draw_beauty(scene, proj, lighting, height, self.background if reflect else None)
             GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
             GL.glDisable(GL.GL_DEPTH_TEST)
 
