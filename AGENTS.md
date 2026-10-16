@@ -23,7 +23,7 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 ## Architecture (MVVM)
 
 ```
-model.py            Pure dataclasses: Scene{text, transform, ground, material, light, shadow, camera}, Document.
+model.py            Pure dataclasses: Scene{text, transform, ground, grid, material, light, shadow, camera}, Document.
                     No Qt, no OpenGL. Document.native_size is the export size.
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
@@ -39,6 +39,8 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shadow_renderer.py  half-res shadow mask → separable Gaussian blur → multiply composite
   compositor.py       frame orchestration: background → shadow → text
   exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
+  grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
+                      vanishing-point rings. Drawn by ImageCanvas after Compositor.render
 math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32.
                     Also image-space perspective: project_to_image / image_ray (pixels, origin
                     top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
@@ -115,6 +117,19 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
+
+### Editor overlays (the perspective grid)
+
+- Overlays are **preview only**. They're drawn in `ImageCanvas.paintGL` *after* `Compositor.render` and
+  must never be added to `Compositor.render`, or they'd appear in exports.
+  `test_export_is_identical_with_grid_shown_or_hidden` guards this.
+- They reuse the composite's depth buffer: depth test on, depth writes off, so the text hides them.
+  The horizon pass sits at the far plane (z = 0.999999) for the same reason.
+- Procedural lines use `fwidth` for constant pixel width (scaled by the device pixel ratio). With
+  `fract()`-wrapped coordinates, take the derivative of the *unwrapped* value, or a false line shows
+  up at every cell's half-way point.
+- Grid cells fade out below ~4 px so they don't shimmer toward the horizon. The accent lanes and the
+  horizon don't fade.
 
 ## Adding things
 
