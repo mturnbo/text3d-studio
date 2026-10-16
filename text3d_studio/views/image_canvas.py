@@ -28,8 +28,6 @@ GRID_TOOL = "grid"
 HORIZON_GRAB_PX = 8.0  # how close to the horizon a press must land to grab it
 HORIZON_END_FRACTION = 0.15  # presses on the outer 15% of the horizon roll it instead of tilting
 MIN_ROLL_SPAN_PX = 20.0  # roll needs the cursor this far from the pivot to define a direction
-MAX_PITCH = 89.0  # same limits as the Ground and Grid sliders
-MAX_ROLL = 60.0
 MIN_CELL, MAX_CELL = 0.1, 10.0
 GRID_ROTATE_DEG_PER_PX = 0.3
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
@@ -322,13 +320,13 @@ class ImageCanvas(QOpenGLWidget):
         ground, fov = self.vm.scene.ground, self.vm.scene.camera.fov
         if self._grid_drag == "tilt":
             pitch = math3d.pitch_for_horizon_through(pixel, ground.roll, fov, (rect_w, rect_h))
-            self.vm.set("ground", "pitch", float(np.clip(pitch, -MAX_PITCH, MAX_PITCH)))
+            self.vm.set("ground", "pitch", float(np.clip(pitch, -ground_model.MAX_PITCH, ground_model.MAX_PITCH)))
         elif self._grid_drag == "roll":
             if np.hypot(pixel[0] - self._roll_pivot[0], pixel[1] - self._roll_pivot[1]) < MIN_ROLL_SPAN_PX:
                 return
             pitch, roll = math3d.tilt_for_horizon_through(self._roll_pivot, pixel, fov, (rect_w, rect_h))
-            self.vm.set("ground", "roll", float(np.clip(roll, -MAX_ROLL, MAX_ROLL)))
-            self.vm.set("ground", "pitch", float(np.clip(pitch, -MAX_PITCH, MAX_PITCH)))
+            self.vm.set("ground", "roll", float(np.clip(roll, -ground_model.MAX_ROLL, ground_model.MAX_ROLL)))
+            self.vm.set("ground", "pitch", float(np.clip(pitch, -ground_model.MAX_PITCH, ground_model.MAX_PITCH)))
         elif self._grid_drag == "shift":
             current = self.ground_point_at(event.position())
             if current is None:
