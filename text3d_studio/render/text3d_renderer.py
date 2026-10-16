@@ -14,6 +14,7 @@ from . import shaders
 from .gl_utils import ShaderProgram, Texture2D, TriangleBuffer, UnitQuad
 
 IDENTITY_GL = math3d.to_gl(math3d.identity())
+PATTERNS = {"stone": 1, "wood": 2}  # material kinds with a procedural texture (see LAYER_STACK_FS)
 MAX_LAYERS = 2048
 LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on screen
 
@@ -76,6 +77,13 @@ class Text3DRenderer:
         program.set_float("u_bevel_strength", m.bevel_strength)
         program.set_float("u_metallic", m.metallic)
         program.set_float("u_roughness", m.roughness)
+        program.set_int("u_pattern", PATTERNS.get(m.kind, 0))
+        program.set_vec3("u_secondary_color", srgb_to_linear(m.secondary_color))
+        program.set_float("u_texture_scale", m.texture_scale)
+        program.set_float("u_texture_strength", m.texture_strength)
+        program.set_float("u_bump_strength", m.bump_strength)
+        program.set_float("u_grain_angle", math.radians(m.grain_angle))
+        program.set_float("u_varnish", m.varnish)
         program.set_int("u_has_environment", int(environment is not None))
         if environment is not None:
             environment.bind(1)

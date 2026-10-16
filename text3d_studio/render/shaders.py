@@ -158,9 +158,18 @@ uniform sampler2D u_environment;   // the background photo (sRGB), with mipmaps
 uniform bool u_has_environment;
 uniform float u_environment_lod;   // smallest mip level
 uniform float u_environment_strength;
+uniform int u_pattern;               // 0 none, 1 stone, 2 wood
+uniform vec3 u_secondary_color;      // linear
+uniform float u_texture_scale;       // em
+uniform float u_texture_strength;
+uniform float u_bump_strength;
+uniform float u_grain_angle;         // radians
+uniform float u_varnish;
 out vec4 frag;
 
 const float PI = 3.14159265359;
+const int PATTERN_STONE = 1;
+const int PATTERN_WOOD = 2;
 
 vec3 srgb_to_linear(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
@@ -202,7 +211,38 @@ vec2 environment_brdf(float n_dot_v, float roughness) {
     float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
-""" + MASK_COVERAGE + """
+""" + MASK_COVERAGE + NOISE_GLSL + """
+// Tilts a normal against a height field's gradient (both in the text's own space).
+vec3 perturb(vec3 n, vec3 gradient, float strength) {
+    return normalize(n - strength * (gradient - dot(gradient, n) * n));
+}
+
+// Fine pitting plus a gentle undulation.
+float stone_height(vec3 p) {
+    return 0.3 * fbm(p * 1.5, 2) + 0.7 * gradient_noise(p * 22.0) * 0.4;
+}
+
+// Granite/marble-like stone: subtle mottling, fine speckle, and thin veins in the secondary color along the
+// zero lines of a turbulent, domain-warped field. `p` is in pattern units.
+void stone_surface(vec3 p, inout vec3 albedo, inout float roughness, inout vec3 n) {
+    float mottling = fbm(p * 0.8, 3);
+    float speckle = gradient_noise(p * 22.0) + 0.5 * gradient_noise(p * 47.0);
+    vec3 warp = vec3(fbm(p * 0.5 + 3.1, 3), fbm(p * 0.5 + 7.7, 3), fbm(p * 0.5 + 1.3, 3));
+    float turbulence = fbm(p * 0.6 + 2.0 * warp, 4);
+    float vein = 1.0 - smoothstep(0.0, 0.035, abs(turbulence));
+    float strength = u_texture_strength;
+    albedo = u_face_color * (1.0 + 0.12 * mottling * strength + 0.18 * speckle * strength);
+    albedo = mix(albedo, u_secondary_color, clamp(vein * strength + max(-speckle - 0.6, 0.0) * strength, 0.0, 1.0));
+    roughness = clamp(roughness + 0.08 * speckle, 0.02, 1.0);
+
+    const float e = 0.004;
+    float h = stone_height(p);
+    vec3 gradient = vec3(stone_height(p + vec3(e, 0.0, 0.0)) - h,
+                         stone_height(p + vec3(0.0, e, 0.0)) - h,
+                         stone_height(p + vec3(0.0, 0.0, e)) - h) / e;
+    n = perturb(n, gradient, 0.06 * u_bump_strength);
+}
+
 void main() {
     vec4 m;
     float coverage = mask_coverage(u_mask, v_uv, m);
@@ -210,17 +250,27 @@ void main() {
 
     vec2 dir = m.rg * 2.0 - 1.0;
     vec3 n_local;
-    vec3 base;
+    vec3 albedo;
+    float shade;  // the layer stack's depth darkening, applied on top of any texture
     if (v_layer == 0) {
         n_local = normalize(vec3(dir * m.b * u_bevel_strength, 1.0));
-        base = u_face_color;
+        albedo = u_face_color;
+        shade = 1.0;
     } else if (v_layer == u_layers - 1) {
         n_local = vec3(0.0, 0.0, -1.0);
-        base = u_side_color * (1.0 - u_side_darkening);
+        albedo = u_side_color;
+        shade = 1.0 - u_side_darkening;
     } else {
         n_local = length(dir) > 0.01 ? normalize(vec3(dir, 0.0)) : vec3(0.0, 0.0, 1.0);
-        base = u_side_color * (1.0 - u_side_darkening * v_t);
+        albedo = u_side_color;
+        shade = 1.0 - u_side_darkening * v_t;
     }
+
+    float roughness = u_roughness;
+    if (u_pattern == PATTERN_STONE) {
+        stone_surface(v_local / u_texture_scale, albedo, roughness, n_local);
+    }
+    vec3 base = albedo * shade;
 
     vec3 n = normalize(mat3(u_model) * n_local);
     vec3 l = normalize(u_light_dir);
@@ -228,19 +278,19 @@ void main() {
     vec3 h = normalize(l + v);
     float n_dot_l = max(dot(n, l), 0.0);
     float n_dot_v = max(dot(n, v), 1e-4);
-    float alpha = max(u_roughness * u_roughness, 1e-3);
+    float alpha = max(roughness * roughness, 1e-3);
 
     vec3 f0 = mix(vec3(0.04), base, u_metallic);  // metals tint their reflection; dielectrics reflect ~4% white
     vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
-    vec3 specular = distribution_ggx(max(dot(n, h), 0.0), alpha) * geometry_smith(n_dot_v, n_dot_l, u_roughness)
+    vec3 specular = distribution_ggx(max(dot(n, h), 0.0), alpha) * geometry_smith(n_dot_v, n_dot_l, roughness)
         * f / (4.0 * n_dot_v * n_dot_l + 1e-4);
     vec3 diffuse = (1.0 - f) * (1.0 - u_metallic) * base;
     // Light intensity is scaled by PI so a white matte surface facing the light reaches exactly 1.
     vec3 direct = (diffuse + specular * PI) * u_light_color * n_dot_l;
 
-    vec2 env = environment_brdf(n_dot_v, u_roughness);
+    vec2 env = environment_brdf(n_dot_v, roughness);
     vec3 reflected = u_has_environment
-        ? environment(reflect(-v, n), u_roughness) * u_environment_strength
+        ? environment(reflect(-v, n), roughness) * u_environment_strength
         : u_ambient;
     vec3 ambient = u_ambient * (1.0 - u_metallic) * base + reflected * (f0 * env.x + env.y);
     frag = vec4(linear_to_srgb(direct + ambient), coverage);
