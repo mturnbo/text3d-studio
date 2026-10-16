@@ -71,6 +71,7 @@ class MaterialParams:
     bump_strength: float = 0.0  # surface relief from the pattern
     grain_angle: float = 0.0  # wood grain direction on the face, degrees (0 = horizontal)
     varnish: float = 0.0  # glossy clear coat over the material
+    absorption: float = 0.0  # glass: how quickly the tint deepens with the thickness light passes through
 
 
 @dataclass
