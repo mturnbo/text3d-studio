@@ -25,9 +25,9 @@ def test_direction_from_angles_is_unit_and_straight_up_at_90_elevation():
     np.testing.assert_allclose(math3d.direction_from_angles(0, 0), [0, 0, 1], atol=1e-12)
 
 
-def test_model_matrix_yaw_keeps_ground_normal_fixed():
-    a = math3d.model_matrix(0, 0, 0, 20, 0, 10, 1)
-    b = math3d.model_matrix(0, 0, 0, 20, 75, 10, 1)
+def test_ground_yaw_keeps_ground_normal_fixed():
+    a = math3d.ground_rotation(20, 0, 10)
+    b = math3d.ground_rotation(20, 75, 10)
     up = np.array([0, 1, 0, 0])
     np.testing.assert_allclose(a @ up, b @ up, atol=1e-12)
 
@@ -202,10 +202,9 @@ def test_vanishing_points_on_the_same_side_are_rejected():
         math3d.focal_from_vanishing_points(first, second, IMAGE)
 
 
-def test_ground_rotation_matches_text_model_convention():
-    np.testing.assert_allclose(
-        math3d.ground_rotation(15, -20, 7), math3d.model_matrix(0, 0, 0, 15, -20, 7, 1.0), atol=1e-12
-    )
+def test_ground_rotation_applies_yaw_before_tilt_and_roll():
+    expected = math3d.rotation_z(7) @ math3d.rotation_x(15) @ math3d.rotation_y(-20)
+    np.testing.assert_allclose(math3d.ground_rotation(15, -20, 7), expected, atol=1e-12)
 
 
 @pytest.mark.parametrize(

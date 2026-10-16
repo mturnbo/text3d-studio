@@ -18,12 +18,11 @@ class TextParams:
 
 @dataclass
 class TransformParams:
+    """Where the text stands on the ground (see ground.py); x and z run along the ground's axes."""
+
     x: float = 0.0
-    y: float = -1.5
-    z: float = -12.0
-    rot_x: float = 0.0  # ground tilt (pitch)
-    rot_y: float = -20.0  # yaw: spins the text on its ground plane
-    rot_z: float = 0.0  # ground roll
+    z: float = -12.0  # negative is away from the camera
+    rot_y: float = -20.0  # yaw: spins the text on the ground
     size: float = 3.0  # world height of one em
     depth: float = 0.35  # extrusion depth as a fraction of size
     layers: int = 96  # number of duplicated layers in the stack

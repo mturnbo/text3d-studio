@@ -5,6 +5,16 @@ from text3d_studio import ground, math3d
 from text3d_studio.model import GroundParams, TransformParams
 
 
+def legacy_model_matrix(x, y, z, rot_x, rot_y, rot_z, size):
+    """v0.5.0 placement, where the ground was attached to the text."""
+    return (
+        math3d.translation(x, y, z)
+        @ math3d.ground_frame(rot_x, rot_z)
+        @ math3d.rotation_y(rot_y)
+        @ math3d.scaling(size)
+    )
+
+
 def legacy_to_ground_model(x, y, z, rot_x, rot_y, rot_z):
     """Converts a v0.5.0 transform (ground attached to the text) into ground model B params."""
     g = GroundParams(pitch=rot_x, roll=rot_z, yaw=0.0, height=1.0)
@@ -22,15 +32,14 @@ def test_model_matrix_matches_legacy_transform(legacy):
     x, y, z, rot_x, rot_y, rot_z = legacy
     g, t = legacy_to_ground_model(*legacy)
     t.size = 2.5
-    expected = math3d.model_matrix(x, y, z, rot_x, rot_y, rot_z, 2.5)
+    expected = legacy_model_matrix(x, y, z, rot_x, rot_y, rot_z, 2.5)
     np.testing.assert_allclose(ground.text_model_matrix(g, t), expected, atol=1e-9)
 
 
 def test_default_scene_matches_v050_defaults():
     g, t = GroundParams(), TransformParams()
-    expected = math3d.model_matrix(0, -1.5, -12, 0, -20, 0, t.size)
-    np.testing.assert_allclose(ground.text_model_matrix(g, TransformParams(x=0, z=-12, rot_y=-20)), expected)
-    assert g.height == 1.5
+    expected = legacy_model_matrix(0, -1.5, -12, 0, -20, 0, t.size)
+    np.testing.assert_allclose(ground.text_model_matrix(g, t), expected)
 
 
 @pytest.mark.parametrize("pitch, roll, yaw", [(0, 0, 0), (25, -10, 40), (-15, 30, 170)])
