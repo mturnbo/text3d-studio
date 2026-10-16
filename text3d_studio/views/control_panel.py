@@ -37,6 +37,10 @@ SLIDERS = {
         ("yaw", "Grid rotation", -180, 180, 1),
         ("height", "Camera height", 0.05, 30, 2),
     ],
+    "grid": [
+        ("cell_size", "Cell size", 0.1, 10, 2),
+        ("opacity", "Opacity", 0, 1, 2),
+    ],
     "camera": [("fov", "Field of view", 10, 100, 1)],
     "light": [
         ("azimuth", "Azimuth", -180, 180, 1),
@@ -57,7 +61,13 @@ SLIDERS = {
     ],
 }
 
+CHECKBOXES = {
+    "grid": [("visible", "Show grid")],
+    "shadow": [("enabled", "Cast shadow")],
+}
+
 COLORS = {
+    "grid": [("color", "Grid color"), ("accent_color", "Path color")],
     "material": [("face_color", "Face color"), ("side_color", "Side color")],
     "light": [("color", "Light color"), ("ambient_color", "Ambient color")],
     "shadow": [("color", "Shadow color")],
@@ -67,6 +77,7 @@ GROUP_TITLES = [
     ("text", "Text"),
     ("transform", "Text Placement"),
     ("ground", "Ground"),
+    ("grid", "Grid"),
     ("camera", "Camera"),
     ("light", "Lighting"),
     ("material", "Material"),
@@ -151,8 +162,8 @@ class ControlPanel(QScrollArea):
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
             if section == "text":
                 self._add_text_inputs(form)
-            if section == "shadow":
-                self._add_checkbox(form, "shadow", "enabled", "Cast shadow")
+            for field, label in CHECKBOXES.get(section, []):
+                self._add_checkbox(form, section, field, label)
             for field, label, lo, hi, decimals in SLIDERS.get(section, []):
                 self._add_slider(form, section, field, label, lo, hi, decimals)
             for field, label in COLORS.get(section, []):
