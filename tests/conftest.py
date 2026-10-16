@@ -1,3 +1,5 @@
+import gc
+
 import pytest
 from PyQt6.QtGui import QOffscreenSurface, QOpenGLContext
 from PyQt6.QtWidgets import QApplication
@@ -22,3 +24,11 @@ def gl_context(qapp):
         pytest.skip("OpenGL 4.1 core context unavailable")
     yield context
     context.doneCurrent()
+
+
+@pytest.fixture(autouse=True)
+def collect_leftover_widgets():
+    """Frees widgets dropped by the previous test now. Left to Python's collector, they could die in the middle
+    of a later canvas's paint, where destroying a GL widget switches the current OpenGL context."""
+    gc.collect()
+    yield
