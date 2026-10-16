@@ -33,12 +33,28 @@ class SceneViewModel(QObject):
         if getattr(target, name) == value:
             return
         old_ground = dataclasses.replace(self.scene.ground) if section == "ground" else None
+        self._assign(target, section, name, value)
+        if old_ground is not None:
+            self._keep_text_in_place(old_ground)
+
+    def set_ground_pose(self, **values) -> None:
+        """Sets several ground fields together and re-places the text once, against the final pose.
+
+        Setting them one by one could pass through a pose whose horizon sits above the text and lose it.
+        """
+        old_ground = dataclasses.replace(self.scene.ground)
+        for name, value in values.items():
+            target = self._section("ground", name)
+            if getattr(target, name) != value:
+                self._assign(target, "ground", name, value)
+        if self.scene.ground != old_ground:
+            self._keep_text_in_place(old_ground)
+
+    def _assign(self, target, section: str, name: str, value) -> None:
         setattr(target, name, value)
         if section == "text" and name in RASTER_FIELDS:
             self.text_changed.emit()
         self.scene_changed.emit(section, name)
-        if old_ground is not None:
-            self._keep_text_in_place(old_ground)
 
     def _keep_text_in_place(self, old_ground) -> None:
         """Aligning the ground to the photo shouldn't fling the text around: keep it where it appears."""

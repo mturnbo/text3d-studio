@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -90,3 +92,40 @@ def test_text_stays_put_when_the_ground_tips_past_it(vm):
     before = (vm.scene.transform.x, vm.scene.transform.z)
     vm.set("ground", "pitch", -10.0)
     assert (vm.scene.transform.x, vm.scene.transform.z) == before
+
+
+def test_set_ground_pose_reanchors_once_against_the_final_pose(vm):
+    from text3d_studio import ground
+    from text3d_studio.model import GroundParams
+
+    old = dataclasses.replace(vm.scene.ground)
+    expected = ground.reanchor_text(old, GroundParams(pitch=9.0, yaw=25.0, roll=-3.0, height=2.2), vm.scene.transform)
+    vm.set_ground_pose(pitch=9.0, yaw=25.0, roll=-3.0, height=2.2)
+    g, t = vm.scene.ground, vm.scene.transform
+    assert (g.pitch, g.yaw, g.roll, g.height) == (9.0, 25.0, -3.0, 2.2)
+    np.testing.assert_allclose((t.x, t.z, t.rot_y, t.size), expected, atol=1e-12)
+
+
+def test_set_ground_pose_keeps_text_that_one_by_one_edits_would_lose(qapp):
+    from text3d_studio import ground
+
+    def start():
+        model = SceneViewModel(Document())
+        model.set("ground", "pitch", -1.0)  # horizon just below center
+        model.set("transform", "z", -150.0)  # far away, just below that horizon
+        return model
+
+    # Rolling first (pitch still -1) drops the horizon at the center column below the anchor, so the text
+    # can't be re-placed on that intermediate pose. The final pose (pitch 10, roll 55) reaches it again.
+    one_step, one_by_one = start(), start()
+    old = dataclasses.replace(one_step.scene.ground)
+    assert ground.reanchor_text(old, dataclasses.replace(old, roll=55.0), one_step.scene.transform) is None
+    one_step.set_ground_pose(roll=55.0, pitch=10.0)
+    one_by_one.set("ground", "roll", 55.0)
+    one_by_one.set("ground", "pitch", 10.0)
+
+    expected = ground.reanchor_text(old, one_step.scene.ground, start().scene.transform)
+    t = one_step.scene.transform
+    np.testing.assert_allclose((t.x, t.z, t.rot_y, t.size), expected, atol=1e-12)
+    u = one_by_one.scene.transform
+    assert not np.allclose((u.x, u.z, u.size), (t.x, t.z, t.size))
