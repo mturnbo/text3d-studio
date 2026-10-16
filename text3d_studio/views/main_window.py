@@ -3,16 +3,24 @@
 import os
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
 
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
-from .image_canvas import ImageCanvas
+from .image_canvas import FIT_TOOL, GRID_TOOL, TEXT_TOOL, ImageCanvas
 
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
+
+TOOL_HINTS = {
+    TEXT_TOOL: "Left-drag: slide on ground · Right-drag: yaw · Wheel: scale · Ctrl/Cmd+wheel: distance",
+    GRID_TOOL: "Drag horizon: tilt · Drag horizon ends: roll · Drag ground: shift lines · "
+    "Right-drag: rotate grid · Wheel: cell size",
+    FIT_TOOL: "Drag the four corners onto a rectangle in the photo (a tile, rug, table top) · "
+    "Its real size (Grid › Fit width/depth) sets the scale",
+}
 
 
 class MainWindow(QMainWindow):
@@ -34,9 +42,9 @@ class MainWindow(QMainWindow):
 
         self.size_label = QLabel()
         self.fps_label = QLabel()
-        hint = QLabel("Left-drag: move · Right-drag: rotate · Shift-drag: roll · Wheel: scale · Ctrl/Cmd+wheel: depth")
+        self.hint_label = QLabel(TOOL_HINTS[TEXT_TOOL])
         self.statusBar().addPermanentWidget(self.size_label)
-        self.statusBar().addPermanentWidget(hint)
+        self.statusBar().addPermanentWidget(self.hint_label)
         self.statusBar().addPermanentWidget(self.fps_label)
 
         self.canvas.fps_changed.connect(lambda fps: self.fps_label.setText(f"{fps:5.1f} FPS"))
@@ -63,12 +71,57 @@ class MainWindow(QMainWindow):
         file_menu.addAction(quit_action)
         self._rebuild_recent_menu()
 
+        # Single-key shortcut: text fields still receive "G" because they claim printable keys first.
+        self.grid_action = QAction("Show &Grid", self)
+        self.grid_action.setCheckable(True)
+        self.grid_action.setShortcut(QKeySequence("G"))
+        self.grid_action.setChecked(self.vm.scene.grid.visible)
+        self.grid_action.toggled.connect(lambda checked: self.vm.set("grid", "visible", checked))
+        self.vm.scene_changed.connect(self._sync_grid_action)
+        view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.grid_action)
+
+        self.tool_actions = {}
+        tool_group = QActionGroup(self)
+        tools_menu = self.menuBar().addMenu("&Tools")
+        tools = ((TEXT_TOOL, "Move &Text", "V"), (GRID_TOOL, "Adjust &Grid", "P"), (FIT_TOOL, "Fit &Rectangle", "R"))
+        for tool, text, key in tools:
+            action = QAction(text, self)
+            action.setCheckable(True)
+            action.setShortcut(QKeySequence(key))
+            action.triggered.connect(lambda _checked=False, t=tool: self.canvas.set_tool(t))
+            tool_group.addAction(action)
+            tools_menu.addAction(action)
+            self.tool_actions[tool] = action
+        self.tool_actions[self.canvas.tool].setChecked(True)
+        self.canvas.tool_changed.connect(self._on_tool_changed)
+        self.canvas.fit_status.connect(self._show_fit_status)
+
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setObjectName("mainToolbar")
         self.toolbar.setMovable(False)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.toolbar.addAction(self.open_action)
         self.toolbar.addAction(self.export_action)
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(self.grid_action)
+        self.toolbar.addSeparator()
+        for action in self.tool_actions.values():
+            self.toolbar.addAction(action)
+
+    def _on_tool_changed(self, tool: str) -> None:
+        self.tool_actions[tool].setChecked(True)
+        self.hint_label.setText(TOOL_HINTS[tool])
+
+    def _show_fit_status(self, message: str) -> None:
+        if message:
+            self.statusBar().showMessage(f"Can't fit: {message}")
+        else:
+            self.statusBar().clearMessage()
+
+    def _sync_grid_action(self, section: str, field: str) -> None:
+        if (section, field) == ("grid", "visible"):
+            self.grid_action.setChecked(self.vm.scene.grid.visible)
 
     def _rebuild_recent_menu(self) -> None:
         self.recent_menu.clear()

@@ -181,3 +181,128 @@ void main() {
     frag = vec4(mix(vec3(1.0), u_color, s), 1.0);  // multiplied onto the background
 }
 """
+
+# ----- Editor overlay (preview only, never exported) ----------------------------------------------
+
+# One large quad on the ground plane, in ground coordinates.
+GRID_VS = """
+#version 410 core
+layout(location = 0) in vec2 a_pos;
+uniform mat4 u_proj;
+uniform mat4 u_ground;  // ground (x, 0, z) -> camera space
+uniform float u_extent;
+out vec2 v_ground;
+void main() {
+    v_ground = (a_pos * 2.0 - 1.0) * u_extent;
+    gl_Position = u_proj * (u_ground * vec4(v_ground.x, 0.0, v_ground.y, 1.0));
+}
+"""
+
+GRID_FS = """
+#version 410 core
+in vec2 v_ground;
+uniform float u_cell;
+uniform vec2 u_offset;
+uniform vec3 u_color;
+uniform vec3 u_accent;
+uniform float u_opacity;
+uniform float u_pixel_ratio;
+uniform bool u_has_text;
+uniform vec2 u_text_xz;
+uniform float u_text_yaw;   // radians
+uniform vec4 u_footprint;   // x min, x max, z min, z max in the text's own frame on the ground
+out vec4 frag;
+
+// Coverage of a line `width` device pixels wide where `value` is zero. The derivative is passed in
+// separately because fract() makes derivatives of the wrapped value jump between cells.
+float line(float value, float derivative, float width) {
+    float px = abs(value) / max(derivative, 1e-6);
+    return clamp(width * 0.5 + 0.5 - px, 0.0, 1.0);
+}
+
+float line(float value, float width) {
+    return line(value, fwidth(value), width);
+}
+
+void main() {
+    vec2 cell = (v_ground - u_offset) / u_cell;
+    vec2 cell_fw = fwidth(cell);
+    vec2 to_line = fract(cell + 0.5) - 0.5;
+    float grid = max(line(to_line.x, cell_fw.x, u_pixel_ratio), line(to_line.y, cell_fw.y, u_pixel_ratio));
+    // Fade cells smaller than a few pixels so the grid doesn't shimmer toward the horizon.
+    float spacing_px = 1.0 / max(max(cell_fw.x, cell_fw.y), 1e-6);
+    float fade = clamp((spacing_px - 4.0 * u_pixel_ratio) / (8.0 * u_pixel_ratio), 0.0, 1.0);
+    float grid_a = grid * fade * u_opacity;
+
+    float fill_a = 0.0;
+    float accent_a = 0.0;
+    if (u_has_text) {
+        vec2 p = v_ground - u_text_xz;
+        float c = cos(u_text_yaw);
+        float s = sin(u_text_yaw);
+        float lx = c * p.x - s * p.y;
+        float lz = s * p.x + c * p.y;
+        vec4 f = u_footprint;
+        float inside = step(f.x, lx) * step(lx, f.y) * step(f.z, lz) * step(lz, f.w);
+        float width = 2.0 * u_pixel_ratio;
+        // Baseline and the two lanes, extended toward the horizon, plus the footprint's back edge.
+        float accent = max(max(line(lx - f.x, width), line(lx - f.y, width)), line(lz - f.w, width));
+        accent = max(accent, inside * line(lz - f.z, width));
+        accent_a = accent * min(1.0, u_opacity + 0.3);
+        fill_a = inside * 0.18 * u_opacity;
+    }
+
+    // Premultiplied "over": grid, then footprint fill, then accent lines.
+    vec3 rgb = u_color * grid_a;
+    float a = grid_a;
+    rgb = u_accent * fill_a + rgb * (1.0 - fill_a);
+    a = fill_a + a * (1.0 - fill_a);
+    rgb = u_accent * accent_a + rgb * (1.0 - accent_a);
+    a = accent_a + a * (1.0 - accent_a);
+    if (a < 1.0 / 255.0) discard;
+    frag = vec4(rgb / a, a);
+}
+"""
+
+# Full-screen quad at the far plane, so the text in front hides it.
+HORIZON_VS = """
+#version 410 core
+layout(location = 0) in vec2 a_pos;
+void main() {
+    gl_Position = vec4(a_pos * 2.0 - 1.0, 0.999999, 1.0);
+}
+"""
+
+HORIZON_FS = """
+#version 410 core
+uniform vec3 u_up;          // ground normal in camera space
+uniform vec4 u_viewport;    // x, y, width, height in device pixels
+uniform float u_focal;      // focal length in device pixels
+uniform vec3 u_color;
+uniform vec3 u_accent;
+uniform float u_opacity;
+uniform float u_pixel_ratio;
+uniform vec2 u_vp0;         // vanishing points in framebuffer coordinates
+uniform vec2 u_vp1;
+uniform bool u_vp0_valid;
+uniform bool u_vp1_valid;
+out vec4 frag;
+
+float ring(vec2 center) {
+    float r = length(gl_FragCoord.xy - center);
+    return clamp(u_pixel_ratio + 0.5 - abs(r - 7.0 * u_pixel_ratio), 0.0, 1.0);
+}
+
+void main() {
+    // The horizon is where a camera ray runs parallel to the ground.
+    vec2 p = gl_FragCoord.xy - u_viewport.xy - 0.5 * u_viewport.zw;
+    float s = dot(u_up, vec3(p / u_focal, -1.0));
+    float horizon = clamp(0.75 * u_pixel_ratio + 0.5 - abs(s) / max(fwidth(s), 1e-6), 0.0, 1.0);
+    float marker = 0.0;
+    if (u_vp0_valid) marker = max(marker, ring(u_vp0));
+    if (u_vp1_valid) marker = max(marker, ring(u_vp1));
+    float a = max(horizon, marker) * min(1.0, u_opacity + 0.3);
+    if (a < 1.0 / 255.0) discard;
+    frag = vec4(marker > horizon ? u_accent : u_color, a);
+}
+"""

@@ -23,7 +23,7 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 ## Architecture (MVVM)
 
 ```
-model.py            Pure dataclasses: Scene{text, transform, material, light, shadow, camera}, Document.
+model.py            Pure dataclasses: Scene{text, transform, ground, grid, material, light, shadow, camera}, Document.
                     No Qt, no OpenGL. Document.native_size is the export size.
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
@@ -31,7 +31,9 @@ viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
 views/              Qt widgets only. Never touch GL state or numpy image math here.
   main_window.py      menus, status bar, file dialogs
   control_panel.py    declarative slider/colour/checkbox layout, two-way bound to the ViewModel
-  image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing
+  image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
+                      Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL), which is editor state, not
+                      scene state. FitHandlesOverlay (a plain child widget) draws the fit handles
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
@@ -39,8 +41,15 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shadow_renderer.py  half-res shadow mask → separable Gaussian blur → multiply composite
   compositor.py       frame orchestration: background → shadow → text
   exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
-math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32
-lighting.py         LightingEngine: params → world light dir, colours, ground plane, shadow matrix
+  grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
+                      vanishing-point rings. Drawn by ImageCanvas after Compositor.render
+math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32.
+                    Also image-space perspective: project_to_image / image_ray (pixels, origin
+                    top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
+                    focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
+ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
+                    placement on it (text_position, text_model_matrix, world_to_ground, text_distance)
+lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
 preferences.py      QSettings-backed last folder + recent files (max 8). MainWindow requires one.
@@ -68,10 +77,22 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - The camera is fixed at the origin looking down −Z, so world space = view space. Vertical FOV comes from `camera.fov`.
 - Text local space is in em units, scaled by `transform.size`. The ink's bottom sits at local y=0 and is centered on x.
   The front face is at z=0 and the extrusion goes to `z = -depth` (depth is a *fraction of size*).
-- Model matrix = `T · Rz(rot_z) · Rx(rot_x) · Ry(rot_y) · S`. Yaw is applied first, so it spins the
-  text **on its ground plane**. Tilt X / Roll Z tilt the ground itself.
-- The light is defined in the **ground frame** (`ground_frame(rot_x, rot_z)`): azimuth 0 = toward the
-  camera, elevation measured from the ground. Yaw does not move the light, but tilting the ground does.
+- **Ground model B**: the ground is posed relative to the camera by `scene.ground`
+  (pitch, roll, yaw, height). Its origin is the point `height` below the camera, along the ground's up axis.
+  The text stands on the ground at ground coordinates `(transform.x, transform.z)`. Negative z is away
+  from the camera. `transform.rot_y` spins the text around the ground's up axis.
+- Ground rotation = `Rz(roll) · Rx(pitch) · Ry(yaw)`. Text model matrix =
+  `T(text_position) · ground rotation · Ry(transform.rot_y) · S(size)`. Always use `ground.py`;
+  don't rebuild these by hand.
+- The light is defined in the ground's **tilt frame** (`ground.light_frame`, pitch and roll only):
+  azimuth 0 = toward the camera, elevation measured from the ground. Grid yaw and text yaw don't move
+  the light, but tilting the ground does.
+- **Ground edits keep the text where it appears.** `SceneViewModel.set("ground", …)` calls
+  `ground.reanchor_text`. The text's anchor stays on the same camera ray, `size` scales with its distance
+  along that ray (so apparent size is kept), and text yaw offsets grid yaw. Expect `transform.x/z/rot_y/size`
+  change events after any ground edit. If the ray misses the new ground, the text is left as is.
+- The default scene (pitch 0, height 1.5, text at z −12, yaw −20) renders pixel-identically to
+  v0.5.0's defaults. `tests/test_ground.py` holds the legacy conversion if old values ever need migrating.
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
   Exports flip rows after `glReadPixels`.
 
@@ -102,6 +123,46 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
+
+### Editor overlays (the perspective grid)
+
+- Overlays are **preview only**. They're drawn in `ImageCanvas.paintGL` *after* `Compositor.render` and
+  must never be added to `Compositor.render`, or they'd appear in exports.
+  `test_export_is_identical_with_grid_shown_or_hidden` guards this.
+- They reuse the composite's depth buffer: depth test on, depth writes off, so the text hides them.
+  The horizon pass sits at the far plane (z = 0.999999) for the same reason.
+- Procedural lines use `fwidth` for constant pixel width (scaled by the device pixel ratio). With
+  `fract()`-wrapped coordinates, take the derivative of the *unwrapped* value, or a false line shows
+  up at every cell's half-way point.
+- Grid cells fade out below ~4 px so they don't shimmer toward the horizon. The accent lanes and the
+  horizon don't fade.
+
+### Tools and canvas gestures
+
+| Tool | Left-drag | Right-drag | Wheel |
+|---|---|---|---|
+| **Move Text** (V) | slide text on the ground (grabbed point stays under the cursor) | text yaw | size; Ctrl/Cmd: distance |
+| **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
+| **Fit Rectangle** (R) | drag the 4 corner handles onto a rectangle in the photo; the ground is solved live (`ground.fit_ground_to_rectangle`) | — | — |
+
+**Fit Rectangle:**
+- Handles start as a ~30%-wide rectangle on the current ground. Its real size (`grid.fit_width/depth`) sets
+  the ground's scale (camera height) on the first drag.
+- Edge 1→2 becomes the grid's x direction, and grid offsets put lines along the rectangle's edges.
+- `grid.fit_estimate_fov` also sets the camera's field of view from the two vanishing points.
+- An impossible shape turns the handles red, reports why via `fit_status`, and keeps the last valid fit.
+
+**Drags re-place the text from where they started.** Ground-changing drags call
+`SceneViewModel.set_ground_pose(anchor=(ground, transform), …)` with the state from the press, or, for Fit
+Rectangle, from the start of the tracing session. A pose mid-drag that can't hold the text therefore can't
+strand it. Never re-anchor incrementally per mouse move.
+
+Don't draw text with QPainter inside `paintGL`. In the core-profile context the GL paint engine garbles
+glyphs. Use a child widget overlay (like `FitHandlesOverlay` and the empty-state prompt).
+
+Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_horizon_through` and
+`tilt_for_horizon_through`. Drag tests drive real `QMouseEvent`s on a sized, unshown canvas; see
+`tests/test_views.py` (`drag`, `grid_canvas`).
 
 ## Adding things
 
@@ -148,6 +209,11 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Granular commits: one logical change each, with a **concise one-line, imperative** message
   (e.g. `Add triangle buffer for wall geometry`). No bullet-list bodies. Tests pass before merge.
 - Integrate via PR (or `git merge --no-ff`) so feature boundaries stay visible in history.
+- Multi-PR features use an **integration branch** (e.g. `perspective-grid-overlay`). Each PR branches
+  from it and targets it, and the integration branch is merged to `main` once the feature is complete.
+  A branch can't be named `<integration>/<x>` because git refs collide, so use `feature/<x>`.
+- Run pytest with `set -o pipefail` when piping output (e.g. into `tail`). Otherwise a failing
+  run can still let the following `git commit` go through.
 - **Versioning (SemVer, pre-1.0):** after a release-worthy merge, commit `Bump version to X.Y.Z`
   on `main`. Update **both** `pyproject.toml` and `text3d_studio/__init__.py`, then run `uv lock`.
   Then create an annotated tag `vX.Y.Z` with a one-line summary.

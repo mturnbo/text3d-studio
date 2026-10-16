@@ -17,7 +17,7 @@ Without uv: `pip install "PyQt6>=6.6" "PyOpenGL>=3.1.7" "numpy>=1.26"`, then `py
 ## Architecture (MVVM)
 
 ```
-Model (model.py)            pure dataclasses: Scene{text, transform, material, light, shadow, camera}, Document
+Model (model.py)            pure dataclasses: Scene{text, transform, ground, material, light, shadow, camera}, Document
    ▲  mutated only via
 ViewModel (viewmodel.py)    SceneViewModel.set(section, field, value) → scene_changed / text_changed / background_changed
    ▲  signals                ▲ signals
@@ -50,9 +50,10 @@ shadow pass therefore uses the front and back slices plus side-wall quads traced
 outline, which is a closed caster for any light angle. Shadow strength falls off with height above
 the ground for a natural contact-shadow look.
 
-**Light frame.** The light's azimuth and elevation are measured relative to the text's *ground
-plane*. Tilt X / Roll Z tilt the ground and the light with it, while Yaw Y spins the text on the
-ground without moving the sun.
+**Ground and light.** The ground plane has its own pose relative to the camera: tilt, roll, grid
+rotation and camera height. The text stands on it and slides along it, so it stays in perspective
+wherever you drag it. The light's azimuth and elevation are measured relative to the ground. Tilting
+the ground tilts the sun with it, but rotating the grid or the text doesn't move the sun.
 
 ## Opening an image
 
@@ -66,12 +67,13 @@ Exports render at the loaded image's size. The status bar shows it, and says so 
 
 ## Getting a natural look
 
-1. **Match the ground first.** Lower the text onto a floor in the photo. Use **Tilt X** until the bottom edges of the letters run parallel to floor lines, then **Field of view** to match lens distortion: wide-angle photos need 60–80°, telephoto 15–30°.
-2. **Yaw** (or right-drag) to align the text with walls, curbs and other strong lines in the scene.
-3. **Find the sun.** Look at the existing shadows in the photo and set **Azimuth** so the text's shadow points the same way. Set **Elevation** low (10–25°) for long morning or evening shadows, high (60–80°) for midday.
-4. **Match the softness.** Overcast scenes need high **Softness** and low **Opacity**. Hard sunlight needs low softness. Tint the **Shadow color** toward the scene's shadow color, usually a desaturated blue.
-5. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. Drop **Specular** for matte materials like stone or concrete.
-6. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
+1. **Turn on the grid** (**G**, or **Show Grid** on the toolbar). It shows the ground the text stands on, the horizon, and orange lanes marking the path the text can slide along.
+2. **Match the ground.** Fastest: pick **Fit Rectangle** (**R**) and drag the four handles onto the corners of something rectangular on the floor: a tile, rug, doormat or table top. Set its real size under **Grid › Fit width/depth** first; that sets the scale. Tick **Fit: estimate field of view** if you don't know the lens. Handles turn red if the shape can't be a rectangle. Or do it by hand: pick **Adjust Grid** (**P**) and drag the grid's white horizon line onto the photo's horizon. Drag near either end of it to roll it if the photo is slanted. Right-drag to rotate the grid until its lines run along floor tiles, curbs or walls, and drag the ground to slide the lines onto real seams. The **Ground** panel has the same settings as sliders. The text stays where it is on screen while you adjust. Then set **Field of view** to match the lens: wide-angle photos need 60–80°, telephoto 15–30°. **Camera height** sets how far the eye is above the floor.
+3. **Place the text.** Switch back to **Move Text** (**V**) and drag the text to slide it across the floor; it stays in perspective. Use **Yaw** (or right-drag) to align it with walls, curbs and other strong lines in the scene.
+4. **Find the sun.** Look at the existing shadows in the photo and set **Azimuth** so the text's shadow points the same way. Set **Elevation** low (10–25°) for long morning or evening shadows, high (60–80°) for midday.
+5. **Match the softness.** Overcast scenes need high **Softness** and low **Opacity**. Hard sunlight needs low softness. Tint the **Shadow color** toward the scene's shadow color, usually a desaturated blue.
+6. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. Drop **Specular** for matte materials like stone or concrete.
+7. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
 
 ## Roadmap
 

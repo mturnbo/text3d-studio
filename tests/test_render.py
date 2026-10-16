@@ -137,3 +137,123 @@ def test_layer_count_auto_increases_when_extrusion_spans_many_pixels():
     assert Text3DRenderer.effective_layers(doc.scene, 4000) == MAX_LAYERS
     doc.scene.transform.depth = 0.0
     assert Text3DRenderer.effective_layers(doc.scene, 4000) == 1
+
+
+# ----- Grid overlay (preview only) ----------------------------------------------------------------
+
+
+def render_preview(compositor, doc, with_grid):
+    """Composite plus (optionally) the grid overlay into an offscreen target, like the canvas does."""
+    from OpenGL import GL
+
+    from text3d_studio.render.gl_utils import RenderTarget
+    from text3d_studio.render.grid_renderer import GridRenderer
+
+    height, width = doc.background.shape[:2]
+    raster = rasterize_text(doc.scene.text)
+    compositor.set_background(doc.background)
+    compositor.set_glyph(raster)
+    target = RenderTarget(width, height, 0)
+    grid = GridRenderer(compositor.quad)
+    try:
+        compositor.render(doc.scene, target.fbo, (0, 0, width, height))
+        if with_grid:
+            grid.render(doc.scene, raster, target.fbo, (0, 0, width, height))
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+        data = GL.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+    finally:
+        grid.delete()
+        target.delete()
+    return np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1].copy()
+
+
+def grid_document(grid=None, **overrides):
+    grid = {"visible": True, "opacity": 1.0, **(grid or {})}
+    return make_document(grid=grid, shadow={"enabled": False}, **overrides)
+
+
+def test_grid_draws_lines_on_the_ground_only(compositor):
+    doc = grid_document()
+    plain, gridded = render_preview(compositor, doc, False), render_preview(compositor, doc, True)
+    changed = np.any(plain[..., :3] != gridded[..., :3], axis=-1)
+    height = changed.shape[0]
+    assert changed[height // 2 + 20 :].mean() > 0.02  # ground below the horizon gets lines
+    # Nothing above the horizon (mid-image at pitch 0) except the vanishing-point rings centred on it.
+    assert not changed[: height // 2 - 10].any()
+
+
+def test_text_hides_the_grid_behind_it(compositor):
+    doc = grid_document()
+    plain, gridded = render_preview(compositor, doc, False), render_preview(compositor, doc, True)
+    text = changed_mask(plain)
+    differs = np.any(plain[..., :3] != gridded[..., :3], axis=-1)
+    assert (differs & text).sum() < 0.01 * text.sum()  # only antialiased silhouette edges may blend
+
+
+@pytest.mark.parametrize("pitch", [0.0, 6.0, -4.0])
+def test_horizon_line_lands_where_the_ground_vanishes(compositor, pitch):
+    from text3d_studio import math3d
+
+    doc = grid_document(ground={"pitch": pitch}, text={"content": ""})
+    plain, gridded = render_preview(compositor, doc, False), render_preview(compositor, doc, True)
+    height = plain.shape[0]
+    expected_row = height / 2 - math3d.focal_length_px(doc.scene.camera.fov, height) * np.tan(np.radians(pitch))
+    column = 15  # left edge, away from the vanishing-point rings
+    rows = np.flatnonzero(np.any(plain[:, column, :3] != gridded[:, column, :3], axis=-1))
+    first_marked = rows.min()
+    assert abs(first_marked - expected_row) <= 2
+
+
+def test_export_is_identical_with_grid_shown_or_hidden(compositor):
+    hidden = render(compositor, make_document(grid={"visible": False}))
+    shown = render(compositor, make_document(grid={"visible": True, "opacity": 1.0}))
+    np.testing.assert_array_equal(hidden, shown)
+
+
+def test_footprint_hugs_the_ink_and_handles_no_text():
+    from text3d_studio.model import TextParams
+    from text3d_studio.render.grid_renderer import footprint
+
+    raster = rasterize_text(TextParams(content="HHH"))
+    x_min, x_max, z_min, z_max = footprint(raster, size=2.0, depth=0.5)
+    ink_cols = np.flatnonzero(raster.rgba[..., 3].max(axis=0) > 127)
+    px_to_world = raster.size[0] * 2.0 / raster.rgba.shape[1]
+    assert x_max - x_min == pytest.approx((ink_cols[-1] - ink_cols[0] + 1) * px_to_world, rel=0.02)
+    assert (z_min, z_max) == (-1.0, 0.0)
+    assert footprint(None, 2.0, 0.5) == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_preview_with_grid_still_exceeds_30_fps(compositor):
+    from OpenGL import GL
+
+    from text3d_studio.render.gl_utils import RenderTarget
+    from text3d_studio.render.grid_renderer import GridRenderer
+
+    doc = grid_document(ground={"pitch": 8.0})
+    doc.background = make_document(width=1600, height=1000).background
+    raster = rasterize_text(doc.scene.text)
+    compositor.set_background(doc.background)
+    compositor.set_glyph(raster)
+    target, grid = RenderTarget(1600, 1000, samples=4), GridRenderer(compositor.quad)
+    try:
+        GL.glFinish()
+        start = time.perf_counter()
+        for i in range(30):
+            doc.scene.transform.rot_y = -40 + i
+            compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+            grid.render(doc.scene, raster, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        fps = 30 / (time.perf_counter() - start)
+    finally:
+        grid.delete()
+        target.delete()
+    assert fps > 30, f"only {fps:.1f} FPS"
+
+
+def test_grid_offset_slides_lines_and_wraps_every_cell(compositor):
+    base = render_preview(compositor, grid_document(text={"content": ""}), True)
+    half = render_preview(compositor, grid_document(text={"content": ""}, grid={"offset_x": 0.5}), True)
+    whole = render_preview(compositor, grid_document(text={"content": ""}, grid={"offset_x": 1.0, "offset_z": -2.0}), True)
+    assert np.abs(base.astype(int) - half).max() > 50  # lines visibly moved
+    assert np.abs(base.astype(int) - whole).max() <= 1  # a whole-cell shift lands on the same lines (float rounding aside)

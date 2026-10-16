@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+from .. import ground as ground_model
 from .. import math3d
 from ..lighting import LightingState
 from ..model import Scene
@@ -79,7 +80,7 @@ class Text3DRenderer:
         if t.depth <= 1e-4:
             return 1
         focal_px = (viewport_height / 2) / math.tan(math.radians(scene.camera.fov) / 2)
-        depth_px = t.depth * t.size * focal_px / max(abs(t.z), 1e-3)
+        depth_px = t.depth * t.size * focal_px / ground_model.text_distance(scene.ground, t)
         needed = math.ceil(depth_px * LAYERS_PER_PIXEL)
         return min(MAX_LAYERS, max(int(t.layers), needed))
 
@@ -90,7 +91,7 @@ class Text3DRenderer:
 
     def _bind_common(self, program, scene, proj, flatten_gl, lighting) -> None:
         t = scene.transform
-        model = math3d.model_matrix(t.x, t.y, t.z, t.rot_x, t.rot_y, t.rot_z, t.size)
+        model = ground_model.text_model_matrix(scene.ground, t)
         program.use()
         self.mask.bind(0)
         program.set_int("u_mask", 0)

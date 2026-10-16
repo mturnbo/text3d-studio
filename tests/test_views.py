@@ -2,9 +2,11 @@ import os
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent
 
+from text3d_studio import ground as ground_model
+from text3d_studio import math3d
 from text3d_studio.image_io import save_image
 from text3d_studio.model import Document
 from text3d_studio.preferences import Preferences
@@ -84,7 +86,9 @@ def test_empty_state_is_centered_on_canvas(window, qapp):
 
 
 def test_toolbar_shares_open_and_export_actions_with_file_menu(window):
-    assert window.toolbar.actions() == [window.open_action, window.export_action]
+    buttons = [a for a in window.toolbar.actions() if not a.isSeparator()]
+    tools = list(window.tool_actions.values())
+    assert buttons == [window.open_action, window.export_action, window.grid_action, *tools]
     file_menu = window.menuBar().actions()[0].menu()
     assert window.open_action in file_menu.actions()
     assert window.export_action in file_menu.actions()
@@ -384,3 +388,478 @@ def test_busy_cursor_restored_when_decode_fails(window, tmp_path, monkeypatch, q
     window.load_image_path(str(broken))
     assert qapp.overrideCursor() is None
     assert window.vm.document.background is None
+
+
+# ----- Ground model controls --------------------------------------------------------------------
+
+
+def test_panel_has_ground_controls_and_no_legacy_transform_controls(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    keys = set(ControlPanel(vm)._setters)
+    assert {("ground", f) for f in ("pitch", "roll", "yaw", "height")} <= keys
+    assert {("transform", f) for f in ("x", "z", "rot_y", "size", "depth", "layers")} <= keys
+    assert not {("transform", f) for f in ("y", "rot_x", "rot_z")} & keys
+
+
+def test_ground_slider_and_model_stay_in_sync(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    row = panel.findChild(SliderRow, "ground.pitch")
+    row.spin.setValue(12.0)
+    assert vm.scene.ground.pitch == 12.0
+    vm.set("ground", "pitch", -7.5)
+    assert row.spin.value() == -7.5
+
+
+
+def sized_canvas(vm, width=800, height=500):
+    canvas = ImageCanvas(vm)
+    canvas.resize(width, height)
+    return canvas
+
+
+def mouse(canvas, kind, pos, button, buttons=None):
+    event = QMouseEvent(
+        kind, QPointF(*pos), QPointF(*pos), button,
+        button if buttons is None else buttons, Qt.KeyboardModifier.NoModifier,
+    )
+    {
+        QEvent.Type.MouseButtonPress: canvas.mousePressEvent,
+        QEvent.Type.MouseMove: canvas.mouseMoveEvent,
+        QEvent.Type.MouseButtonRelease: canvas.mouseReleaseEvent,
+    }[kind](event)
+
+
+def drag(canvas, start, end, button=Qt.MouseButton.LeftButton):
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, button)
+    mouse(canvas, QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, button)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton)
+
+
+def text_anchor_on_screen(canvas):
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    scene = canvas.vm.scene
+    pixel = math3d.project_to_image(
+        ground_model.text_position(scene.ground, scene.transform), scene.camera.fov, (rect_w, rect_h)
+    )
+    return (pixel[0] + rect_x, pixel[1] + rect_y)
+
+
+@pytest.mark.parametrize("target", [(520, 420), (250, 330), (400, 290)])
+def test_dragging_text_keeps_the_grabbed_ground_point_under_the_cursor(vm, target):
+    vm.set("ground", "pitch", 15.0)
+    canvas = sized_canvas(vm)
+    drag(canvas, text_anchor_on_screen(canvas), target)
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), target, atol=1e-6)
+
+
+def test_dragging_keeps_the_text_on_the_ground(vm):
+    canvas = sized_canvas(vm)
+    drag(canvas, text_anchor_on_screen(canvas), (600, 450))
+    position = ground_model.text_position(vm.scene.ground, vm.scene.transform)
+    plane = ground_model.ground_plane(vm.scene.ground)
+    assert plane[:3] @ position + plane[3] == pytest.approx(0, abs=1e-9)
+
+
+def test_drag_starting_in_the_sky_does_nothing(vm):
+    canvas = sized_canvas(vm)
+    before = (vm.scene.transform.x, vm.scene.transform.z)
+    drag(canvas, (400, 50), (450, 300))
+    assert (vm.scene.transform.x, vm.scene.transform.z) == before
+
+
+def test_dragging_into_the_sky_stops_at_the_last_ground_position(vm):
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 40, start[1]), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    settled = (vm.scene.transform.x, vm.scene.transform.z)
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 40, 20), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    assert (vm.scene.transform.x, vm.scene.transform.z) == settled
+
+
+def test_right_drag_only_changes_yaw(vm):
+    canvas = sized_canvas(vm)
+    before_ground = dict(vars(vm.scene.ground))
+    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.rot_y)
+    drag(canvas, (400, 300), (450, 340), Qt.MouseButton.RightButton)
+    assert (vm.scene.transform.x, vm.scene.transform.z) == before[:2]
+    assert vm.scene.transform.rot_y == pytest.approx(before[2] + 50 * 0.4)
+    assert vars(vm.scene.ground) == before_ground
+
+
+
+# ----- Grid toggle --------------------------------------------------------------------------------
+
+
+def test_grid_action_toggles_the_grid(window):
+    assert not window.grid_action.isChecked()
+    window.grid_action.trigger()
+    assert window.vm.scene.grid.visible
+    window.grid_action.trigger()
+    assert not window.vm.scene.grid.visible
+
+
+def test_grid_action_follows_the_model(window):
+    window.vm.set("grid", "visible", True)
+    assert window.grid_action.isChecked()
+
+
+def test_grid_action_has_g_shortcut_and_view_menu_entry(window):
+    assert window.grid_action.shortcut() == QKeySequence("G")
+    view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+    assert window.grid_action in view_menu.actions()
+
+
+def test_grid_panel_controls_are_bound(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    fields = ("visible", "cell_size", "opacity", "color", "accent_color", "fit_width", "fit_depth", "fit_estimate_fov")
+    assert {("grid", f) for f in fields} <= set(panel._setters)
+    panel.findChild(SliderRow, "grid.cell_size").spin.setValue(2.5)
+    assert vm.scene.grid.cell_size == 2.5
+
+
+def test_g_key_on_canvas_toggles_grid(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    window.show()
+    window.canvas.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(window.canvas, Qt.Key.Key_G)
+    assert window.vm.scene.grid.visible
+
+
+def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit
+
+    window.show()
+    edit = window.panel.findChild(QLineEdit)
+    edit.setFocus()
+    edit.end(False)
+    qapp.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_G)
+    assert edit.text() == "HELLOg"
+    assert not window.vm.scene.grid.visible
+
+
+
+# ----- Tools ----------------------------------------------------------------------------------------
+
+
+def test_text_tool_is_active_by_default(window):
+    from text3d_studio.views.image_canvas import TEXT_TOOL
+
+    assert window.canvas.tool == TEXT_TOOL
+    assert window.tool_actions[TEXT_TOOL].isChecked()
+
+
+def test_choosing_grid_tool_shows_grid_and_updates_hint(window):
+    from text3d_studio.views.image_canvas import GRID_TOOL, TEXT_TOOL
+    from text3d_studio.views.main_window import TOOL_HINTS
+
+    window.tool_actions[GRID_TOOL].trigger()
+    assert window.canvas.tool == GRID_TOOL
+    assert window.vm.scene.grid.visible
+    assert not window.tool_actions[TEXT_TOOL].isChecked()
+    assert window.hint_label.text() == TOOL_HINTS[GRID_TOOL]
+
+
+def test_tool_shortcuts(window):
+    from text3d_studio.views.image_canvas import GRID_TOOL, TEXT_TOOL
+
+    assert window.tool_actions[TEXT_TOOL].shortcut() == QKeySequence("V")
+    assert window.tool_actions[GRID_TOOL].shortcut() == QKeySequence("P")
+
+
+def test_switching_back_to_text_tool_keeps_grid_visible(window):
+    from text3d_studio.views.image_canvas import GRID_TOOL, TEXT_TOOL
+
+    window.canvas.set_tool(GRID_TOOL)
+    window.canvas.set_tool(TEXT_TOOL)
+    assert window.tool_actions[TEXT_TOOL].isChecked()
+    assert window.vm.scene.grid.visible
+
+
+def test_dragging_over_the_text_in_grid_tool_moves_grid_lines_not_text(vm):
+    from text3d_studio.views.image_canvas import GRID_TOOL
+
+    canvas = sized_canvas(vm)
+    canvas.set_tool(GRID_TOOL)
+    before = dict(vars(vm.scene.transform))
+    drag(canvas, text_anchor_on_screen(canvas), (600, 450))
+    assert vars(vm.scene.transform) == before
+    assert (vm.scene.grid.offset_x, vm.scene.grid.offset_z) != (0.0, 0.0)
+
+
+
+# ----- Grid tool: horizon -------------------------------------------------------------------------
+
+
+def grid_canvas(vm, **ground):
+    from text3d_studio.views.image_canvas import GRID_TOOL
+
+    for name, value in ground.items():
+        vm.set("ground", name, value)
+    canvas = sized_canvas(vm)
+    canvas.set_tool(GRID_TOOL)
+    return canvas
+
+
+def horizon_distance(canvas, widget_pos):
+    line = canvas._horizon_line()
+    u, v = canvas._image_pixel(QPointF(*widget_pos))
+    return abs(line @ np.array([u, v, 1.0]))
+
+
+def test_dragging_the_horizon_middle_tilts_ground_to_follow_cursor(vm):
+    canvas = grid_canvas(vm)
+    drag(canvas, (400, 250), (400, 190))  # level ground: horizon starts mid-height
+    assert vm.scene.ground.pitch > 0  # raising the horizon means looking down
+    assert horizon_distance(canvas, (400, 190)) < 1e-6
+    assert vm.scene.ground.roll == 0
+
+
+def test_dragging_a_horizon_end_rolls_around_the_center(vm):
+    canvas = grid_canvas(vm)
+    drag(canvas, (40, 250), (40, 300))
+    assert vm.scene.ground.roll != 0
+    assert horizon_distance(canvas, (40, 300)) < 1e-6
+    assert horizon_distance(canvas, (400, 250)) < 1e-6  # the center stays put
+
+
+def test_horizon_drags_keep_the_text_in_place_on_screen(vm):
+    canvas = grid_canvas(vm)
+    before = text_anchor_on_screen(canvas)
+    drag(canvas, (400, 250), (400, 215))  # tilt: horizon now at row 215
+    drag(canvas, (760, 215), (760, 240))  # roll from the right end
+    assert vm.scene.ground.pitch != 0 and vm.scene.ground.roll != 0
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), before, atol=1e-6)
+
+
+def test_tilt_is_clamped_to_the_slider_range(vm):
+    canvas = grid_canvas(vm)
+    drag(canvas, (400, 250), (400, -50000))
+    assert vm.scene.ground.pitch <= 89.0
+
+
+def test_press_away_from_the_horizon_leaves_ground_alone(vm):
+    canvas = grid_canvas(vm)
+    before = dict(vars(vm.scene.ground))
+    drag(canvas, (400, 120), (400, 60))
+    assert vars(vm.scene.ground) == before
+
+
+@pytest.mark.parametrize(
+    "pos, shape",
+    [((400, 250), Qt.CursorShape.SizeVerCursor), ((30, 251), Qt.CursorShape.SizeBDiagCursor), ((400, 100), Qt.CursorShape.ArrowCursor)],
+)
+def test_hovering_shows_which_horizon_handle_is_under_the_cursor(vm, pos, shape):
+    canvas = grid_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    assert canvas.cursor().shape() == shape
+
+
+
+# ----- Grid tool: shift, rotate, scale ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", [(520, 420), (300, 330)])
+def test_dragging_the_ground_slides_grid_lines_with_the_cursor(vm, target):
+    canvas = grid_canvas(vm)
+    start = (450, 380)
+    grabbed = canvas.ground_point_at(QPointF(*start))
+    drag(canvas, start, target)
+    now_under_cursor = canvas.ground_point_at(QPointF(*target))
+    grid = vm.scene.grid
+    # The grid point that was grabbed (in the grid's own, offset coordinates) is now under the cursor.
+    np.testing.assert_allclose(
+        (now_under_cursor[0] - grid.offset_x, now_under_cursor[1] - grid.offset_z), grabbed, atol=1e-9
+    )
+
+
+def test_ground_drag_does_not_change_ground_pose(vm):
+    canvas = grid_canvas(vm, pitch=5.0)
+    before = dict(vars(vm.scene.ground))
+    drag(canvas, (450, 380), (300, 420))
+    assert vars(vm.scene.ground) == before
+
+
+def test_right_drag_rotates_grid_and_keeps_text_in_place(vm):
+    canvas = grid_canvas(vm)
+    before = text_anchor_on_screen(canvas)
+    drag(canvas, (400, 300), (480, 300), Qt.MouseButton.RightButton)
+    assert vm.scene.ground.yaw == pytest.approx(80 * 0.3)
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), before, atol=1e-6)
+
+
+def wheel(canvas, steps):
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QWheelEvent
+
+    event = QWheelEvent(
+        QPointF(400, 300), QPointF(400, 300), QPoint(), QPoint(0, int(120 * steps)),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    canvas.wheelEvent(event)
+
+
+def test_wheel_scales_cells_in_grid_tool_and_text_in_text_tool(vm):
+    from text3d_studio.views.image_canvas import TEXT_TOOL
+
+    canvas = grid_canvas(vm)
+    wheel(canvas, 2)
+    assert vm.scene.grid.cell_size == pytest.approx(1.06**2)
+    assert vm.scene.transform.size == 3.0
+    canvas.set_tool(TEXT_TOOL)
+    wheel(canvas, 1)
+    assert vm.scene.transform.size == pytest.approx(3.0 * 1.06)
+
+
+def test_cell_size_is_clamped(vm):
+    canvas = grid_canvas(vm)
+    wheel(canvas, 200)
+    assert vm.scene.grid.cell_size == 10.0
+    wheel(canvas, -400)
+    assert vm.scene.grid.cell_size == 0.1
+
+
+def test_hovering_the_ground_in_grid_tool_shows_move_cursor(vm):
+    canvas = grid_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseMove, (450, 400), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    assert canvas.cursor().shape() == Qt.CursorShape.SizeAllCursor
+
+
+# ----- Fit Rectangle tool -------------------------------------------------------------------------
+
+
+def fit_canvas(vm):
+    from text3d_studio.views.image_canvas import FIT_TOOL
+
+    canvas = sized_canvas(vm)
+    canvas.set_tool(FIT_TOOL)
+    return canvas
+
+
+def true_rectangle_px(canvas, truth, corners=((-1.0, -7.0), (1.0, -7.0), (1.0, -10.0), (-1.0, -10.0)), fov=None):
+    """Widget positions of a 2 x 3 rectangle lying on ground `truth`, seen through `fov` (default: the scene's)."""
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    fov = canvas.vm.scene.camera.fov if fov is None else fov
+    pixels = [math3d.project_to_image(ground_model.ground_to_world(truth, x, z), fov, (rect_w, rect_h)) for x, z in corners]
+    return [(rect_x + u, rect_y + v) for u, v in pixels]
+
+
+def drag_fit_corner(canvas, index, target, steps=5):
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    u, v = canvas.fit_corners_px()[index]
+    start = (rect_x + u, rect_y + v)
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    for k in range(1, steps + 1):
+        point = (start[0] + (target[0] - start[0]) * k / steps, start[1] + (target[1] - start[1]) * k / steps)
+        mouse(canvas, QEvent.Type.MouseMove, point, Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, target, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+
+
+def test_tracing_a_rectangle_recovers_the_ground_and_keeps_the_text_in_place(vm):
+    from text3d_studio.model import GroundParams
+
+    vm.set("grid", "fit_width", 2.0)
+    vm.set("grid", "fit_depth", 3.0)
+    canvas = fit_canvas(vm)
+    anchor_before = text_anchor_on_screen(canvas)
+    truth = GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8)
+    for index, target in enumerate(true_rectangle_px(canvas, truth)):
+        drag_fit_corner(canvas, index, target)
+    g = vm.scene.ground
+    np.testing.assert_allclose((g.pitch, g.yaw, g.roll, g.height), (14.0, 30.0, -3.0, 1.8), atol=1e-6)
+    assert canvas.fit_valid
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), anchor_before, atol=1e-6)
+
+
+
+def test_fit_tool_shortcut_and_handles_only_in_fit_tool(window):
+    from text3d_studio.views.image_canvas import FIT_TOOL, TEXT_TOOL
+
+    assert window.tool_actions[FIT_TOOL].shortcut() == QKeySequence("R")
+    window.tool_actions[FIT_TOOL].trigger()
+    assert window.canvas.fit_overlay.isVisibleTo(window.canvas)
+    window.tool_actions[TEXT_TOOL].trigger()
+    assert not window.canvas.fit_overlay.isVisibleTo(window.canvas)
+
+
+def test_starting_handles_describe_the_current_ground(vm):
+    vm.set_ground_pose(pitch=9.0, yaw=20.0, roll=2.0)
+    canvas = fit_canvas(vm)
+    _, _, rect_w, rect_h = canvas._image_rect()
+    fit = ground_model.fit_ground_to_rectangle(canvas.fit_corners_px(), (1.0, 1.0), vm.scene.camera.fov, (rect_w, rect_h), 1.0)
+    np.testing.assert_allclose((fit.pitch, fit.yaw, fit.roll), (9.0, 20.0, 2.0), atol=1e-6)
+    xs = [u for u, _ in canvas.fit_corners_px()]
+    assert (max(xs) - min(xs)) > 0.25 * rect_w  # big enough to grab
+
+
+def test_clicking_a_handle_without_dragging_changes_nothing(vm):
+    canvas = fit_canvas(vm)
+    before = (dict(vars(vm.scene.ground)), dict(vars(vm.scene.transform)))
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    u, v = canvas.fit_corners_px()[0]
+    mouse(canvas, QEvent.Type.MouseButtonPress, (rect_x + u, rect_y + v), Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (rect_x + u, rect_y + v), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    assert (dict(vars(vm.scene.ground)), dict(vars(vm.scene.transform))) == before
+
+
+def test_crossed_corners_turn_invalid_and_leave_the_scene_alone(vm):
+    canvas = fit_canvas(vm)
+    messages = []
+    canvas.fit_status.connect(messages.append)
+    before = dict(vars(vm.scene.ground))
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    corner_2 = canvas.fit_corners_px()[1]
+    # Straight to a crossed shape (corner 4 past corner 2): the scene keeps its last valid fit.
+    drag_fit_corner(canvas, 3, (rect_x + corner_2[0] + 60, rect_y + corner_2[1] + 20), steps=1)
+    assert not canvas.fit_valid
+    assert "convex" in messages[-1]
+    assert vars(vm.scene.ground) == before
+
+
+def test_tracing_can_estimate_the_field_of_view(vm):
+    from text3d_studio.model import GroundParams
+
+    vm.set("grid", "fit_width", 2.0)
+    vm.set("grid", "fit_depth", 3.0)
+    vm.set("grid", "fit_estimate_fov", True)
+    canvas = fit_canvas(vm)
+    truth = GroundParams(pitch=12.0, yaw=35.0, roll=2.0, height=1.6)
+    for index, target in enumerate(true_rectangle_px(canvas, truth, fov=55.0)):
+        drag_fit_corner(canvas, index, target)
+    assert vm.scene.camera.fov == pytest.approx(55.0, abs=1e-6)
+    np.testing.assert_allclose((vm.scene.ground.pitch, vm.scene.ground.height), (12.0, 1.6), atol=1e-6)
+
+
+def test_moving_the_text_between_corner_drags_is_respected(vm):
+    from text3d_studio.model import GroundParams
+
+    vm.set("grid", "fit_width", 2.0)
+    vm.set("grid", "fit_depth", 3.0)
+    canvas = fit_canvas(vm)
+    targets = true_rectangle_px(canvas, GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8))
+    drag_fit_corner(canvas, 0, targets[0])
+    drag_fit_corner(canvas, 1, targets[1])
+    vm.set("transform", "x", vm.scene.transform.x + 1.0)  # the user nudges the text mid-session
+    anchor = text_anchor_on_screen(canvas)
+    drag_fit_corner(canvas, 2, targets[2])
+    drag_fit_corner(canvas, 3, targets[3])
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), anchor, atol=1e-6)
+
+
+def test_horizon_drag_across_the_text_and_back_returns_it(vm):
+    canvas = grid_canvas(vm)
+    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size)
+    mouse(canvas, QEvent.Type.MouseButtonPress, (400, 250), Qt.MouseButton.LeftButton)
+    for row in (300, 380, 460, 380, 300, 250):  # the horizon sweeps down past the text, then back
+        mouse(canvas, QEvent.Type.MouseMove, (400, row), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 250), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    np.testing.assert_allclose((vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size), before, atol=1e-9)

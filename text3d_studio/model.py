@@ -18,15 +18,41 @@ class TextParams:
 
 @dataclass
 class TransformParams:
+    """Where the text stands on the ground (see ground.py); x and z run along the ground's axes."""
+
     x: float = 0.0
-    y: float = -1.5
-    z: float = -12.0
-    rot_x: float = 0.0  # ground tilt (pitch)
-    rot_y: float = -20.0  # yaw: spins the text on its ground plane
-    rot_z: float = 0.0  # ground roll
+    z: float = -12.0  # negative is away from the camera
+    rot_y: float = -20.0  # yaw: spins the text on the ground
     size: float = 3.0  # world height of one em
     depth: float = 0.35  # extrusion depth as a fraction of size
     layers: int = 96  # number of duplicated layers in the stack
+
+
+@dataclass
+class GroundParams:
+    """Pose of the ground plane relative to the camera. The text stands on this plane."""
+
+    pitch: float = 0.0  # tilt toward the camera; positive looks down onto the ground
+    roll: float = 0.0  # tilt around the view axis
+    yaw: float = 0.0  # spins the ground's grid axes (and the text placed on them) within the plane
+    height: float = 1.5  # camera height above the ground, in world units
+
+
+@dataclass
+class GridParams:
+    """Editor overlay drawn on the ground plane. Never part of an export."""
+
+    visible: bool = False
+    cell_size: float = 1.0  # world units between grid lines
+    offset_x: float = 0.0  # slides the grid lines (not the ground) to line them up with floor seams
+    offset_z: float = 0.0
+    opacity: float = 0.6
+    color: Color = (0.85, 0.90, 1.0)
+    accent_color: Color = (1.0, 0.70, 0.20)  # the text's footprint and the lanes it slides along
+    # Fit to Rectangle: the real size of the rectangle being traced sets the ground's scale (camera height).
+    fit_width: float = 1.0  # along its first edge
+    fit_depth: float = 1.0  # along its second edge
+    fit_estimate_fov: bool = False  # take the field of view from the rectangle's vanishing points
 
 
 @dataclass
@@ -67,6 +93,8 @@ class CameraParams:
 class Scene:
     text: TextParams = field(default_factory=TextParams)
     transform: TransformParams = field(default_factory=TransformParams)
+    ground: GroundParams = field(default_factory=GroundParams)
+    grid: GridParams = field(default_factory=GridParams)
     material: MaterialParams = field(default_factory=MaterialParams)
     light: LightParams = field(default_factory=LightParams)
     shadow: ShadowParams = field(default_factory=ShadowParams)
