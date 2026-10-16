@@ -188,9 +188,21 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 
 | Tool | Left-drag | Right-drag | Wheel |
 |---|---|---|---|
-| **Move Text** (V) | slide text on the ground (grabbed point stays under the cursor) | text yaw | size; Ctrl/Cmd: distance |
+| **Move Text** (V) | move text on screen at constant on-screen size (size rescales with distance) · Shift: lock to dominant axis · Option/Alt: slide on the ground in perspective (grabbed point stays under the cursor) · Cmd/Ctrl: yaw | text yaw | size (pinch too); Ctrl/Cmd: distance |
 | **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
 | **Fit Rectangle** (R) | drag the 4 corner handles onto a rectangle in the photo; the ground is solved live (`ground.fit_ground_to_rectangle`) | — | — |
+
+Qt reports macOS's Command key as `ControlModifier` and Option as `AltModifier`. The drag mode is fixed on
+press; Shift can be toggled mid-drag. Pinch arrives as a native gesture, caught by `PinchFilter`.
+
+**Control panel input:** `WheelGuard` sends the wheel to the panel's scroll bar unless the control under the
+pointer has focus (sliders, spin boxes and combos are click/Tab focus only). `LetterShortcuts` keeps a
+focused spin box from swallowing G/V/P/R.
+
+**Tests:** an autouse fixture in `conftest.py` runs `gc.collect()` before each test. Widgets dropped by
+earlier tests otherwise die during a later canvas's paint, and destroying a GL widget switches the
+current context, giving "Framebuffer incomplete (status 0x0)". Don't override `event()` on the canvas
+either; add a filter object.
 
 **Fit Rectangle:**
 - Handles start as a ~30%-wide rectangle on the current ground. Its real size (`grid.fit_width/depth`) sets

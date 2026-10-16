@@ -1,8 +1,10 @@
 """ControlPanel: declarative slider/picker layout bound two-way to the SceneViewModel."""
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -121,6 +123,39 @@ GROUP_TITLES = [
 ]
 
 
+class WheelGuard(QObject):
+    """Lets the wheel scroll the panel instead of changing whichever control is under the pointer.
+
+    A guarded control only takes wheel input once it has focus (click it, or Tab to it). Otherwise the wheel
+    goes to the panel's scroll bar.
+    """
+
+    def __init__(self, panel: QScrollArea):
+        super().__init__(panel)
+        self.panel = panel
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.Wheel and not watched.hasFocus():
+            QApplication.sendEvent(self.panel.verticalScrollBar(), event)
+            return True
+        return False
+
+
+class LetterShortcuts(QObject):
+    """Lets single-letter shortcuts (G, V, P, R) work while a number field has focus.
+
+    A focused spin box claims every printable key as possible input, which blocks those shortcuts, yet it
+    can't use letters anyway. Leaving the claim unaccepted lets the shortcut through.
+    """
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.ShortcutOverride:
+            plain = not event.modifiers() & ~Qt.KeyboardModifier.ShiftModifier
+            if plain and event.text().isalpha():
+                return True
+        return False
+
+
 class SliderRow(QWidget):
     """A slider paired with a spin box, emitting floats (ints when decimals == 0)."""
 
@@ -212,6 +247,13 @@ class ControlPanel(QScrollArea):
             column.addWidget(group)
         column.addStretch(1)
         self.setWidget(content)
+        self.wheel_guard = WheelGuard(self)
+        for control in content.findChildren((QSlider, QAbstractSpinBox, QComboBox)):
+            control.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # focus by click or Tab, never by wheel
+            control.installEventFilter(self.wheel_guard)
+        self.letter_shortcuts = LetterShortcuts(self)
+        for spin in content.findChildren(QAbstractSpinBox):
+            spin.installEventFilter(self.letter_shortcuts)
         self._show_material_controls(self.vm.get("material", "kind"))
 
         self.vm.scene_changed.connect(self._refresh)

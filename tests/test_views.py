@@ -420,10 +420,10 @@ def sized_canvas(vm, width=800, height=500):
     return canvas
 
 
-def mouse(canvas, kind, pos, button, buttons=None):
+def mouse(canvas, kind, pos, button, buttons=None, modifiers=Qt.KeyboardModifier.NoModifier):
     event = QMouseEvent(
         kind, QPointF(*pos), QPointF(*pos), button,
-        button if buttons is None else buttons, Qt.KeyboardModifier.NoModifier,
+        button if buttons is None else buttons, modifiers,
     )
     {
         QEvent.Type.MouseButtonPress: canvas.mousePressEvent,
@@ -432,10 +432,19 @@ def mouse(canvas, kind, pos, button, buttons=None):
     }[kind](event)
 
 
-def drag(canvas, start, end, button=Qt.MouseButton.LeftButton):
-    mouse(canvas, QEvent.Type.MouseButtonPress, start, button)
-    mouse(canvas, QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, button)
-    mouse(canvas, QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton)
+def drag(canvas, start, end, button=Qt.MouseButton.LeftButton, modifiers=Qt.KeyboardModifier.NoModifier):
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, button, modifiers=modifiers)
+    mouse(canvas, QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, button, modifiers)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton, modifiers)
+
+
+OPTION = Qt.KeyboardModifier.AltModifier
+COMMAND = Qt.KeyboardModifier.ControlModifier  # Qt's name for macOS's Command key
+
+
+def apparent_size(vm):
+    """On-screen text size up to a constant: world size over distance from the camera."""
+    return vm.scene.transform.size / np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.transform))
 
 
 def text_anchor_on_screen(canvas):
@@ -453,6 +462,91 @@ def test_dragging_text_keeps_the_grabbed_ground_point_under_the_cursor(vm, targe
     canvas = sized_canvas(vm)
     drag(canvas, text_anchor_on_screen(canvas), target)
     np.testing.assert_allclose(text_anchor_on_screen(canvas), target, atol=1e-6)
+
+
+@pytest.mark.parametrize("target", [(420, 275), (400, 480), (150, 300)])
+def test_plain_drag_moves_the_text_without_changing_its_on_screen_size(vm, target):
+    canvas = sized_canvas(vm)
+    before = apparent_size(vm)
+    drag(canvas, text_anchor_on_screen(canvas), target)
+    assert apparent_size(vm) == pytest.approx(before)
+    assert vm.scene.transform.size != pytest.approx(3.0)  # it had to change size to keep its apparent size
+
+
+def test_plain_drag_moves_the_text_by_the_cursor_motion_wherever_it_is_grabbed(vm):
+    canvas = sized_canvas(vm)
+    anchor = text_anchor_on_screen(canvas)
+    grab = (anchor[0] + 60, anchor[1] - 20)
+    drag(canvas, grab, (grab[0] - 100, grab[1] - 40))
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), (anchor[0] - 100, anchor[1] - 40), atol=1e-6)
+
+
+def test_option_drag_slides_along_the_ground_in_perspective(vm):
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    drag(canvas, start, (start[0], start[1] - 40), modifiers=OPTION)
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), (start[0], start[1] - 40), atol=1e-6)
+    assert vm.scene.transform.size == 3.0  # further away, so it looks smaller
+    assert vm.scene.transform.z < -12.0
+
+
+@pytest.mark.parametrize("modifiers", [Qt.KeyboardModifier.ShiftModifier, Qt.KeyboardModifier.ShiftModifier | OPTION])
+@pytest.mark.parametrize("motion, kept_axis", [((80, 9), 1), ((-7, -50), 0)])
+def test_shift_drag_locks_to_the_dominant_axis(vm, modifiers, motion, kept_axis):
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    drag(canvas, start, (start[0] + motion[0], start[1] + motion[1]), modifiers=modifiers)
+    assert text_anchor_on_screen(canvas)[kept_axis] == pytest.approx(start[kept_axis])
+    moved_axis = 1 - kept_axis
+    assert text_anchor_on_screen(canvas)[moved_axis] == pytest.approx(start[moved_axis] + motion[moved_axis])
+
+
+def test_command_drag_only_changes_yaw(vm):
+    canvas = sized_canvas(vm)
+    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size, vm.scene.transform.rot_y)
+    drag(canvas, (400, 300), (450, 340), modifiers=COMMAND)
+    assert (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size) == before[:3]
+    assert vm.scene.transform.rot_y == pytest.approx(before[3] + 50 * 0.4)
+
+
+def test_plain_drag_stops_before_pushing_the_text_too_far_away(vm):
+    from text3d_studio.views.image_canvas import MAX_TEXT_DISTANCE
+
+    vm.set("ground", "pitch", 15.0)  # puts the horizon on screen
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    for y in np.linspace(start[1], 0, 60):
+        mouse(canvas, QEvent.Type.MouseMove if y != start[1] else QEvent.Type.MouseButtonPress, (start[0], y),
+              Qt.MouseButton.NoButton if y != start[1] else Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+    distance = np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.transform))
+    assert 20 < distance <= MAX_TEXT_DISTANCE
+
+
+def pinch(canvas, value):
+    from PyQt6.QtGui import QNativeGestureEvent, QPointingDevice
+    from PyQt6.QtWidgets import QApplication
+
+    event = QNativeGestureEvent(
+        Qt.NativeGestureType.ZoomNativeGesture, QPointingDevice.primaryPointingDevice(), 2,
+        QPointF(400, 300), QPointF(400, 300), QPointF(400, 300), value, QPointF(), 0,
+    )
+    return QApplication.sendEvent(canvas, event)
+
+
+def test_pinch_scales_text_in_text_tool_cells_in_grid_tool_and_nothing_when_fitting(vm):
+    from text3d_studio.views.image_canvas import FIT_TOOL, GRID_TOOL
+
+    canvas = sized_canvas(vm)
+    assert pinch(canvas, 0.25)
+    assert vm.scene.transform.size == pytest.approx(3.0 * 1.25)
+    canvas.set_tool(GRID_TOOL)
+    pinch(canvas, -0.5)
+    assert vm.scene.grid.cell_size == pytest.approx(0.5)
+    assert vm.scene.transform.size == pytest.approx(3.0 * 1.25)
+    canvas.set_tool(FIT_TOOL)
+    before = (vm.scene.transform.size, vm.scene.grid.cell_size)
+    pinch(canvas, 0.3)
+    assert (vm.scene.transform.size, vm.scene.grid.cell_size) == before
 
 
 def test_dragging_keeps_the_text_on_the_ground(vm):
@@ -531,6 +625,44 @@ def test_g_key_on_canvas_toggles_grid(window, qapp):
     qapp.processEvents()
     QTest.keyClick(window.canvas, Qt.Key.Key_G)
     assert window.vm.scene.grid.visible
+
+
+@pytest.mark.parametrize("field", ["transform.size", "ground.pitch"])
+def test_g_toggles_the_grid_while_a_number_field_has_focus(window, qapp, field):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    window.show()
+    window.activateWindow()
+    assert QTest.qWaitForWindowActive(window)
+    spin = window.panel.findChild(SliderRow, field).spin
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert spin.hasFocus()
+    QTest.keyClick(spin, Qt.Key.Key_G)
+    assert window.vm.scene.grid.visible
+    QTest.keyClick(spin, Qt.Key.Key_G)
+    assert not window.vm.scene.grid.visible
+
+
+def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+    from text3d_studio.views.image_canvas import GRID_TOOL
+
+    window.show()
+    window.activateWindow()
+    assert QTest.qWaitForWindowActive(window)
+    spin = window.panel.findChild(SliderRow, "transform.size").spin
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton)
+    spin.selectAll()
+    QTest.keyClicks(spin, "5")
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert window.vm.scene.transform.size == 5.0
+    QTest.keyClick(spin, Qt.Key.Key_P)
+    assert window.canvas.tool == GRID_TOOL
 
 
 def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
@@ -987,3 +1119,68 @@ def test_wood_shows_grain_controls_and_hides_side_color(vm):
     vm.apply_material("stone")
     assert secondary.parentWidget().layout().labelForField(secondary).text() == "Vein color"
     assert not material_row_visible(panel, "grain_angle")
+
+
+# ----- Panel scrolling ----------------------------------------------------------------------------------
+
+
+def wheel_over(widget, steps=-1):
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtWidgets import QApplication
+
+    center = QPointF(widget.width() / 2, widget.height() / 2)
+    event = QWheelEvent(
+        center, widget.mapToGlobal(center), QPoint(), QPoint(0, int(120 * steps)),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def scrollable_panel(window, qapp):
+    window.resize(1200, 500)  # short enough that the panel scrolls
+    window.show()
+    window.activateWindow()
+    qapp.processEvents()
+    return window.panel
+
+
+@pytest.mark.parametrize("control", ["slider", "spin", "material"])
+def test_wheel_over_an_unfocused_control_scrolls_the_panel_instead(window, qapp, control):
+    from PyQt6.QtWidgets import QComboBox
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    panel = scrollable_panel(window, qapp)
+    row = panel.findChild(SliderRow, "transform.size")
+    widget = {"slider": row.slider, "spin": row.spin, "material": panel.findChild(QComboBox, "material.kind")}[control]
+    panel.ensureWidgetVisible(widget)
+    window.canvas.setFocus()
+    scrolled = panel.verticalScrollBar().value()
+    before = (window.vm.scene.transform.size, window.vm.scene.material.kind)
+    wheel_over(widget)
+    assert (window.vm.scene.transform.size, window.vm.scene.material.kind) == before
+    assert panel.verticalScrollBar().value() > scrolled
+
+
+@pytest.mark.parametrize("control", ["slider", "spin"])
+def test_wheel_over_a_focused_control_changes_its_value(window, qapp, control):
+    from text3d_studio.views.control_panel import SliderRow
+
+    panel = scrollable_panel(window, qapp)
+    row = panel.findChild(SliderRow, "transform.size")
+    widget = row.slider if control == "slider" else row.spin
+    widget.setFocus()
+    qapp.processEvents()
+    wheel_over(widget, steps=1)
+    assert window.vm.scene.transform.size != 3.0
+
+
+def test_clicking_a_slider_gives_it_focus(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    panel = scrollable_panel(window, qapp)
+    slider = panel.findChild(SliderRow, "transform.size").slider
+    QTest.mouseClick(slider, Qt.MouseButton.LeftButton)
+    assert slider.hasFocus()
