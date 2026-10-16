@@ -25,6 +25,11 @@ ROTATE_DEG_PER_PX = 0.4
 WHEEL_SCALE_STEP = 1.06
 TEXT_TOOL = "text"
 GRID_TOOL = "grid"
+HORIZON_GRAB_PX = 8.0  # how close to the horizon a press must land to grab it
+HORIZON_END_FRACTION = 0.15  # presses on the outer 15% of the horizon roll it instead of tilting
+MIN_ROLL_SPAN_PX = 20.0  # roll needs the cursor this far from the pivot to define a direction
+MAX_PITCH = 89.0  # same limits as the Ground sliders
+MAX_ROLL = 60.0
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
 
 
@@ -84,6 +89,8 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
         self._drag_text_start: tuple[float, float] | None = None
         self.tool = TEXT_TOOL  # editor state, not part of the scene
+        self._grid_drag: str | None = None  # "tilt" or "roll" while dragging in the grid tool
+        self._roll_pivot: tuple[float, float] | None = None
         self._frame_times: deque[float] = deque(maxlen=30)
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
@@ -101,6 +108,7 @@ class ImageCanvas(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setAcceptDrops(True)
+        self.setMouseTracking(True)  # hover feedback for the grid tool's handles
 
     # ----- GL lifecycle -------------------------------------------------------------------------
 
@@ -223,6 +231,7 @@ class ImageCanvas(QOpenGLWidget):
         self.tool = tool
         if tool == GRID_TOOL:
             self.vm.set("grid", "visible", True)  # adjusting an invisible grid makes no sense
+        self.setCursor(Qt.CursorShape.OpenHandCursor if tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
         self.tool_changed.emit(tool)
 
     # ----- Mouse interaction --------------------------------------------------------------------
@@ -230,7 +239,8 @@ class ImageCanvas(QOpenGLWidget):
     # Wheel: scale                                 Ctrl/Cmd+wheel: move nearer/farther along the ground
 
     def mousePressEvent(self, event) -> None:
-        if self.tool != TEXT_TOOL:
+        if self.tool == GRID_TOOL:
+            self._grid_press(event)
             return
         self._drag_origin = event.position()
         self._drag_ground_start = self.ground_point_at(event.position())
@@ -241,9 +251,17 @@ class ImageCanvas(QOpenGLWidget):
     def mouseReleaseEvent(self, event) -> None:
         self._drag_origin = None
         self._drag_ground_start = None
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._grid_drag = None
+        if self.tool == TEXT_TOOL:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
 
     def mouseMoveEvent(self, event) -> None:
+        if self.tool == GRID_TOOL:
+            if self._grid_drag is None:
+                self._update_grid_cursor(event.position())
+            else:
+                self._grid_move(event)
+            return
         if self._drag_origin is None:
             return
         delta = event.position() - self._drag_origin
@@ -272,10 +290,69 @@ class ImageCanvas(QOpenGLWidget):
         else:
             self.vm.set("transform", "size", self.vm.scene.transform.size * WHEEL_SCALE_STEP**steps)
 
+    # ----- Grid tool --------------------------------------------------------------------------
+    # Drag the horizon's middle: tilt   Drag its outer ends: roll around its center
+
+    def _grid_press(self, event) -> None:
+        handle = self.horizon_handle_at(event.position())
+        if handle == "roll":
+            self._roll_pivot = self._horizon_center()
+            if self._roll_pivot is None:
+                handle = "tilt"  # a vertical horizon has no center row to pivot on
+        self._grid_drag = handle
+
+    def _grid_move(self, event) -> None:
+        pixel = self._image_pixel(event.position())
+        _, _, rect_w, rect_h = self._image_rect()
+        ground, fov = self.vm.scene.ground, self.vm.scene.camera.fov
+        if self._grid_drag == "tilt":
+            pitch = math3d.pitch_for_horizon_through(pixel, ground.roll, fov, (rect_w, rect_h))
+            self.vm.set("ground", "pitch", float(np.clip(pitch, -MAX_PITCH, MAX_PITCH)))
+        elif self._grid_drag == "roll":
+            if np.hypot(pixel[0] - self._roll_pivot[0], pixel[1] - self._roll_pivot[1]) < MIN_ROLL_SPAN_PX:
+                return
+            pitch, roll = math3d.tilt_for_horizon_through(self._roll_pivot, pixel, fov, (rect_w, rect_h))
+            self.vm.set("ground", "roll", float(np.clip(roll, -MAX_ROLL, MAX_ROLL)))
+            self.vm.set("ground", "pitch", float(np.clip(pitch, -MAX_PITCH, MAX_PITCH)))
+
+    def _update_grid_cursor(self, position: QPointF) -> None:
+        cursors = {"tilt": Qt.CursorShape.SizeVerCursor, "roll": Qt.CursorShape.SizeBDiagCursor}
+        self.setCursor(cursors.get(self.horizon_handle_at(position), Qt.CursorShape.ArrowCursor))
+
+    def horizon_handle_at(self, position: QPointF) -> str | None:
+        """"tilt" or "roll" when a widget position is on the horizon (its middle or its outer ends)."""
+        line = self._horizon_line()
+        if line is None:
+            return None
+        u, v = self._image_pixel(position)
+        if abs(line @ np.array([u, v, 1.0])) > HORIZON_GRAB_PX:
+            return None
+        _, _, rect_w, _ = self._image_rect()
+        at_end = u < rect_w * HORIZON_END_FRACTION or u > rect_w * (1.0 - HORIZON_END_FRACTION)
+        return "roll" if at_end else "tilt"
+
+    def _horizon_line(self) -> np.ndarray | None:
+        _, _, rect_w, rect_h = self._image_rect()
+        up = ground_model.ground_up(self.vm.scene.ground)
+        return math3d.horizon_line(up, self.vm.scene.camera.fov, (rect_w, rect_h))
+
+    def _horizon_center(self) -> tuple[float, float] | None:
+        """The horizon's point in the image's center column, in image pixels."""
+        line = self._horizon_line()
+        if line is None or abs(line[1]) < 1e-6:
+            return None
+        _, _, rect_w, _ = self._image_rect()
+        u = rect_w / 2.0
+        return (u, -(line[0] * u + line[2]) / line[1])
+
+    def _image_pixel(self, position: QPointF) -> tuple[float, float]:
+        rect_x, rect_y, _, _ = self._image_rect()
+        return (position.x() - rect_x, position.y() - rect_y)
+
     def ground_point_at(self, position: QPointF) -> tuple[float, float] | None:
         """Ground (x, z) under a widget position, or None when that pixel shows sky or lies off the image."""
-        rect_x, rect_y, rect_w, rect_h = self._image_rect()
-        pixel = (position.x() - rect_x, position.y() - rect_y)
+        _, _, rect_w, rect_h = self._image_rect()
+        pixel = self._image_pixel(position)
         if not (0 <= pixel[0] <= rect_w and 0 <= pixel[1] <= rect_h):
             return None
         scene = self.vm.scene

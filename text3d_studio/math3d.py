@@ -290,3 +290,20 @@ def tilt_for_horizon_through(a, b, fov_y_degrees: float, image_size) -> tuple[fl
     pitch = np.degrees(np.arcsin(np.clip(up[2], -1.0, 1.0)))
     roll = np.degrees(np.arctan2(-up[0], up[1]))
     return float(pitch), float(roll)
+
+
+def horizon_line(up, fov_y_degrees: float, image_size) -> np.ndarray | None:
+    """Horizon of a plane with normal `up` as (a, b, c) with a*u + b*v + c = 0 in pixels, where a^2 + b^2 = 1.
+
+    (a, b, c) . (u, v, 1) is then the signed pixel distance from the horizon. None when the camera
+    looks straight along the normal and the plane has no horizon in view.
+    """
+    width, height = image_size
+    f = focal_length_px(fov_y_degrees, height)
+    # up . ((u - w/2)/f, -(v - h/2)/f, -1) = 0, multiplied through by f.
+    a, b = up[0], -up[1]
+    c = -up[0] * width / 2.0 + up[1] * height / 2.0 - up[2] * f
+    scale = np.hypot(a, b)
+    if scale < 1e-9:
+        return None
+    return np.array([a, b, c]) / scale

@@ -593,3 +593,71 @@ def test_text_drags_do_nothing_in_grid_tool(vm):
     drag(canvas, text_anchor_on_screen(canvas), (600, 450))
     drag(canvas, (400, 300), (480, 300), Qt.MouseButton.RightButton)
     assert vars(vm.scene.transform) == before
+
+
+
+# ----- Grid tool: horizon -------------------------------------------------------------------------
+
+
+def grid_canvas(vm, **ground):
+    from text3d_studio.views.image_canvas import GRID_TOOL
+
+    for name, value in ground.items():
+        vm.set("ground", name, value)
+    canvas = sized_canvas(vm)
+    canvas.set_tool(GRID_TOOL)
+    return canvas
+
+
+def horizon_distance(canvas, widget_pos):
+    line = canvas._horizon_line()
+    u, v = canvas._image_pixel(QPointF(*widget_pos))
+    return abs(line @ np.array([u, v, 1.0]))
+
+
+def test_dragging_the_horizon_middle_tilts_ground_to_follow_cursor(vm):
+    canvas = grid_canvas(vm)
+    drag(canvas, (400, 250), (400, 190))  # level ground: horizon starts mid-height
+    assert vm.scene.ground.pitch > 0  # raising the horizon means looking down
+    assert horizon_distance(canvas, (400, 190)) < 1e-6
+    assert vm.scene.ground.roll == 0
+
+
+def test_dragging_a_horizon_end_rolls_around_the_center(vm):
+    canvas = grid_canvas(vm)
+    drag(canvas, (40, 250), (40, 300))
+    assert vm.scene.ground.roll != 0
+    assert horizon_distance(canvas, (40, 300)) < 1e-6
+    assert horizon_distance(canvas, (400, 250)) < 1e-6  # the center stays put
+
+
+def test_horizon_drags_keep_the_text_in_place_on_screen(vm):
+    canvas = grid_canvas(vm)
+    before = text_anchor_on_screen(canvas)
+    drag(canvas, (400, 250), (400, 215))  # tilt: horizon now at row 215
+    drag(canvas, (760, 215), (760, 240))  # roll from the right end
+    assert vm.scene.ground.pitch != 0 and vm.scene.ground.roll != 0
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), before, atol=1e-6)
+
+
+def test_tilt_is_clamped_to_the_slider_range(vm):
+    canvas = grid_canvas(vm)
+    drag(canvas, (400, 250), (400, -50000))
+    assert vm.scene.ground.pitch <= 89.0
+
+
+def test_press_away_from_the_horizon_leaves_ground_alone(vm):
+    canvas = grid_canvas(vm)
+    before = dict(vars(vm.scene.ground))
+    drag(canvas, (400, 120), (400, 60))
+    assert vars(vm.scene.ground) == before
+
+
+@pytest.mark.parametrize(
+    "pos, shape",
+    [((400, 250), Qt.CursorShape.SizeVerCursor), ((30, 251), Qt.CursorShape.SizeBDiagCursor), ((400, 100), Qt.CursorShape.ArrowCursor)],
+)
+def test_hovering_shows_which_horizon_handle_is_under_the_cursor(vm, pos, shape):
+    canvas = grid_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    assert canvas.cursor().shape() == shape

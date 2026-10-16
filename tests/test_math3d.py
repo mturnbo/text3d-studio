@@ -307,3 +307,21 @@ def test_tilt_from_two_horizon_points(pitch, roll):
 def test_tilt_from_coincident_points_is_rejected():
     with pytest.raises(ValueError):
         math3d.tilt_for_horizon_through((300, 200), (300, 200), 40.0, IMAGE)
+
+
+@pytest.mark.parametrize("pitch, roll", [(0.0, 0.0), (10.0, 0.0), (-5.0, 12.0), (25.0, -30.0)])
+def test_horizon_line_passes_through_horizon_pixels(pitch, roll):
+    up = math3d.ground_rotation(pitch, 0.0, roll)[:3, 1]
+    line = math3d.horizon_line(up, 40.0, IMAGE)
+    for column in (0, 600, 1200):
+        assert line @ np.append(horizon_pixel(pitch, roll, column), 1.0) == pytest.approx(0.0, abs=1e-6)
+    assert np.hypot(line[0], line[1]) == pytest.approx(1.0)
+
+
+def test_horizon_line_distance_is_in_pixels():
+    line = math3d.horizon_line(np.array([0.0, 1.0, 0.0]), 40.0, IMAGE)  # level ground: horizon at mid-height
+    assert abs(line @ np.array([300.0, 400.0 + 25.0, 1.0])) == pytest.approx(25.0)
+
+
+def test_looking_straight_down_has_no_horizon():
+    assert math3d.horizon_line(np.array([0.0, 0.0, 1.0]), 40.0, IMAGE) is None
