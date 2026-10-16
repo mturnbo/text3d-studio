@@ -49,8 +49,7 @@ class Compositor:
     def render(self, scene: Scene, target_fbo: int, viewport: tuple[int, int, int, int]) -> None:
         x, y, width, height = viewport
         proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
-        t = scene.transform
-        lighting = self.lighting.compute(scene.light, t)
+        lighting = self.lighting.compute(scene.light, scene.ground)
 
         draw_shadow = scene.shadow.enabled and scene.shadow.opacity > 0 and self.text.has_text
         if draw_shadow:
