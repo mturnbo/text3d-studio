@@ -28,8 +28,10 @@ GRID_TOOL = "grid"
 HORIZON_GRAB_PX = 8.0  # how close to the horizon a press must land to grab it
 HORIZON_END_FRACTION = 0.15  # presses on the outer 15% of the horizon roll it instead of tilting
 MIN_ROLL_SPAN_PX = 20.0  # roll needs the cursor this far from the pivot to define a direction
-MAX_PITCH = 89.0  # same limits as the Ground sliders
+MAX_PITCH = 89.0  # same limits as the Ground and Grid sliders
 MAX_ROLL = 60.0
+MIN_CELL, MAX_CELL = 0.1, 10.0
+GRID_ROTATE_DEG_PER_PX = 0.3
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
 
 
@@ -89,8 +91,9 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
         self._drag_text_start: tuple[float, float] | None = None
         self.tool = TEXT_TOOL  # editor state, not part of the scene
-        self._grid_drag: str | None = None  # "tilt" or "roll" while dragging in the grid tool
+        self._grid_drag: str | None = None  # "tilt", "roll", "shift" or "rotate" while dragging in the grid tool
         self._roll_pivot: tuple[float, float] | None = None
+        self._offset_start: tuple[float, float] | None = None
         self._frame_times: deque[float] = deque(maxlen=30)
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
@@ -282,9 +285,11 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.set("transform", "z", start_z + current[1] - self._drag_ground_start[1])
 
     def wheelEvent(self, event) -> None:
-        if self.tool != TEXT_TOOL:
-            return
         steps = event.angleDelta().y() / 120.0
+        if self.tool == GRID_TOOL:
+            cell = self.vm.scene.grid.cell_size * WHEEL_SCALE_STEP**steps
+            self.vm.set("grid", "cell_size", float(np.clip(cell, MIN_CELL, MAX_CELL)))
+            return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.vm.nudge("transform", "z", steps * 0.5)
         else:
@@ -292,13 +297,23 @@ class ImageCanvas(QOpenGLWidget):
 
     # ----- Grid tool --------------------------------------------------------------------------
     # Drag the horizon's middle: tilt   Drag its outer ends: roll around its center
+    # Drag the ground: slide the lines   Right drag: rotate the grid   Wheel: cell size
 
     def _grid_press(self, event) -> None:
+        self._drag_origin = event.position()
+        if event.button() == Qt.MouseButton.RightButton:
+            self._grid_drag = "rotate"
+            return
         handle = self.horizon_handle_at(event.position())
         if handle == "roll":
             self._roll_pivot = self._horizon_center()
             if self._roll_pivot is None:
                 handle = "tilt"  # a vertical horizon has no center row to pivot on
+        if handle is None and self.ground_point_at(event.position()) is not None:
+            handle = "shift"
+            self._drag_ground_start = self.ground_point_at(event.position())
+            grid = self.vm.scene.grid
+            self._offset_start = (grid.offset_x, grid.offset_z)
         self._grid_drag = handle
 
     def _grid_move(self, event) -> None:
@@ -314,10 +329,24 @@ class ImageCanvas(QOpenGLWidget):
             pitch, roll = math3d.tilt_for_horizon_through(self._roll_pivot, pixel, fov, (rect_w, rect_h))
             self.vm.set("ground", "roll", float(np.clip(roll, -MAX_ROLL, MAX_ROLL)))
             self.vm.set("ground", "pitch", float(np.clip(pitch, -MAX_PITCH, MAX_PITCH)))
+        elif self._grid_drag == "shift":
+            current = self.ground_point_at(event.position())
+            if current is None:
+                return
+            self.vm.set("grid", "offset_x", self._offset_start[0] + current[0] - self._drag_ground_start[0])
+            self.vm.set("grid", "offset_z", self._offset_start[1] + current[1] - self._drag_ground_start[1])
+        elif self._grid_drag == "rotate":
+            delta = event.position().x() - self._drag_origin.x()
+            self._drag_origin = event.position()
+            self.vm.nudge("ground", "yaw", delta * GRID_ROTATE_DEG_PER_PX)
 
     def _update_grid_cursor(self, position: QPointF) -> None:
         cursors = {"tilt": Qt.CursorShape.SizeVerCursor, "roll": Qt.CursorShape.SizeBDiagCursor}
-        self.setCursor(cursors.get(self.horizon_handle_at(position), Qt.CursorShape.ArrowCursor))
+        handle = self.horizon_handle_at(position)
+        if handle is None and self.ground_point_at(position) is not None:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        else:
+            self.setCursor(cursors.get(handle, Qt.CursorShape.ArrowCursor))
 
     def horizon_handle_at(self, position: QPointF) -> str | None:
         """"tilt" or "roll" when a widget position is on the horizon (its middle or its outer ends)."""

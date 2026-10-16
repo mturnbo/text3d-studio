@@ -584,15 +584,15 @@ def test_switching_back_to_text_tool_keeps_grid_visible(window):
     assert window.vm.scene.grid.visible
 
 
-def test_text_drags_do_nothing_in_grid_tool(vm):
+def test_dragging_over_the_text_in_grid_tool_moves_grid_lines_not_text(vm):
     from text3d_studio.views.image_canvas import GRID_TOOL
 
     canvas = sized_canvas(vm)
     canvas.set_tool(GRID_TOOL)
     before = dict(vars(vm.scene.transform))
     drag(canvas, text_anchor_on_screen(canvas), (600, 450))
-    drag(canvas, (400, 300), (480, 300), Qt.MouseButton.RightButton)
     assert vars(vm.scene.transform) == before
+    assert (vm.scene.grid.offset_x, vm.scene.grid.offset_z) != (0.0, 0.0)
 
 
 
@@ -661,3 +661,73 @@ def test_hovering_shows_which_horizon_handle_is_under_the_cursor(vm, pos, shape)
     canvas = grid_canvas(vm)
     mouse(canvas, QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
     assert canvas.cursor().shape() == shape
+
+
+
+# ----- Grid tool: shift, rotate, scale ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", [(520, 420), (300, 330)])
+def test_dragging_the_ground_slides_grid_lines_with_the_cursor(vm, target):
+    canvas = grid_canvas(vm)
+    start = (450, 380)
+    grabbed = canvas.ground_point_at(QPointF(*start))
+    drag(canvas, start, target)
+    now_under_cursor = canvas.ground_point_at(QPointF(*target))
+    grid = vm.scene.grid
+    # The grid point that was grabbed (in the grid's own, offset coordinates) is now under the cursor.
+    np.testing.assert_allclose(
+        (now_under_cursor[0] - grid.offset_x, now_under_cursor[1] - grid.offset_z), grabbed, atol=1e-9
+    )
+
+
+def test_ground_drag_does_not_change_ground_pose(vm):
+    canvas = grid_canvas(vm, pitch=5.0)
+    before = dict(vars(vm.scene.ground))
+    drag(canvas, (450, 380), (300, 420))
+    assert vars(vm.scene.ground) == before
+
+
+def test_right_drag_rotates_grid_and_keeps_text_in_place(vm):
+    canvas = grid_canvas(vm)
+    before = text_anchor_on_screen(canvas)
+    drag(canvas, (400, 300), (480, 300), Qt.MouseButton.RightButton)
+    assert vm.scene.ground.yaw == pytest.approx(80 * 0.3)
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), before, atol=1e-6)
+
+
+def wheel(canvas, steps):
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QWheelEvent
+
+    event = QWheelEvent(
+        QPointF(400, 300), QPointF(400, 300), QPoint(), QPoint(0, int(120 * steps)),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    canvas.wheelEvent(event)
+
+
+def test_wheel_scales_cells_in_grid_tool_and_text_in_text_tool(vm):
+    from text3d_studio.views.image_canvas import TEXT_TOOL
+
+    canvas = grid_canvas(vm)
+    wheel(canvas, 2)
+    assert vm.scene.grid.cell_size == pytest.approx(1.06**2)
+    assert vm.scene.transform.size == 3.0
+    canvas.set_tool(TEXT_TOOL)
+    wheel(canvas, 1)
+    assert vm.scene.transform.size == pytest.approx(3.0 * 1.06)
+
+
+def test_cell_size_is_clamped(vm):
+    canvas = grid_canvas(vm)
+    wheel(canvas, 200)
+    assert vm.scene.grid.cell_size == 10.0
+    wheel(canvas, -400)
+    assert vm.scene.grid.cell_size == 0.1
+
+
+def test_hovering_the_ground_in_grid_tool_shows_move_cursor(vm):
+    canvas = grid_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseMove, (450, 400), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    assert canvas.cursor().shape() == Qt.CursorShape.SizeAllCursor
