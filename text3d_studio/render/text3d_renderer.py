@@ -6,7 +6,7 @@ import numpy as np
 
 from .. import ground as ground_model
 from .. import math3d
-from ..lighting import LightingState
+from ..lighting import LightingState, srgb_to_linear
 from ..model import Scene
 from ..text_raster import GlyphRaster
 from . import shaders
@@ -46,8 +46,8 @@ class Text3DRenderer:
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
-        program.set_vec3("u_face_color", m.face_color)
-        program.set_vec3("u_side_color", m.side_color)
+        program.set_vec3("u_face_color", srgb_to_linear(m.face_color))
+        program.set_vec3("u_side_color", srgb_to_linear(m.side_color))
         program.set_float("u_side_darkening", m.side_darkening)
         program.set_float("u_bevel_strength", m.bevel_strength)
         program.set_float("u_specular", m.specular)

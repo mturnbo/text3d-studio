@@ -72,15 +72,21 @@ uniform sampler2D u_mask;
 uniform mat4 u_model;
 uniform int u_layers;
 uniform vec3 u_light_dir;
-uniform vec3 u_light_color;
-uniform vec3 u_ambient;
-uniform vec3 u_face_color;
-uniform vec3 u_side_color;
+uniform vec3 u_light_color;   // linear
+uniform vec3 u_ambient;       // linear
+uniform vec3 u_face_color;    // linear
+uniform vec3 u_side_color;    // linear
 uniform float u_side_darkening;
 uniform float u_bevel_strength;
 uniform float u_specular;
 uniform float u_shininess;
 out vec4 frag;
+
+vec3 linear_to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
 void main() {
     // Cap the mip level: grazing-angle layers would otherwise average thin strokes below the 0.5 cutoff.
     float lod = min(textureQueryLod(u_mask, v_uv).y, 1.5);
@@ -110,7 +116,7 @@ void main() {
     vec3 h = normalize(l + v);
     float spec = diffuse > 0.0 ? pow(max(dot(n, h), 0.0), u_shininess) * u_specular : 0.0;
     vec3 color = base * (u_ambient + u_light_color * diffuse) + u_light_color * spec;
-    frag = vec4(color, coverage);
+    frag = vec4(linear_to_srgb(color), coverage);
 }
 """
 
