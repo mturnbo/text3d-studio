@@ -265,3 +265,45 @@ def vanishing_point(direction, fov_y_degrees: float, image_size: tuple[float, fl
     if d[2] > 0:
         d = -d  # a line runs both ways; its vanishing point lies in front of the camera
     return project_to_image(d, fov_y_degrees, image_size)
+
+
+def pitch_for_horizon_through(pixel, roll_degrees: float, fov_y_degrees: float, image_size) -> float:
+    """Ground pitch in degrees that puts the horizon through `pixel`, keeping the given roll."""
+    # The horizon is where up . ray = 0, with up = Rz(roll) (0, cos p, sin p); undo the roll first.
+    ray = rotation_z(roll_degrees)[:3, :3].T @ image_ray(pixel, fov_y_degrees, image_size)
+    return float(np.degrees(np.arctan2(ray[1], -ray[2])))
+
+
+def tilt_for_horizon_through(a, b, fov_y_degrees: float, image_size) -> tuple[float, float]:
+    """(pitch, roll) in degrees that put the horizon through pixels `a` and `b`.
+
+    The ground normal is perpendicular to both camera rays, so it is their cross product. Raises
+    ValueError when the two pixels coincide.
+    """
+    up = np.cross(image_ray(a, fov_y_degrees, image_size), image_ray(b, fov_y_degrees, image_size))
+    length = np.linalg.norm(up)
+    if length < 1e-9:
+        raise ValueError("Need two distinct points on the horizon")
+    up /= length
+    if up[1] < 0:
+        up = -up  # keep the camera upright: the ground's up points up in the image
+    pitch = np.degrees(np.arcsin(np.clip(up[2], -1.0, 1.0)))
+    roll = np.degrees(np.arctan2(-up[0], up[1]))
+    return float(pitch), float(roll)
+
+
+def horizon_line(up, fov_y_degrees: float, image_size) -> np.ndarray | None:
+    """Horizon of a plane with normal `up` as (a, b, c) with a*u + b*v + c = 0 in pixels, where a^2 + b^2 = 1.
+
+    (a, b, c) . (u, v, 1) is then the signed pixel distance from the horizon. None when the camera
+    looks straight along the normal and the plane has no horizon in view.
+    """
+    width, height = image_size
+    f = focal_length_px(fov_y_degrees, height)
+    # up . ((u - w/2)/f, -(v - h/2)/f, -1) = 0, multiplied through by f.
+    a, b = up[0], -up[1]
+    c = -up[0] * width / 2.0 + up[1] * height / 2.0 - up[2] * f
+    scale = np.hypot(a, b)
+    if scale < 1e-9:
+        return None
+    return np.array([a, b, c]) / scale

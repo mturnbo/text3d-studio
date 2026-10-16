@@ -59,3 +59,23 @@ def text_model_matrix(ground: GroundParams, transform: TransformParams) -> np.nd
 def text_distance(ground: GroundParams, transform: TransformParams) -> float:
     """Depth of the text's anchor along the view axis (always positive for visible text)."""
     return max(-float(text_position(ground, transform)[2]), 1e-3)
+
+
+def reanchor_text(
+    old: GroundParams, new: GroundParams, transform: TransformParams
+) -> tuple[float, float, float, float] | None:
+    """Placement (x, z, rot_y, size) on `new` that keeps the text where, and as big as, it appears on screen.
+
+    The anchor stays on the same camera ray, now meeting the new ground. The size scales with the
+    anchor's change in distance along that ray, so the text keeps its apparent size. The facing is kept
+    too: a change in grid yaw is offset by the opposite change in text yaw. Returns None when the ray no
+    longer meets the ground (the anchor would sit above the new horizon).
+    """
+    anchor = text_position(old, transform)
+    distance = np.linalg.norm(anchor)
+    hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), anchor / distance, ground_plane(new))
+    if hit is None:
+        return None
+    x, z = world_to_ground(new, hit)
+    size = transform.size * float(np.linalg.norm(hit)) / distance
+    return x, z, transform.rot_y + old.yaw - new.yaw, size

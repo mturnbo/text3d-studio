@@ -31,7 +31,8 @@ viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
 views/              Qt widgets only. Never touch GL state or numpy image math here.
   main_window.py      menus, status bar, file dialogs
   control_panel.py    declarative slider/colour/checkbox layout, two-way bound to the ViewModel
-  image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing
+  image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
+                      Holds the active tool (TEXT_TOOL / GRID_TOOL), which is editor state, not scene state
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
@@ -85,6 +86,10 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - The light is defined in the ground's **tilt frame** (`ground.light_frame`, pitch and roll only):
   azimuth 0 = toward the camera, elevation measured from the ground. Grid yaw and text yaw don't move
   the light, but tilting the ground does.
+- **Ground edits keep the text where it appears.** `SceneViewModel.set("ground", …)` calls
+  `ground.reanchor_text`. The text's anchor stays on the same camera ray, `size` scales with its distance
+  along that ray (so apparent size is kept), and text yaw offsets grid yaw. Expect `transform.x/z/rot_y/size`
+  change events after any ground edit. If the ray misses the new ground, the text is left as is.
 - The default scene (pitch 0, height 1.5, text at z −12, yaw −20) renders pixel-identically to
   v0.5.0's defaults. `tests/test_ground.py` holds the legacy conversion if old values ever need migrating.
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
@@ -130,6 +135,17 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   up at every cell's half-way point.
 - Grid cells fade out below ~4 px so they don't shimmer toward the horizon. The accent lanes and the
   horizon don't fade.
+
+### Tools and canvas gestures
+
+| Tool | Left-drag | Right-drag | Wheel |
+|---|---|---|---|
+| **Move Text** (V) | slide text on the ground (grabbed point stays under the cursor) | text yaw | size; Ctrl/Cmd: distance |
+| **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
+
+Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_horizon_through` and
+`tilt_for_horizon_through`. Drag tests drive real `QMouseEvent`s on a sized, unshown canvas; see
+`tests/test_views.py` (`drag`, `grid_canvas`).
 
 ## Adding things
 

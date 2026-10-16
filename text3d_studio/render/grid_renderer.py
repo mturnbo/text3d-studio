@@ -55,6 +55,7 @@ class GridRenderer:
         program.set_mat4("u_ground", math3d.to_gl(ground_to_camera))
         program.set_float("u_extent", GRID_EXTENT)
         program.set_float("u_cell", grid.cell_size)
+        program.set_vec2("u_offset", (grid.offset_x, grid.offset_z))
         program.set_vec3("u_color", grid.color)
         program.set_vec3("u_accent", grid.accent_color)
         program.set_float("u_opacity", grid.opacity)
