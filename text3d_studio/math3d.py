@@ -104,3 +104,23 @@ def project_to_image(point, fov_y_degrees: float, image_size: tuple[float, float
     width, height = image_size
     f = focal_length_px(fov_y_degrees, height)
     return np.array([width / 2.0 + f * x / -z, height / 2.0 - f * y / -z])
+
+
+def image_ray(pixel, fov_y_degrees: float, image_size: tuple[float, float]) -> np.ndarray:
+    """Unit direction from the camera through a pixel (the inverse of project_to_image)."""
+    width, height = image_size
+    f = focal_length_px(fov_y_degrees, height)
+    direction = np.array([(pixel[0] - width / 2.0) / f, -(pixel[1] - height / 2.0) / f, -1.0])
+    return direction / np.linalg.norm(direction)
+
+
+def intersect_ray_plane(origin, direction, plane: np.ndarray) -> np.ndarray | None:
+    """Where a ray hits a plane (a, b, c, d), or None if it is parallel or the hit is behind the origin."""
+    origin, direction = np.asarray(origin, dtype=np.float64), np.asarray(direction, dtype=np.float64)
+    denominator = float(plane[:3] @ direction)
+    if abs(denominator) < 1e-9:
+        return None
+    t = -(float(plane[:3] @ origin) + plane[3]) / denominator
+    if t <= 0:
+        return None
+    return origin + t * direction

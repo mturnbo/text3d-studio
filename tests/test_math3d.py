@@ -95,3 +95,32 @@ def test_image_y_grows_downward():
 @pytest.mark.parametrize("z", [0.0, 3.0])
 def test_points_at_or_behind_camera_do_not_project(z):
     assert math3d.project_to_image((1, 1, z), 40, IMAGE) is None
+
+
+def test_image_ray_inverts_projection():
+    point = np.array([2.0, -1.5, -11.0])
+    pixel = math3d.project_to_image(point, 55, IMAGE)
+    ray = math3d.image_ray(pixel, 55, IMAGE)
+    np.testing.assert_allclose(ray, point / np.linalg.norm(point), atol=1e-12)
+
+
+def test_center_ray_looks_down_negative_z():
+    np.testing.assert_allclose(math3d.image_ray((600, 400), 40, IMAGE), [0, 0, -1])
+
+
+def test_ray_hits_ground_plane_below_camera():
+    ground = math3d.plane_from_point_normal(np.array([0, -2.0, 0]), np.array([0, 1.0, 0]))
+    hit = math3d.intersect_ray_plane((0, 0, 0), math3d.image_ray((600, 700), 40, IMAGE), ground)
+    assert hit[1] == pytest.approx(-2.0)
+    assert hit[2] < 0
+
+
+def test_ray_parallel_to_plane_misses():
+    ground = math3d.plane_from_point_normal(np.array([0, -2.0, 0]), np.array([0, 1.0, 0]))
+    assert math3d.intersect_ray_plane((0, 0, 0), (0, 0, -1), ground) is None
+
+
+def test_ray_pointing_away_from_plane_misses():
+    ground = math3d.plane_from_point_normal(np.array([0, -2.0, 0]), np.array([0, 1.0, 0]))
+    above_horizon = math3d.image_ray((600, 100), 40, IMAGE)
+    assert math3d.intersect_ray_plane((0, 0, 0), above_horizon, ground) is None
