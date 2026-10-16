@@ -50,9 +50,10 @@ class Text3DRenderer:
 
     def draw_beauty(
         self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int,
-        environment: Texture2D | None = None,
+        environment: Texture2D | None = None, backdrop: Texture2D | None = None,
     ) -> None:
-        """`environment`: the background photo to reflect, or None to reflect the ambient color instead."""
+        """`environment`: the background photo to reflect, or None to reflect the ambient color instead.
+        `backdrop`: what is behind the text in this viewport, for transmissive materials to show through."""
         layers = self.effective_layers(scene, viewport_height)
         if self.depth_prepass:
             self._bind_common(self.depth, scene, proj, IDENTITY_GL, lighting)

@@ -168,10 +168,10 @@ class Texture2D:
 
 
 class ColorTarget:
-    """Framebuffer with a single sampleable color texture and no depth (used for shadow passes)."""
+    """Framebuffer with a single sampleable color texture and no depth (shadow passes, the glass backdrop)."""
 
-    def __init__(self, internal_format=GL.GL_R8, pixel_format=GL.GL_RED):
-        self.texture = Texture2D(internal_format, pixel_format)
+    def __init__(self, internal_format=GL.GL_R8, pixel_format=GL.GL_RED, mipmaps: bool = False):
+        self.texture = Texture2D(internal_format, pixel_format, mipmaps)
         self.fbo = GL.glGenFramebuffers(1)
         self.width = self.height = 0
 
