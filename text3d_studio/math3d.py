@@ -175,3 +175,31 @@ def _has_collinear_triple(points: np.ndarray) -> bool:
                 if abs(a[0] * b[1] - a[1] * b[0]) < 1e-6 * extent**2:
                     return True
     return False
+
+
+def vanishing_points(quad) -> tuple[np.ndarray, np.ndarray]:
+    """Homogeneous vanishing points of a quad's two pairs of opposite edges (w ~ 0 when parallel).
+
+    The quad's corners go around the shape: edges 0-1 / 3-2 meet at the first point, 1-2 / 0-3 at the second.
+    """
+    p = [np.append(np.asarray(corner, dtype=np.float64), 1.0) for corner in quad]
+    first = np.cross(np.cross(p[0], p[1]), np.cross(p[3], p[2]))
+    second = np.cross(np.cross(p[1], p[2]), np.cross(p[0], p[3]))
+    return first, second
+
+
+def focal_from_vanishing_points(first, second, image_size: tuple[float, float]) -> float:
+    """Focal length in pixels implied by the vanishing points of two perpendicular directions.
+
+    Raises ValueError when a vanishing point is at infinity or the points imply no real focal length.
+    """
+    principal = np.array(image_size, dtype=np.float64) / 2.0
+    offsets = []
+    for point in (first, second):
+        if abs(point[2]) < 1e-9 * np.linalg.norm(point[:2]):
+            raise ValueError("Opposite edges are parallel in the image; the field of view can't be estimated")
+        offsets.append(point[:2] / point[2] - principal)
+    focal_squared = -float(offsets[0] @ offsets[1])
+    if focal_squared <= 0:
+        raise ValueError("These corners don't match a rectangle seen through this camera")
+    return float(np.sqrt(focal_squared))

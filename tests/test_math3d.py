@@ -164,3 +164,39 @@ def test_point_count_other_than_four_is_rejected(count):
     points = [(0, 0), (1, 0), (1, 1), (0, 1), (2, 3)][:count]
     with pytest.raises(ValueError):
         math3d.homography_from_points(points, points)
+
+
+def ground_square(fov, pitch=20.0, yaw=35.0, roll=5.0, origin=(0.5, -2.0, -10.0), side=3.0):
+    """Pixel corners of a square lying on a tilted ground plane, in order around the square."""
+    frame = math3d.ground_frame(pitch, roll)[:3, :3] @ math3d.rotation_y(yaw)[:3, :3]
+    corners = [np.array(origin) + frame @ np.array([a, 0.0, b]) for a, b in ((0, 0), (side, 0), (side, -side), (0, -side))]
+    return [math3d.project_to_image(c, fov, IMAGE) for c in corners]
+
+
+@pytest.mark.parametrize("fov", [30.0, 50.0, 75.0])
+def test_focal_estimated_from_a_perspective_square(fov):
+    first, second = math3d.vanishing_points(ground_square(fov))
+    focal = math3d.focal_from_vanishing_points(first, second, IMAGE)
+    assert focal == pytest.approx(math3d.focal_length_px(fov, IMAGE[1]), rel=1e-6)
+
+
+def test_vanishing_points_lie_on_both_edge_lines():
+    quad = ground_square(50)
+    first, _ = math3d.vanishing_points(quad)
+    vp = first[:2] / first[2]
+    for a, b in ((quad[0], quad[1]), (quad[3], quad[2])):
+        cross = (b[0] - a[0]) * (vp[1] - a[1]) - (b[1] - a[1]) * (vp[0] - a[0])
+        assert abs(cross) < 1e-6 * np.linalg.norm(b - a) * np.linalg.norm(vp - a)
+
+
+def test_square_facing_the_camera_squarely_cannot_estimate_focal():
+    # With no yaw or roll the front and back edges stay horizontal in the image: that vanishing point is at infinity.
+    first, second = math3d.vanishing_points(ground_square(50, yaw=0.0, roll=0.0))
+    with pytest.raises(ValueError):
+        math3d.focal_from_vanishing_points(first, second, IMAGE)
+
+
+def test_vanishing_points_on_the_same_side_are_rejected():
+    first, second = np.array([900.0, 300.0, 1.0]), np.array([1000.0, 350.0, 1.0])
+    with pytest.raises(ValueError):
+        math3d.focal_from_vanishing_points(first, second, IMAGE)
