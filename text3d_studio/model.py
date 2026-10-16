@@ -57,6 +57,7 @@ class GridParams:
 
 @dataclass
 class MaterialParams:
+    kind: str = "metal"  # one of materials.KINDS; picking a kind loads its preset (see materials.py)
     face_color: Color = (0.92, 0.78, 0.45)
     side_color: Color = (0.70, 0.52, 0.25)
     side_darkening: float = 0.45  # how much darker the back of the stack gets
