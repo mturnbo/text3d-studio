@@ -270,15 +270,20 @@ def material_document(background_rgb=BG_COLOR, **material):
     return doc
 
 
-def text_pixels(compositor, doc, erode=2):
-    """Colors of pixels well inside the text. The background is a flat color, so anything else is text;
-    eroding the mask drops antialiased edges, which blend in the background's color."""
+def text_image(compositor, doc, erode=2):
+    """The rendered colors and a mask of pixels well inside the text. The background is a flat color, so
+    anything else is text; eroding the mask drops antialiased edges, which blend in the background."""
     pixels = render(compositor, doc)[..., :3].astype(float)
     covered = np.any(pixels != doc.background[0, 0, :3], axis=-1)
     interior = covered.copy()
     for axis in (0, 1):
         for shift in range(1, erode + 1):
             interior &= np.roll(covered, shift, axis) & np.roll(covered, -shift, axis)
+    return pixels, interior
+
+
+def text_pixels(compositor, doc, erode=2):
+    pixels, interior = text_image(compositor, doc, erode)
     return pixels[interior]
 
 
@@ -378,7 +383,7 @@ def compositor_with_prepass(monkeypatch, enabled):
     return Compositor()
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
 def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, kind):
     from text3d_studio.materials import PRESETS
 
@@ -415,3 +420,73 @@ def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
     finally:
         target.delete()
     assert fps > 30, f"{kind}: only {fps:.1f} FPS"
+
+
+
+# ----- Procedural stone and wood ------------------------------------------------------------------
+
+
+def textured_document(kind, **material):
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
+    doc.scene.transform.rot_y = 0.0  # face the camera so the face fills most of the text
+    doc.scene.transform.size = 4.0
+    doc.scene.light.reflect_photo = False
+    return doc
+
+
+def directional_detail(compositor, doc):
+    """Mean luminance change between vertical and between horizontal neighbours inside the text."""
+    pixels, interior = text_image(compositor, doc)
+    luminance = pixels.sum(-1) / 3.0
+    vertical = np.abs(np.diff(luminance, axis=0))[interior[1:] & interior[:-1]].mean()
+    horizontal = np.abs(np.diff(luminance, axis=1))[interior[:, 1:] & interior[:, :-1]].mean()
+    return vertical, horizontal
+
+
+def test_stone_has_far_more_fine_detail_than_plain_material(compositor):
+    stone = sum(directional_detail(compositor, textured_document("stone")))
+    plain = sum(directional_detail(compositor, textured_document("stone", texture_strength=0.0, bump_strength=0.0)))
+    assert stone > 2 * plain  # plain text still has bevel and edge shading, so 2x is a clear margin
+
+
+def test_stone_veining_strength_darkens_more_of_the_surface(compositor):
+    def dark_fraction(strength):
+        doc = textured_document("stone", texture_strength=strength, bump_strength=0.0)
+        luminance = text_pixels(compositor, doc).sum(-1)
+        return np.mean(luminance < 0.75 * np.median(luminance))  # veins and dark speckle
+
+    assert dark_fraction(1.0) > dark_fraction(0.3) + 0.06
+
+
+def test_stone_bump_adds_detail(compositor):
+    flat = sum(directional_detail(compositor, textured_document("stone", bump_strength=0.0)))
+    bumpy = sum(directional_detail(compositor, textured_document("stone", bump_strength=1.0)))
+    assert bumpy > 1.2 * flat
+
+
+@pytest.mark.parametrize("angle, across", [(0.0, "vertical"), (90.0, "horizontal")])
+def test_wood_rings_vary_across_the_grain(compositor, angle, across):
+    vertical, horizontal = directional_detail(compositor, textured_document("wood", grain_angle=angle, bump_strength=0.0))
+    if across == "vertical":
+        assert vertical > 1.5 * horizontal  # horizontal grain: rings stack up the letters
+    else:
+        assert horizontal > 1.5 * vertical
+
+
+def test_tighter_ring_spacing_means_more_rings(compositor):
+    def ring_detail(spacing):
+        return directional_detail(compositor, textured_document("wood", texture_scale=spacing, bump_strength=0.0))[0]
+
+    assert ring_detail(0.05) > 1.5 * ring_detail(0.25)
+
+
+def test_varnish_adds_a_sharp_highlight(compositor):
+    def highlight(varnish):
+        doc = textured_document("wood", varnish=varnish)
+        # Light from the camera's direction puts the coat's mirror-sharp highlight on the flat face.
+        doc.scene.light.azimuth, doc.scene.light.elevation = 0.0, 12.0
+        return np.sort(text_pixels(compositor, doc).sum(-1))[-30:].mean()
+
+    assert highlight(1.0) > highlight(0.0) + 150
