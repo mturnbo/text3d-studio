@@ -59,3 +59,11 @@ def test_set_background_updates_native_size_and_emits(vm):
 
 def test_default_native_size_without_background():
     assert Document().native_size == (1600, 1000)
+
+
+def test_grid_settings_are_editable_and_hidden_by_default(vm):
+    events = record(vm.scene_changed)
+    assert vm.scene.grid.visible is False
+    vm.set("grid", "visible", True)
+    vm.set("grid", "cell_size", 0.5)
+    assert events == [("grid", "visible"), ("grid", "cell_size")]

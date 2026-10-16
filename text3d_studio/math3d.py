@@ -255,3 +255,13 @@ def _is_convex(quad: np.ndarray) -> bool:
         a, b, c = quad[i], quad[(i + 1) % 4], quad[(i + 2) % 4]
         crosses.append((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
     return all(x > 0 for x in crosses) or all(x < 0 for x in crosses)
+
+
+def vanishing_point(direction, fov_y_degrees: float, image_size: tuple[float, float]) -> np.ndarray | None:
+    """Pixel where all lines with this camera-space direction meet, or None if they stay parallel on screen."""
+    d = np.asarray(direction, dtype=np.float64)
+    if abs(d[2]) < 1e-9 * np.linalg.norm(d):
+        return None
+    if d[2] > 0:
+        d = -d  # a line runs both ways; its vanishing point lies in front of the camera
+    return project_to_image(d, fov_y_degrees, image_size)

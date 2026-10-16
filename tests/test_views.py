@@ -86,7 +86,8 @@ def test_empty_state_is_centered_on_canvas(window, qapp):
 
 
 def test_toolbar_shares_open_and_export_actions_with_file_menu(window):
-    assert window.toolbar.actions() == [window.open_action, window.export_action]
+    buttons = [a for a in window.toolbar.actions() if not a.isSeparator()]
+    assert buttons == [window.open_action, window.export_action, window.grid_action]
     file_menu = window.menuBar().actions()[0].menu()
     assert window.open_action in file_menu.actions()
     assert window.export_action in file_menu.actions()
@@ -486,3 +487,59 @@ def test_right_drag_only_changes_yaw(vm):
     assert (vm.scene.transform.x, vm.scene.transform.z) == before[:2]
     assert vm.scene.transform.rot_y == pytest.approx(before[2] + 50 * 0.4)
     assert vars(vm.scene.ground) == before_ground
+
+
+
+# ----- Grid toggle --------------------------------------------------------------------------------
+
+
+def test_grid_action_toggles_the_grid(window):
+    assert not window.grid_action.isChecked()
+    window.grid_action.trigger()
+    assert window.vm.scene.grid.visible
+    window.grid_action.trigger()
+    assert not window.vm.scene.grid.visible
+
+
+def test_grid_action_follows_the_model(window):
+    window.vm.set("grid", "visible", True)
+    assert window.grid_action.isChecked()
+
+
+def test_grid_action_has_g_shortcut_and_view_menu_entry(window):
+    assert window.grid_action.shortcut() == QKeySequence("G")
+    view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+    assert window.grid_action in view_menu.actions()
+
+
+def test_grid_panel_controls_are_bound(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    assert {("grid", f) for f in ("visible", "cell_size", "opacity", "color", "accent_color")} <= set(panel._setters)
+    panel.findChild(SliderRow, "grid.cell_size").spin.setValue(2.5)
+    assert vm.scene.grid.cell_size == 2.5
+
+
+def test_g_key_on_canvas_toggles_grid(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    window.show()
+    window.canvas.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(window.canvas, Qt.Key.Key_G)
+    assert window.vm.scene.grid.visible
+
+
+def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit
+
+    window.show()
+    edit = window.panel.findChild(QLineEdit)
+    edit.setFocus()
+    edit.end(False)
+    qapp.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_G)
+    assert edit.text() == "HELLOg"
+    assert not window.vm.scene.grid.visible

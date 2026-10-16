@@ -63,12 +63,28 @@ class MainWindow(QMainWindow):
         file_menu.addAction(quit_action)
         self._rebuild_recent_menu()
 
+        # Single-key shortcut: text fields still receive "G" because they claim printable keys first.
+        self.grid_action = QAction("Show &Grid", self)
+        self.grid_action.setCheckable(True)
+        self.grid_action.setShortcut(QKeySequence("G"))
+        self.grid_action.setChecked(self.vm.scene.grid.visible)
+        self.grid_action.toggled.connect(lambda checked: self.vm.set("grid", "visible", checked))
+        self.vm.scene_changed.connect(self._sync_grid_action)
+        view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.grid_action)
+
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setObjectName("mainToolbar")
         self.toolbar.setMovable(False)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.toolbar.addAction(self.open_action)
         self.toolbar.addAction(self.export_action)
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(self.grid_action)
+
+    def _sync_grid_action(self, section: str, field: str) -> None:
+        if (section, field) == ("grid", "visible"):
+            self.grid_action.setChecked(self.vm.scene.grid.visible)
 
     def _rebuild_recent_menu(self) -> None:
         self.recent_menu.clear()
