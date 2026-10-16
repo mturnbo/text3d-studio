@@ -39,7 +39,10 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shadow_renderer.py  half-res shadow mask → separable Gaussian blur → multiply composite
   compositor.py       frame orchestration: background → shadow → text
   exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
-math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32
+math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32.
+                    Also image-space perspective: project_to_image / image_ray (pixels, origin
+                    top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
+                    focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
 lighting.py         LightingEngine: params → world light dir, colours, ground plane, shadow matrix
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
@@ -148,6 +151,11 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Granular commits: one logical change each, with a **concise one-line, imperative** message
   (e.g. `Add triangle buffer for wall geometry`). No bullet-list bodies. Tests pass before merge.
 - Integrate via PR (or `git merge --no-ff`) so feature boundaries stay visible in history.
+- Multi-PR features use an **integration branch** (e.g. `perspective-grid-overlay`). Each PR branches
+  from it and targets it, and the integration branch is merged to `main` once the feature is complete.
+  A branch can't be named `<integration>/<x>` because git refs collide, so use `feature/<x>`.
+- Run pytest with `set -o pipefail` when piping output (e.g. into `tail`). Otherwise a failing
+  run can still let the following `git commit` go through.
 - **Versioning (SemVer, pre-1.0):** after a release-worthy merge, commit `Bump version to X.Y.Z`
   on `main`. Update **both** `pyproject.toml` and `text3d_studio/__init__.py`, then run `uv lock`.
   Then create an annotated tag `vX.Y.Z` with a one-line summary.
