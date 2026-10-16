@@ -10,7 +10,7 @@ from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
-from .image_canvas import GRID_TOOL, TEXT_TOOL, ImageCanvas
+from .image_canvas import FIT_TOOL, GRID_TOOL, TEXT_TOOL, ImageCanvas
 
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
 
@@ -18,6 +18,8 @@ TOOL_HINTS = {
     TEXT_TOOL: "Left-drag: slide on ground · Right-drag: yaw · Wheel: scale · Ctrl/Cmd+wheel: distance",
     GRID_TOOL: "Drag horizon: tilt · Drag horizon ends: roll · Drag ground: shift lines · "
     "Right-drag: rotate grid · Wheel: cell size",
+    FIT_TOOL: "Drag the four corners onto a rectangle in the photo (a tile, rug, table top) · "
+    "Set its real size under Grid",
 }
 
 
@@ -82,7 +84,8 @@ class MainWindow(QMainWindow):
         self.tool_actions = {}
         tool_group = QActionGroup(self)
         tools_menu = self.menuBar().addMenu("&Tools")
-        for tool, text, key in ((TEXT_TOOL, "Move &Text", "V"), (GRID_TOOL, "Adjust &Grid", "P")):
+        tools = ((TEXT_TOOL, "Move &Text", "V"), (GRID_TOOL, "Adjust &Grid", "P"), (FIT_TOOL, "Fit &Rectangle", "R"))
+        for tool, text, key in tools:
             action = QAction(text, self)
             action.setCheckable(True)
             action.setShortcut(QKeySequence(key))
@@ -92,6 +95,7 @@ class MainWindow(QMainWindow):
             self.tool_actions[tool] = action
         self.tool_actions[self.canvas.tool].setChecked(True)
         self.canvas.tool_changed.connect(self._on_tool_changed)
+        self.canvas.fit_status.connect(self._show_fit_status)
 
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setObjectName("mainToolbar")
@@ -108,6 +112,12 @@ class MainWindow(QMainWindow):
     def _on_tool_changed(self, tool: str) -> None:
         self.tool_actions[tool].setChecked(True)
         self.hint_label.setText(TOOL_HINTS[tool])
+
+    def _show_fit_status(self, message: str) -> None:
+        if message:
+            self.statusBar().showMessage(f"Can't fit: {message}")
+        else:
+            self.statusBar().clearMessage()
 
     def _sync_grid_action(self, section: str, field: str) -> None:
         if (section, field) == ("grid", "visible"):

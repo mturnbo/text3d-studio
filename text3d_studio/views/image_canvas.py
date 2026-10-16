@@ -25,6 +25,8 @@ ROTATE_DEG_PER_PX = 0.4
 WHEEL_SCALE_STEP = 1.06
 TEXT_TOOL = "text"
 GRID_TOOL = "grid"
+FIT_TOOL = "fit"
+HANDLE_GRAB_PX = 12.0  # how close to a fit corner a press must land to grab it
 HORIZON_GRAB_PX = 8.0  # how close to the horizon a press must land to grab it
 HORIZON_END_FRACTION = 0.15  # presses on the outer 15% of the horizon roll it instead of tilting
 MIN_ROLL_SPAN_PX = 20.0  # roll needs the cursor this far from the pivot to define a direction
@@ -77,6 +79,7 @@ class ImageCanvas(QOpenGLWidget):
     open_requested = pyqtSignal()
     file_dropped = pyqtSignal(str)
     tool_changed = pyqtSignal(str)
+    fit_status = pyqtSignal(str)  # why the traced corners can't be fitted, or "" when they can
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -92,6 +95,9 @@ class ImageCanvas(QOpenGLWidget):
         self._grid_drag: str | None = None  # "tilt", "roll", "shift" or "rotate" while dragging in the grid tool
         self._roll_pivot: tuple[float, float] | None = None
         self._offset_start: tuple[float, float] | None = None
+        self.fit_corners: list[tuple[float, float]] | None = None  # fractions of the image rect
+        self.fit_valid = True
+        self._fit_handle: int | None = None
         self._frame_times: deque[float] = deque(maxlen=30)
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
@@ -230,8 +236,12 @@ class ImageCanvas(QOpenGLWidget):
         if tool == self.tool:
             return
         self.tool = tool
-        if tool == GRID_TOOL:
+        if tool in (GRID_TOOL, FIT_TOOL):
             self.vm.set("grid", "visible", True)  # adjusting an invisible grid makes no sense
+        if tool == FIT_TOOL:
+            self.fit_corners = self._initial_fit_corners()
+            self.fit_valid = True
+            self.fit_status.emit("")
         self.setCursor(Qt.CursorShape.OpenHandCursor if tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
         self.tool_changed.emit(tool)
 
@@ -243,6 +253,9 @@ class ImageCanvas(QOpenGLWidget):
         if self.tool == GRID_TOOL:
             self._grid_press(event)
             return
+        if self.tool == FIT_TOOL:
+            self._fit_handle = self.fit_handle_at(event.position())
+            return
         self._drag_origin = event.position()
         self._drag_ground_start = self.ground_point_at(event.position())
         t = self.vm.scene.transform
@@ -253,10 +266,18 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_origin = None
         self._drag_ground_start = None
         self._grid_drag = None
+        self._fit_handle = None
         if self.tool == TEXT_TOOL:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
 
     def mouseMoveEvent(self, event) -> None:
+        if self.tool == FIT_TOOL:
+            if self._fit_handle is None:
+                over_handle = self.fit_handle_at(event.position()) is not None
+                self.setCursor(Qt.CursorShape.PointingHandCursor if over_handle else Qt.CursorShape.ArrowCursor)
+            else:
+                self._move_fit_corner(self._fit_handle, event.position())
+            return
         if self.tool == GRID_TOOL:
             if self._grid_drag is None:
                 self._update_grid_cursor(event.position())
@@ -284,6 +305,8 @@ class ImageCanvas(QOpenGLWidget):
 
     def wheelEvent(self, event) -> None:
         steps = event.angleDelta().y() / 120.0
+        if self.tool == FIT_TOOL:
+            return
         if self.tool == GRID_TOOL:
             cell = self.vm.scene.grid.cell_size * WHEEL_SCALE_STEP**steps
             self.vm.set("grid", "cell_size", float(np.clip(cell, MIN_CELL, MAX_CELL)))
@@ -376,10 +399,75 @@ class ImageCanvas(QOpenGLWidget):
         rect_x, rect_y, _, _ = self._image_rect()
         return (position.x() - rect_x, position.y() - rect_y)
 
+    # ----- Fit Rectangle tool -------------------------------------------------------------------
+    # Drag the four corners onto a rectangle in the photo; the ground is solved on every move.
+
+    def fit_corners_px(self) -> list[tuple[float, float]]:
+        _, _, rect_w, rect_h = self._image_rect()
+        return [(fx * rect_w, fy * rect_h) for fx, fy in self.fit_corners]
+
+    def fit_handle_at(self, position: QPointF) -> int | None:
+        if self.fit_corners is None:
+            return None
+        u, v = self._image_pixel(position)
+        distances = [np.hypot(u - cu, v - cv) for cu, cv in self.fit_corners_px()]
+        nearest = int(np.argmin(distances))
+        return nearest if distances[nearest] <= HANDLE_GRAB_PX else None
+
+    def _move_fit_corner(self, index: int, position: QPointF) -> None:
+        _, _, rect_w, rect_h = self._image_rect()
+        u, v = self._image_pixel(position)
+        self.fit_corners[index] = (u / rect_w, v / rect_h)
+        self._solve_fit()
+        self.update()
+
+    def _solve_fit(self) -> None:
+        """Fits the ground to the traced corners; an impossible shape leaves the scene untouched."""
+        _, _, rect_w, rect_h = self._image_rect()
+        scene = self.vm.scene
+        grid = scene.grid
+        try:
+            fit = ground_model.fit_ground_to_rectangle(
+                self.fit_corners_px(), (grid.fit_width, grid.fit_depth), scene.camera.fov,
+                (rect_w, rect_h), grid.cell_size, grid.fit_estimate_fov,
+            )
+        except ValueError as exc:
+            self.fit_valid = False
+            self.fit_status.emit(str(exc))
+            return
+        self.fit_valid = True
+        self.vm.set("camera", "fov", fit.fov)
+        self.vm.set_ground_pose(pitch=fit.pitch, yaw=fit.yaw, roll=fit.roll, height=fit.height)
+        self.vm.set("grid", "offset_x", fit.offset_x)
+        self.vm.set("grid", "offset_z", fit.offset_z)
+        self.fit_status.emit("")
+
+    def _initial_fit_corners(self) -> list[tuple[float, float]]:
+        """A fit-sized rectangle on the current ground near the bottom middle, so nothing jumps until a drag.
+
+        Falls back to a plain screen-space quad when that spot shows no ground.
+        """
+        _, _, rect_w, rect_h = self._image_rect()
+        scene = self.vm.scene
+        center = self._ground_point_at_pixel((rect_w / 2.0, rect_h * 0.75))
+        if center is not None:
+            half_w, half_d = scene.grid.fit_width / 2.0, scene.grid.fit_depth / 2.0
+            x, z = center
+            ground_corners = [(x - half_w, z + half_d), (x + half_w, z + half_d), (x + half_w, z - half_d), (x - half_w, z - half_d)]
+            pixels = [
+                math3d.project_to_image(ground_model.ground_to_world(scene.ground, gx, gz), scene.camera.fov, (rect_w, rect_h))
+                for gx, gz in ground_corners
+            ]
+            if all(p is not None for p in pixels):
+                return [(float(p[0]) / rect_w, float(p[1]) / rect_h) for p in pixels]
+        return [(0.3, 0.9), (0.7, 0.9), (0.65, 0.65), (0.35, 0.65)]
+
     def ground_point_at(self, position: QPointF) -> tuple[float, float] | None:
         """Ground (x, z) under a widget position, or None when that pixel shows sky or lies off the image."""
+        return self._ground_point_at_pixel(self._image_pixel(position))
+
+    def _ground_point_at_pixel(self, pixel) -> tuple[float, float] | None:
         _, _, rect_w, rect_h = self._image_rect()
-        pixel = self._image_pixel(position)
         if not (0 <= pixel[0] <= rect_w and 0 <= pixel[1] <= rect_h):
             return None
         scene = self.vm.scene
