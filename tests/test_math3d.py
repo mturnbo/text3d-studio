@@ -280,3 +280,30 @@ def test_vanishing_point_ignores_line_direction_sign():
 
 def test_direction_parallel_to_image_plane_has_no_vanishing_point():
     assert math3d.vanishing_point((1.0, 0.5, 0.0), 40, IMAGE) is None
+
+
+def horizon_pixel(pitch, roll, column, fov=40.0):
+    """The horizon's row at an image column, for a ground with this pitch and roll."""
+    up = math3d.ground_rotation(pitch, 0.0, roll)[:3, 1]
+    f = math3d.focal_length_px(fov, IMAGE[1])
+    xn = (column - IMAGE[0] / 2) / f
+    yn = (up[2] - up[0] * xn) / up[1]  # solve up . (xn, yn, -1) = 0
+    return np.array([column, IMAGE[1] / 2 - yn * f])
+
+
+@pytest.mark.parametrize("pitch, roll", [(0.0, 0.0), (12.0, 0.0), (-8.0, 5.0), (20.0, -15.0)])
+def test_pitch_for_horizon_recovers_ground_pitch(pitch, roll):
+    point = horizon_pixel(pitch, roll, column=900)
+    assert math3d.pitch_for_horizon_through(point, roll, 40.0, IMAGE) == pytest.approx(pitch, abs=1e-9)
+
+
+@pytest.mark.parametrize("pitch, roll", [(0.0, 0.0), (12.0, 7.0), (-8.0, -20.0), (30.0, 45.0)])
+def test_tilt_from_two_horizon_points(pitch, roll):
+    a, b = horizon_pixel(pitch, roll, 150), horizon_pixel(pitch, roll, 1050)
+    np.testing.assert_allclose(math3d.tilt_for_horizon_through(a, b, 40.0, IMAGE), (pitch, roll), atol=1e-9)
+    np.testing.assert_allclose(math3d.tilt_for_horizon_through(b, a, 40.0, IMAGE), (pitch, roll), atol=1e-9)
+
+
+def test_tilt_from_coincident_points_is_rejected():
+    with pytest.raises(ValueError):
+        math3d.tilt_for_horizon_through((300, 200), (300, 200), 40.0, IMAGE)
