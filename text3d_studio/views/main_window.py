@@ -19,7 +19,7 @@ TOOL_HINTS = {
     GRID_TOOL: "Drag horizon: tilt · Drag horizon ends: roll · Drag ground: shift lines · "
     "Right-drag: rotate grid · Wheel: cell size",
     FIT_TOOL: "Drag the four corners onto a rectangle in the photo (a tile, rug, table top) · "
-    "Set its real size under Grid",
+    "Its real size (Grid › Fit width/depth) sets the scale",
 }
 
 

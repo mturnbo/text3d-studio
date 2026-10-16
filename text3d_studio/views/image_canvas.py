@@ -7,9 +7,9 @@ from collections import deque
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .. import ground as ground_model
 from .. import math3d
@@ -27,6 +27,9 @@ TEXT_TOOL = "text"
 GRID_TOOL = "grid"
 FIT_TOOL = "fit"
 HANDLE_GRAB_PX = 12.0  # how close to a fit corner a press must land to grab it
+FIT_START_WIDTH = 0.3  # the traced rectangle starts about this fraction of the image wide
+FIT_VALID_COLOR = QColor(255, 179, 51)
+FIT_INVALID_COLOR = QColor(235, 64, 52)
 HORIZON_GRAB_PX = 8.0  # how close to the horizon a press must land to grab it
 HORIZON_END_FRACTION = 0.15  # presses on the outer 15% of the horizon roll it instead of tilting
 MIN_ROLL_SPAN_PX = 20.0  # roll needs the cursor this far from the pivot to define a direction
@@ -73,6 +76,46 @@ class EmptyStateOverlay(QFrame):
             layout.addWidget(widget, alignment=Qt.AlignmentFlag.AlignHCenter)
 
 
+class FitHandlesOverlay(QWidget):
+    """Draws the Fit Rectangle handles over the GL canvas.
+
+    Plain widget painting rather than QPainter inside paintGL: in the core-profile context the GL paint
+    engine garbles text, and keeping it out of paintGL leaves the renderer's GL state alone.
+    """
+
+    def __init__(self, canvas: "ImageCanvas"):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+
+    def paintEvent(self, event) -> None:
+        if self.canvas.fit_corners is None:
+            return
+        rect_x, rect_y, _, _ = self.canvas._image_rect()
+        points = [QPointF(rect_x + u, rect_y + v) for u, v in self.canvas.fit_corners_px()]
+        center = sum(points, QPointF()) / 4.0
+        color = FIT_VALID_COLOR if self.canvas.fit_valid else FIT_INVALID_COLOR
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(color, 2))
+        painter.drawPolygon(QPolygonF(points))
+        painter.setPen(QPen(color, 4))  # edge 1-2 sets the grid's x direction
+        painter.drawLine(points[0], points[1])
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        for number, point in enumerate(points, start=1):
+            painter.setPen(QPen(color, 2))
+            painter.setBrush(QColor(255, 255, 255, 230))
+            painter.drawEllipse(point, 7, 7)
+            outward = point - center
+            length = max((outward.x() ** 2 + outward.y() ** 2) ** 0.5, 1e-6)
+            label = point + outward * (18.0 / length) - QPointF(4, -5)
+            painter.drawText(label, str(number))
+        painter.end()
+
+
 class ImageCanvas(QOpenGLWidget):
     fps_changed = pyqtSignal(float)
     error = pyqtSignal(str)
@@ -96,6 +139,7 @@ class ImageCanvas(QOpenGLWidget):
         self._roll_pivot: tuple[float, float] | None = None
         self._offset_start: tuple[float, float] | None = None
         self.fit_corners: list[tuple[float, float]] | None = None  # fractions of the image rect
+        self.fit_overlay = FitHandlesOverlay(self)
         self.fit_valid = True
         self._fit_handle: int | None = None
         self._frame_times: deque[float] = deque(maxlen=30)
@@ -181,6 +225,7 @@ class ImageCanvas(QOpenGLWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self.fit_overlay.setGeometry(self.rect())
         self._center_empty_state()
 
     def _update_empty_state(self) -> None:
@@ -242,6 +287,8 @@ class ImageCanvas(QOpenGLWidget):
             self.fit_corners = self._initial_fit_corners()
             self.fit_valid = True
             self.fit_status.emit("")
+        self.fit_overlay.setVisible(tool == FIT_TOOL)
+        self.fit_overlay.update()
         self.setCursor(Qt.CursorShape.OpenHandCursor if tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
         self.tool_changed.emit(tool)
 
@@ -419,6 +466,7 @@ class ImageCanvas(QOpenGLWidget):
         u, v = self._image_pixel(position)
         self.fit_corners[index] = (u / rect_w, v / rect_h)
         self._solve_fit()
+        self.fit_overlay.update()
         self.update()
 
     def _solve_fit(self) -> None:
@@ -443,15 +491,20 @@ class ImageCanvas(QOpenGLWidget):
         self.fit_status.emit("")
 
     def _initial_fit_corners(self) -> list[tuple[float, float]]:
-        """A fit-sized rectangle on the current ground near the bottom middle, so nothing jumps until a drag.
+        """A rectangle lying on the current ground near the bottom middle, about FIT_START_WIDTH of the image wide.
 
-        Falls back to a plain screen-space quad when that spot shows no ground.
+        It has the fit's proportions but is sized for easy grabbing; the first drag reinterprets it at the
+        fit's real size, which sets the ground's scale. Falls back to a plain screen-space quad when that
+        spot shows no ground.
         """
         _, _, rect_w, rect_h = self._image_rect()
         scene = self.vm.scene
-        center = self._ground_point_at_pixel((rect_w / 2.0, rect_h * 0.75))
+        center = self._ground_point_at_pixel((rect_w / 2.0, rect_h * 0.8))
         if center is not None:
-            half_w, half_d = scene.grid.fit_width / 2.0, scene.grid.fit_depth / 2.0
+            distance = float(np.linalg.norm(ground_model.ground_to_world(scene.ground, *center)))
+            width = FIT_START_WIDTH * rect_w * distance / math3d.focal_length_px(scene.camera.fov, rect_h)
+            half_w = width / 2.0
+            half_d = half_w * scene.grid.fit_depth / scene.grid.fit_width
             x, z = center
             ground_corners = [(x - half_w, z + half_d), (x + half_w, z + half_d), (x + half_w, z - half_d), (x - half_w, z - half_d)]
             pixels = [
