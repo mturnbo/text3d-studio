@@ -45,7 +45,7 @@ class SceneViewModel(QObject):
         placement = ground_model.reanchor_text(old_ground, self.scene.ground, self.scene.transform)
         if placement is None:
             return
-        for name, value in zip(("x", "z", "rot_y"), placement):
+        for name, value in zip(("x", "z", "rot_y", "size"), placement):
             self.set("transform", name, value)
 
     def nudge(self, section: str, name: str, delta: float) -> None:
