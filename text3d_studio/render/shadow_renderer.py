@@ -3,6 +3,7 @@
 from OpenGL import GL
 
 from ..lighting import LightingState
+from ..materials import TRANSMISSION
 from ..model import Scene
 from . import shaders
 from .gl_utils import ColorTarget, ShaderProgram, UnitQuad
@@ -62,7 +63,7 @@ class ShadowRenderer:
         self.ping.texture.bind(0)
         self.composite.set_int("u_image", 0)
         self.composite.set_int("u_flip_y", 0)
-        self.composite.set_vec3("u_color", scene.shadow.color)
+        self.composite.set_vec3("u_color", shadow_color(scene))
         self.composite.set_float("u_opacity", scene.shadow.opacity)
         self.quad.draw()
         GL.glDisable(GL.GL_BLEND)
@@ -72,3 +73,11 @@ class ShadowRenderer:
         self.composite.delete()
         self.ping.delete()
         self.pong.delete()
+
+
+def shadow_color(scene: Scene) -> tuple[float, float, float]:
+    """The shadow's color at full strength. Light passing through a transmissive material lightens the
+    shadow and takes on the material's tint."""
+    transmission = TRANSMISSION.get(scene.material.kind, 0.0)
+    tint = scene.material.face_color
+    return tuple(s * (1 - transmission) + t * transmission for s, t in zip(scene.shadow.color, tint))

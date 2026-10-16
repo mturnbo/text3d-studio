@@ -490,3 +490,24 @@ def test_varnish_adds_a_sharp_highlight(compositor):
         return np.sort(text_pixels(compositor, doc).sum(-1))[-30:].mean()
 
     assert highlight(1.0) > highlight(0.0) + 150
+
+
+# ----- Glass --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind, expected", [
+    ("plastic", (0.0, 0.0, 0.0)),
+    ("glass", (0.65 * 0.8, 0.65 * 0.9, 0.65 * 1.0)),
+])
+def test_shadow_color_lightens_and_tints_only_for_transmissive_materials(kind, expected):
+    from text3d_studio.render.shadow_renderer import shadow_color
+
+    doc = make_document(material={"kind": kind, "face_color": (0.8, 0.9, 1.0)}, shadow={"color": (0.0, 0.0, 0.0)})
+    assert shadow_color(doc.scene) == pytest.approx(expected)
+
+
+def test_glass_shadow_keeps_a_custom_shadow_color_in_proportion():
+    from text3d_studio.render.shadow_renderer import shadow_color
+
+    doc = make_document(material={"kind": "glass", "face_color": (1.0, 1.0, 1.0)}, shadow={"color": (0.2, 0.4, 0.6)})
+    assert shadow_color(doc.scene) == pytest.approx((0.72, 0.79, 0.86))
