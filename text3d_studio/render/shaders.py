@@ -48,6 +48,7 @@ uniform vec4 u_ground_plane;
 uniform float u_world_size;
 out vec2 v_uv;
 out vec3 v_pos;
+out vec3 v_local;   // position inside the text in em units (z = depth): procedural textures sample this
 out float v_t;
 out float v_height;
 flat out int v_layer;
@@ -57,6 +58,7 @@ void main() {
     vec4 local = vec4(u_origin + a_pos * u_size, -t * u_depth, 1.0);
     vec4 world = u_model * local;
     v_pos = world.xyz;
+    v_local = local.xyz;
     v_t = t;
     v_layer = layer;
     v_uv = vec2(a_pos.x, 1.0 - a_pos.y);
@@ -95,6 +97,7 @@ LAYER_STACK_FS = """
 #version 410 core
 in vec2 v_uv;
 in vec3 v_pos;
+in vec3 v_local;
 in float v_t;
 flat in int v_layer;
 uniform sampler2D u_mask;
