@@ -49,6 +49,10 @@ class GridParams:
     opacity: float = 0.6
     color: Color = (0.85, 0.90, 1.0)
     accent_color: Color = (1.0, 0.70, 0.20)  # the text's footprint and the lanes it slides along
+    # Fit to Rectangle: the real size of the rectangle being traced sets the ground's scale (camera height).
+    fit_width: float = 1.0  # along its first edge
+    fit_depth: float = 1.0  # along its second edge
+    fit_estimate_fov: bool = False  # take the field of view from the rectangle's vanishing points
 
 
 @dataclass

@@ -118,3 +118,68 @@ def test_reanchoring_there_and_back_restores_the_placement():
     x, z, rot_y, size = ground.reanchor_text(a, b, t)
     back = ground.reanchor_text(b, a, TransformParams(x=x, z=z, rot_y=rot_y, size=size))
     np.testing.assert_allclose(back, (1.5, -14.0, -20.0, 3.0), atol=1e-9)
+
+
+IMAGE = (1200, 800)
+
+
+def same_grid_phase(a, b, cell):
+    """Offsets a and b put grid lines in the same places (they differ by a whole number of cells)."""
+    turns = (a - b) / cell
+    return abs(turns - round(turns)) < 1e-6
+
+
+def project_ground_rectangle(g, fov, corner=(1.2, -9.0), size=(2.0, 3.0)):
+    """Pixel corners of a size[0] x size[1] rectangle lying on ground `g`, edge 0-1 along the grid's x."""
+    x0, z0 = corner
+    w, d = size
+    corners = [(x0, z0), (x0 + w, z0), (x0 + w, z0 - d), (x0, z0 - d)]
+    return [math3d.project_to_image(ground.ground_to_world(g, x, z), fov, IMAGE) for x, z in corners]
+
+
+@pytest.mark.parametrize(
+    "pose", [dict(pitch=12, yaw=30, roll=-4, height=1.7), dict(pitch=3, yaw=-50, roll=8, height=4.0), dict(pitch=25, yaw=0, roll=0, height=1.2)]
+)
+def test_rectangle_fit_recovers_the_ground(pose):
+    g = GroundParams(**pose)
+    fit = ground.fit_ground_to_rectangle(project_ground_rectangle(g, 45.0), (2.0, 3.0), 45.0, IMAGE, cell_size=0.5)
+    np.testing.assert_allclose((fit.pitch, fit.yaw, fit.roll, fit.height), (g.pitch, g.yaw, g.roll, g.height), atol=1e-6)
+    assert fit.fov == 45.0
+    assert same_grid_phase(fit.offset_x, 1.2, 0.5) and same_grid_phase(fit.offset_z, -9.0, 0.5)
+
+
+@pytest.mark.parametrize("fov", [30.0, 55.0, 80.0])
+def test_rectangle_fit_can_estimate_field_of_view(fov):
+    g = GroundParams(pitch=15, yaw=35, roll=3, height=1.6)
+    quad = project_ground_rectangle(g, fov)
+    fit = ground.fit_ground_to_rectangle(quad, (2.0, 3.0), 40.0, IMAGE, cell_size=1.0, estimate_fov=True)
+    assert fit.fov == pytest.approx(fov, abs=1e-6)
+    assert fit.pitch == pytest.approx(15, abs=1e-6) and fit.height == pytest.approx(1.6, abs=1e-6)
+
+
+def test_fitted_grid_lines_run_through_the_rectangle_corner():
+    g = GroundParams(pitch=10, yaw=20, roll=0, height=2.0)
+    fit = ground.fit_ground_to_rectangle(project_ground_rectangle(g, 40.0), (2.0, 3.0), 40.0, IMAGE, cell_size=0.75)
+    fitted = GroundParams(pitch=fit.pitch, yaw=fit.yaw, roll=fit.roll, height=fit.height)
+    corner = ground.ground_to_world(g, 1.2, -9.0)
+    x, z = ground.world_to_ground(fitted, corner)
+    for value, offset in ((x, fit.offset_x), (z, fit.offset_z)):
+        assert ((value - offset) / 0.75) == pytest.approx(round((value - offset) / 0.75), abs=1e-6)
+
+
+def test_crossed_corners_cannot_be_fitted():
+    a, b, c, d = project_ground_rectangle(GroundParams(pitch=10, yaw=20), 40.0)
+    with pytest.raises(ValueError):
+        ground.fit_ground_to_rectangle([a, c, b, d], (2.0, 3.0), 40.0, IMAGE, 1.0)
+
+
+def test_fit_beyond_the_supported_roll_is_rejected():
+    quad = project_ground_rectangle(GroundParams(pitch=10, yaw=20, roll=70), 40.0)
+    with pytest.raises(ValueError, match="tilted"):
+        ground.fit_ground_to_rectangle(quad, (2.0, 3.0), 40.0, IMAGE, 1.0)
+
+
+def test_fov_estimate_fails_for_a_square_on_rectangle():
+    quad = project_ground_rectangle(GroundParams(pitch=10, yaw=0, roll=0), 40.0)  # front edge stays horizontal
+    with pytest.raises(ValueError):
+        ground.fit_ground_to_rectangle(quad, (2.0, 3.0), 40.0, IMAGE, 1.0, estimate_fov=True)

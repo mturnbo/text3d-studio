@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV
 from ..viewmodel import SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
@@ -32,16 +33,18 @@ SLIDERS = {
         ("layers", "Layer count", 2, 256, 0),
     ],
     "ground": [
-        ("pitch", "Tilt", -89, 89, 1),
-        ("roll", "Roll", -60, 60, 1),
+        ("pitch", "Tilt", -MAX_PITCH, MAX_PITCH, 1),
+        ("roll", "Roll", -MAX_ROLL, MAX_ROLL, 1),
         ("yaw", "Grid rotation", -180, 180, 1),
         ("height", "Camera height", 0.05, 30, 2),
     ],
     "grid": [
         ("cell_size", "Cell size", 0.1, 10, 2),
         ("opacity", "Opacity", 0, 1, 2),
+        ("fit_width", "Fit width", 0.1, 20, 2),
+        ("fit_depth", "Fit depth", 0.1, 20, 2),
     ],
-    "camera": [("fov", "Field of view", 10, 100, 1)],
+    "camera": [("fov", "Field of view", MIN_FOV, MAX_FOV, 1)],
     "light": [
         ("azimuth", "Azimuth", -180, 180, 1),
         ("elevation", "Elevation", 0, 90, 1),
@@ -62,7 +65,7 @@ SLIDERS = {
 }
 
 CHECKBOXES = {
-    "grid": [("visible", "Show grid")],
+    "grid": [("visible", "Show grid"), ("fit_estimate_fov", "Fit: estimate field of view")],
     "shadow": [("enabled", "Cast shadow")],
 }
 
