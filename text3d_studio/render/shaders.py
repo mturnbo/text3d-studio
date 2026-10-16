@@ -78,13 +78,38 @@ uniform vec3 u_face_color;    // linear
 uniform vec3 u_side_color;    // linear
 uniform float u_side_darkening;
 uniform float u_bevel_strength;
-uniform float u_specular;
-uniform float u_shininess;
+uniform float u_metallic;
+uniform float u_roughness;
 out vec4 frag;
+
+const float PI = 3.14159265359;
 
 vec3 linear_to_srgb(vec3 c) {
     c = clamp(c, 0.0, 1.0);
     return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+// Metallic-roughness microfacet shading (GGX distribution, Smith geometry, Schlick Fresnel).
+float distribution_ggx(float n_dot_h, float alpha) {
+    float a2 = alpha * alpha;
+    float d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+float geometry_smith(float n_dot_v, float n_dot_l, float roughness) {
+    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    return (n_dot_v / (n_dot_v * (1.0 - k) + k)) * (n_dot_l / (n_dot_l * (1.0 - k) + k));
+}
+
+vec3 fresnel_schlick(float cos_theta, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(1.0 - cos_theta, 5.0);
+}
+
+// Analytic fit of the pre-integrated environment BRDF (Karis, "Physically Based Shading on Mobile").
+vec2 environment_brdf(float n_dot_v, float roughness) {
+    vec4 r = roughness * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+    float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
 }
 
 void main() {
@@ -112,11 +137,22 @@ void main() {
     vec3 n = normalize(mat3(u_model) * n_local);
     vec3 l = normalize(u_light_dir);
     vec3 v = normalize(-v_pos);
-    float diffuse = max(dot(n, l), 0.0);
     vec3 h = normalize(l + v);
-    float spec = diffuse > 0.0 ? pow(max(dot(n, h), 0.0), u_shininess) * u_specular : 0.0;
-    vec3 color = base * (u_ambient + u_light_color * diffuse) + u_light_color * spec;
-    frag = vec4(linear_to_srgb(color), coverage);
+    float n_dot_l = max(dot(n, l), 0.0);
+    float n_dot_v = max(dot(n, v), 1e-4);
+    float alpha = max(u_roughness * u_roughness, 1e-3);
+
+    vec3 f0 = mix(vec3(0.04), base, u_metallic);  // metals tint their reflection; dielectrics reflect ~4% white
+    vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
+    vec3 specular = distribution_ggx(max(dot(n, h), 0.0), alpha) * geometry_smith(n_dot_v, n_dot_l, u_roughness)
+        * f / (4.0 * n_dot_v * n_dot_l + 1e-4);
+    vec3 diffuse = (1.0 - f) * (1.0 - u_metallic) * base;
+    // Light intensity is scaled by PI so a white matte surface facing the light reaches exactly 1.
+    vec3 direct = (diffuse + specular * PI) * u_light_color * n_dot_l;
+
+    vec2 env = environment_brdf(n_dot_v, u_roughness);
+    vec3 ambient = u_ambient * ((1.0 - u_metallic) * base + f0 * env.x + env.y);
+    frag = vec4(linear_to_srgb(direct + ambient), coverage);
 }
 """
 

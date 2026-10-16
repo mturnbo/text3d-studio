@@ -50,8 +50,8 @@ class Text3DRenderer:
         program.set_vec3("u_side_color", srgb_to_linear(m.side_color))
         program.set_float("u_side_darkening", m.side_darkening)
         program.set_float("u_bevel_strength", m.bevel_strength)
-        program.set_float("u_specular", m.specular)
-        program.set_float("u_shininess", m.shininess)
+        program.set_float("u_metallic", m.metallic)
+        program.set_float("u_roughness", m.roughness)
         self.quad.draw(layers)
 
     def draw_shadow_caster(self, scene: Scene, proj: np.ndarray, lighting: LightingState) -> None:
