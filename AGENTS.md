@@ -32,7 +32,8 @@ views/              Qt widgets only. Never touch GL state or numpy image math he
   main_window.py      menus, status bar, file dialogs
   control_panel.py    declarative slider/colour/checkbox layout, two-way bound to the ViewModel
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
-                      Holds the active tool (TEXT_TOOL / GRID_TOOL), which is editor state, not scene state
+                      Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL), which is editor state, not
+                      scene state. FitHandlesOverlay (a plain child widget) draws the fit handles
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
@@ -142,6 +143,22 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 |---|---|---|---|
 | **Move Text** (V) | slide text on the ground (grabbed point stays under the cursor) | text yaw | size; Ctrl/Cmd: distance |
 | **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
+| **Fit Rectangle** (R) | drag the 4 corner handles onto a rectangle in the photo; the ground is solved live (`ground.fit_ground_to_rectangle`) | — | — |
+
+**Fit Rectangle:**
+- Handles start as a ~30%-wide rectangle on the current ground. Its real size (`grid.fit_width/depth`) sets
+  the ground's scale (camera height) on the first drag.
+- Edge 1→2 becomes the grid's x direction, and grid offsets put lines along the rectangle's edges.
+- `grid.fit_estimate_fov` also sets the camera's field of view from the two vanishing points.
+- An impossible shape turns the handles red, reports why via `fit_status`, and keeps the last valid fit.
+
+**Drags re-place the text from where they started.** Ground-changing drags call
+`SceneViewModel.set_ground_pose(anchor=(ground, transform), …)` with the state from the press, or, for Fit
+Rectangle, from the start of the tracing session. A pose mid-drag that can't hold the text therefore can't
+strand it. Never re-anchor incrementally per mouse move.
+
+Don't draw text with QPainter inside `paintGL`. In the core-profile context the GL paint engine garbles
+glyphs. Use a child widget overlay (like `FitHandlesOverlay` and the empty-state prompt).
 
 Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_horizon_through` and
 `tilt_for_horizon_through`. Drag tests drive real `QMouseEvent`s on a sized, unshown canvas; see
