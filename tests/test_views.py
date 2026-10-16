@@ -384,3 +384,26 @@ def test_busy_cursor_restored_when_decode_fails(window, tmp_path, monkeypatch, q
     window.load_image_path(str(broken))
     assert qapp.overrideCursor() is None
     assert window.vm.document.background is None
+
+
+# ----- Ground model controls --------------------------------------------------------------------
+
+
+def test_panel_has_ground_controls_and_no_legacy_transform_controls(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    keys = set(ControlPanel(vm)._setters)
+    assert {("ground", f) for f in ("pitch", "roll", "yaw", "height")} <= keys
+    assert {("transform", f) for f in ("x", "z", "rot_y", "size", "depth", "layers")} <= keys
+    assert not {("transform", f) for f in ("y", "rot_x", "rot_z")} & keys
+
+
+def test_ground_slider_and_model_stay_in_sync(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    row = panel.findChild(SliderRow, "ground.pitch")
+    row.spin.setValue(12.0)
+    assert vm.scene.ground.pitch == 12.0
+    vm.set("ground", "pitch", -7.5)
+    assert row.spin.value() == -7.5
