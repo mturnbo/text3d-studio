@@ -223,7 +223,8 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 
 Release history: v0.1.0 core · v0.2.0 render pipeline · v0.2.1 side-wall shadows · v0.3.0 desktop
 UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs · v0.5.0 image opening
-(empty-state prompt, toolbar, drag and drop, Open Recent, size notice).
+(empty-state prompt, toolbar, drag and drop, Open Recent, size notice) · v0.6.0 perspective grid
+(ground model B, grid overlay, Move Text / Adjust Grid / Fit Rectangle tools).
 
 ## Known limitations / next work
 
