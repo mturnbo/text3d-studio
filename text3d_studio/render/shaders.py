@@ -65,6 +65,32 @@ void main() {
 }
 """
 
+# Shared by the depth pre-pass and the shading pass so both derive exactly the same coverage.
+MASK_COVERAGE = """
+// Cap the mip level: grazing-angle layers would otherwise average thin strokes below the 0.5 cutoff.
+float mask_coverage(sampler2D mask, vec2 uv, out vec4 m) {
+    float lod = min(textureQueryLod(mask, uv).y, 1.5);
+    m = textureLod(mask, uv, lod);
+    float edge = max(fwidth(m.a), 1e-4);
+    return clamp((m.a - 0.5) / edge + 0.5, 0.0, 1.0);
+}
+"""
+
+# Depth pre-pass: finds the visible slice at each pixel (color writes are off).
+LAYER_DEPTH_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+out vec4 frag;
+""" + MASK_COVERAGE + """
+void main() {
+    vec4 m;
+    float coverage = mask_coverage(u_mask, v_uv, m);
+    if (coverage <= 0.0) discard;
+    frag = vec4(0.0, 0.0, 0.0, coverage);  // alpha drives alpha-to-coverage, as in the shading pass
+}
+"""
+
 LAYER_STACK_FS = """
 #version 410 core
 in vec2 v_uv;
@@ -131,13 +157,10 @@ vec2 environment_brdf(float n_dot_v, float roughness) {
     float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
-
+""" + MASK_COVERAGE + """
 void main() {
-    // Cap the mip level: grazing-angle layers would otherwise average thin strokes below the 0.5 cutoff.
-    float lod = min(textureQueryLod(u_mask, v_uv).y, 1.5);
-    vec4 m = textureLod(u_mask, v_uv, lod);
-    float edge = max(fwidth(m.a), 1e-4);
-    float coverage = clamp((m.a - 0.5) / edge + 0.5, 0.0, 1.0);
+    vec4 m;
+    float coverage = mask_coverage(u_mask, v_uv, m);
     if (coverage <= 0.0) discard;
 
     vec2 dir = m.rg * 2.0 - 1.0;
@@ -371,3 +394,4 @@ void main() {
     frag = vec4(marker > horizon ? u_accent : u_color, a);
 }
 """
+
