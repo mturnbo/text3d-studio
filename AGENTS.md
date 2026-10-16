@@ -113,9 +113,16 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - **Procedural textures** (stone, wood) sample `NOISE_GLSL` at `v_local` (text space, em units), so
   patterns are continuous from face to side walls and stick to the text. Relief (bump) only runs on the
   front and back slices. `u_pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
+- **Glass** (kinds in `materials.TRANSMISSION`). Before drawing the text, the compositor blits the
+  viewport (background + shadow, MSAA resolved) into the mipmapped `backdrop` texture. The shader samples
+  it along the refracted ray (IOR 1.5, `REFRACTION_DEPTH` em behind the surface, projected back to the
+  screen), blurs it by roughness (shown as **Frost**), tints it by Beer-Lambert absorption
+  (`tint^(path × absorption)`, path = depth along the view), and splits it from the surface reflection by
+  Fresnel. The output is still opaque. Glass only shows the backdrop, not the text's own far walls.
+  `shadow_renderer.shadow_color` lightens and tints the shadow by the transmission fraction.
 - **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
   re-picking the current kind resets it. `control_panel.MATERIAL_CONTROLS` lists the fields shown per kind,
-  and `MATERIAL_LABELS` renames them (glass: Tint / Edge tint). `metallic` is set by the kind and never shown.
+  and `MATERIAL_LABELS` renames them (glass: Tint / Edge tint / Tint depth / Frost). `metallic` is set by the kind and never shown.
   A new material parameter needs: a MaterialParams field, a value in **every** preset (a test enforces
   this), a slider/colour entry, and the kinds that show it.
 - Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
