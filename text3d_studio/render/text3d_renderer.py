@@ -86,6 +86,12 @@ class Text3DRenderer:
         program.set_float("u_bump_strength", m.bump_strength)
         program.set_float("u_grain_angle", math.radians(m.grain_angle))
         program.set_float("u_varnish", m.varnish)
+        program.set_float("u_absorption", m.absorption)
+        program.set_int("u_transmissive", int(backdrop is not None))
+        if backdrop is not None:
+            backdrop.bind(2)
+            program.set_int("u_backdrop", 2)
+            program.set_float("u_backdrop_lod", backdrop.max_lod)
         program.set_int("u_has_environment", int(environment is not None))
         if environment is not None:
             environment.bind(1)
