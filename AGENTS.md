@@ -143,6 +143,11 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   Everything else is a uniform and must stay cheap. Never re-rasterize per frame.
 - **PyQt signal arguments.** `QAction.triggered` and `QAbstractButton.clicked` pass a `checked`
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
+- **Never write alpha < 1 into the canvas framebuffer.** Qt composites the QOpenGLWidget as premultiplied
+  color, so a pixel brighter than its alpha overflows and *wraps* (a 245 blue shows as 9): bright reflections
+  turned into rainbow speckles. The text pass (alpha-to-coverage) and the grid pass mask alpha writes with
+  `glColorMask(..., GL_FALSE)`. Exports never showed it because the exporter forces alpha to 255, so test
+  the *preview* path: `test_preview_framebuffer_stays_opaque`.
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
 
