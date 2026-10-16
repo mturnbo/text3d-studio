@@ -517,7 +517,8 @@ def test_grid_panel_controls_are_bound(vm):
     from text3d_studio.views.control_panel import ControlPanel, SliderRow
 
     panel = ControlPanel(vm)
-    assert {("grid", f) for f in ("visible", "cell_size", "opacity", "color", "accent_color")} <= set(panel._setters)
+    fields = ("visible", "cell_size", "opacity", "color", "accent_color", "fit_width", "fit_depth", "fit_estimate_fov")
+    assert {("grid", f) for f in fields} <= set(panel._setters)
     panel.findChild(SliderRow, "grid.cell_size").spin.setValue(2.5)
     assert vm.scene.grid.cell_size == 2.5
 

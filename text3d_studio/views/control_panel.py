@@ -41,6 +41,8 @@ SLIDERS = {
     "grid": [
         ("cell_size", "Cell size", 0.1, 10, 2),
         ("opacity", "Opacity", 0, 1, 2),
+        ("fit_width", "Fit width", 0.1, 20, 2),
+        ("fit_depth", "Fit depth", 0.1, 20, 2),
     ],
     "camera": [("fov", "Field of view", MIN_FOV, MAX_FOV, 1)],
     "light": [
@@ -63,7 +65,7 @@ SLIDERS = {
 }
 
 CHECKBOXES = {
-    "grid": [("visible", "Show grid")],
+    "grid": [("visible", "Show grid"), ("fit_estimate_fov", "Fit: estimate field of view")],
     "shadow": [("enabled", "Cast shadow")],
 }
 
