@@ -34,6 +34,9 @@ void main() {
 LAYER_STACK_VS = """
 #version 410 core
 layout(location = 0) in vec2 a_pos;
+// The depth pre-pass and the shading pass link this source into different programs; invariance guarantees
+// they compute bit-identical depths, so the shading pass can test with GL_EQUAL.
+invariant gl_Position;
 uniform mat4 u_model;
 uniform mat4 u_proj;
 uniform mat4 u_flatten;      // identity for the beauty pass, planar shadow projection for the shadow pass
