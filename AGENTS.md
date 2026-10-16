@@ -47,6 +47,8 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
                     Also image-space perspective: project_to_image / image_ray (pixels, origin
                     top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
                     focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
+materials.py        Material KINDS (metal, plastic, stone, wood, glass) and their PRESETS (every MaterialParams
+                    field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset
 ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
                     placement on it (text_position, text_model_matrix, world_to_ground, text_distance)
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
@@ -108,6 +110,11 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - **Reflections.** With `light.reflect_photo`, the reflection vector does a sphere-map lookup into the
   background texture, blurred by `roughness × max_lod` via its mipmaps. Without a photo the ambient color
   is reflected instead. The split-sum environment BRDF uses Karis's analytic fit (`environment_brdf`).
+- **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
+  re-picking the current kind resets it. `control_panel.MATERIAL_CONTROLS` lists the fields shown per kind,
+  and `MATERIAL_LABELS` renames them (glass: Tint / Edge tint). `metallic` is set by the kind and never shown.
+  A new material parameter needs: a MaterialParams field, a value in **every** preset (a test enforces
+  this), a slider/colour entry, and the kinds that show it.
 - Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
   using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
 
