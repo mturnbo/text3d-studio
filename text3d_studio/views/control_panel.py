@@ -59,6 +59,11 @@ SLIDERS = {
         ("bevel_strength", "Bevel strength", 0, 4, 2),
         ("metallic", "Metallic", 0, 1, 2),
         ("roughness", "Roughness", 0.02, 1, 2),
+        ("texture_scale", "Pattern scale", 0.02, 5, 2),
+        ("texture_strength", "Pattern strength", 0, 1, 2),
+        ("grain_angle", "Grain direction", -90, 90, 0),
+        ("bump_strength", "Bump", 0, 1, 2),
+        ("varnish", "Varnish", 0, 1, 2),
     ],
     "shadow": [
         ("opacity", "Opacity", 0, 1, 2),
@@ -75,19 +80,31 @@ CHECKBOXES = {
 
 COLORS = {
     "grid": [("color", "Grid color"), ("accent_color", "Path color")],
-    "material": [("face_color", "Face color"), ("side_color", "Side color")],
+    "material": [("face_color", "Face color"), ("side_color", "Side color"), ("secondary_color", "Secondary color")],
     "light": [("color", "Light color"), ("ambient_color", "Ambient color")],
     "shadow": [("color", "Shadow color")],
 }
 
 # Material fields shown for each kind (the kind itself decides `metallic`, so that slider never shows).
+_SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength")
 MATERIAL_CONTROLS = {
-    kind: ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength") for kind in KINDS
+    "metal": _SOLID_COLOR,
+    "plastic": _SOLID_COLOR,
+    "glass": _SOLID_COLOR,
+    # Textured materials color their side walls from the pattern too, so they have no side color.
+    "stone": ("face_color", "secondary_color", "texture_scale", "texture_strength", "bump_strength",
+              "roughness", "side_darkening", "bevel_strength"),
+    "wood": ("face_color", "secondary_color", "texture_scale", "texture_strength", "grain_angle", "varnish",
+             "bump_strength", "roughness", "side_darkening", "bevel_strength"),
 }
 
 # Per-kind label overrides where the generic name would mislead.
 MATERIAL_LABELS = {
     "glass": {"face_color": "Tint", "side_color": "Edge tint"},
+    "stone": {"face_color": "Stone color", "secondary_color": "Vein color", "texture_scale": "Grain size",
+              "texture_strength": "Veining"},
+    "wood": {"face_color": "Light wood", "secondary_color": "Dark wood", "texture_scale": "Ring spacing",
+             "texture_strength": "Grain contrast"},
 }
 
 GROUP_TITLES = [

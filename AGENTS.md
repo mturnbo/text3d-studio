@@ -110,6 +110,9 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - **Reflections.** With `light.reflect_photo`, the reflection vector does a sphere-map lookup into the
   background texture, blurred by `roughness × max_lod` via its mipmaps. Without a photo the ambient color
   is reflected instead. The split-sum environment BRDF uses Karis's analytic fit (`environment_brdf`).
+- **Procedural textures** (stone, wood) sample `NOISE_GLSL` at `v_local` (text space, em units), so
+  patterns are continuous from face to side walls and stick to the text. Relief (bump) only runs on the
+  front and back slices. `u_pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
 - **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
   re-picking the current kind resets it. `control_panel.MATERIAL_CONTROLS` lists the fields shown per kind,
   and `MATERIAL_LABELS` renames them (glass: Tint / Edge tint). `metallic` is set by the kind and never shown.
@@ -150,7 +153,9 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   the *preview* path: `test_preview_framebuffer_stays_opaque`.
 - **Depth pre-pass** (`text3d_renderer.DEPTH_PREPASS`). The stack is drawn once into depth only
   (`LAYER_DEPTH_FS`), then shaded with `GL_EQUAL` and depth writes off, so expensive shading runs about
-  once per pixel instead of once per slice. This halved frame times with texture-like shading cost.
+  once per pixel instead of once per slice. Real gains are modest on Apple GPUs (~11% without MSAA, ~0
+  with it). The dominant cost is multisampled side-wall pixels shaded for several slices, so keep expensive
+  per-pixel work (e.g. bump) off side-wall slices.
   - Both passes must compute identical depth and coverage: `LAYER_STACK_VS` declares
     `invariant gl_Position`, and both fragment shaders share `MASK_COVERAGE`. Any new per-slice
     geometry or coverage logic must go into both.
