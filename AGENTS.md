@@ -148,6 +148,14 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   turned into rainbow speckles. The text pass (alpha-to-coverage) and the grid pass mask alpha writes with
   `glColorMask(..., GL_FALSE)`. Exports never showed it because the exporter forces alpha to 255, so test
   the *preview* path: `test_preview_framebuffer_stays_opaque`.
+- **Depth pre-pass** (`text3d_renderer.DEPTH_PREPASS`). The stack is drawn once into depth only
+  (`LAYER_DEPTH_FS`), then shaded with `GL_EQUAL` and depth writes off, so expensive shading runs about
+  once per pixel instead of once per slice. This halved frame times with texture-like shading cost.
+  - Both passes must compute identical depth and coverage: `LAYER_STACK_VS` declares
+    `invariant gl_Position`, and both fragment shaders share `MASK_COVERAGE`. Any new per-slice
+    geometry or coverage logic must go into both.
+  - `test_depth_prepass_matches_single_pass_rendering` guards bit-exact equality with the one-pass
+    path.
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
 

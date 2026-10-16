@@ -70,12 +70,8 @@ class Compositor:
             GL.glEnable(GL.GL_DEPTH_TEST)
             GL.glDepthFunc(GL.GL_LESS)
             GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
-            # Coverage drives antialiasing but must not reach the stored alpha: Qt composites the canvas as
-            # premultiplied color, so alpha < 1 under bright pixels overflows into wrapped colors.
-            GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
             reflect = self.has_background and scene.light.reflect_photo
             self.text.draw_beauty(scene, proj, lighting, height, self.background if reflect else None)
-            GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
             GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
             GL.glDisable(GL.GL_DEPTH_TEST)
 

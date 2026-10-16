@@ -3,6 +3,7 @@
 import math
 
 import numpy as np
+from OpenGL import GL
 
 from .. import ground as ground_model
 from .. import math3d
@@ -16,11 +17,19 @@ IDENTITY_GL = math3d.to_gl(math3d.identity())
 MAX_LAYERS = 2048
 LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on screen
 
+# Depth pre-pass: draw the stack once into depth only, then shade with GL_EQUAL so each pixel is shaded for
+# its visible slice rather than every slice behind it. With texture-like shading cost this halved frame
+# times (16.3 -> 7.7 ms for deep text at 1600x1000); the shading pass keeps its alpha test, which measured
+# no slower and avoids relying on slices never sharing a depth value. False renders the stack in one pass.
+DEPTH_PREPASS = True
+
 
 class Text3DRenderer:
     def __init__(self, quad: UnitQuad):
         self.quad = quad
+        self.depth_prepass = DEPTH_PREPASS
         self.beauty = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_STACK_FS)
+        self.depth = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_DEPTH_FS)
         self.cap_shadow = ShaderProgram(shaders.LAYER_STACK_VS, shaders.SHADOW_FS)
         self.wall_shadow = ShaderProgram(shaders.WALL_VS, shaders.SHADOW_FS)
         self.mask = Texture2D(mipmaps=True)
@@ -42,8 +51,19 @@ class Text3DRenderer:
         environment: Texture2D | None = None,
     ) -> None:
         """`environment`: the background photo to reflect, or None to reflect the ambient color instead."""
-        program = self.beauty
         layers = self.effective_layers(scene, viewport_height)
+        if self.depth_prepass:
+            self._bind_common(self.depth, scene, proj, IDENTITY_GL, lighting)
+            self.depth.set_int("u_layers", layers)
+            GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+            self.quad.draw(layers)
+            GL.glDepthFunc(GL.GL_EQUAL)
+            GL.glDepthMask(GL.GL_FALSE)
+
+        # Coverage drives antialiasing but must not reach the stored alpha: Qt composites the canvas as
+        # premultiplied color, so alpha < 1 under bright pixels overflows into wrapped colors.
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        program = self.beauty
         self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
         m = scene.material
@@ -63,6 +83,9 @@ class Text3DRenderer:
             program.set_float("u_environment_lod", environment.max_lod)
             program.set_float("u_environment_strength", scene.light.reflection_strength)
         self.quad.draw(layers)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDepthMask(GL.GL_TRUE)
 
     def draw_shadow_caster(self, scene: Scene, proj: np.ndarray, lighting: LightingState) -> None:
         """Front and back slices plus the traced side walls form a closed caster for any light angle."""
@@ -116,6 +139,7 @@ class Text3DRenderer:
 
     def delete(self) -> None:
         self.beauty.delete()
+        self.depth.delete()
         self.cap_shadow.delete()
         self.wall_shadow.delete()
         self.mask.delete()

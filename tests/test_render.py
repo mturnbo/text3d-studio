@@ -366,3 +366,52 @@ def test_preview_framebuffer_stays_opaque(compositor, kind):
     doc.background = make_document().background
     pixels = render_preview(compositor, doc, with_grid=True)
     assert pixels[..., 3].min() == 255
+
+
+# ----- Depth pre-pass -----------------------------------------------------------------------------
+
+
+def compositor_with_prepass(monkeypatch, enabled):
+    import text3d_studio.render.text3d_renderer as text3d_renderer
+
+    monkeypatch.setattr(text3d_renderer, "DEPTH_PREPASS", enabled)
+    return Compositor()
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "glass"])
+def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, kind):
+    from text3d_studio.materials import PRESETS
+
+    doc = make_document(material={**PRESETS[kind], "kind": kind}, transform={"depth": 0.8, "rot_y": -45})
+    single, prepass = compositor_with_prepass(monkeypatch, False), compositor_with_prepass(monkeypatch, True)
+    try:
+        np.testing.assert_array_equal(render(prepass, doc), render(single, doc))
+    finally:
+        single.delete()
+        prepass.delete()
+
+
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
+    from OpenGL import GL
+
+    from text3d_studio.materials import PRESETS
+    from text3d_studio.render.gl_utils import RenderTarget
+
+    doc = make_document(width=1600, height=1000, material={**PRESETS[kind], "kind": kind},
+                        transform={"size": 6.0, "depth": 1.2, "z": -10.0})
+    compositor.set_background(doc.background)
+    compositor.set_glyph(rasterize_text(doc.scene.text))
+    target = RenderTarget(1600, 1000, samples=4)
+    try:
+        compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        start = time.perf_counter()
+        for i in range(20):
+            doc.scene.transform.rot_y = -40 + i
+            compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        fps = 20 / (time.perf_counter() - start)
+    finally:
+        target.delete()
+    assert fps > 30, f"{kind}: only {fps:.1f} FPS"
