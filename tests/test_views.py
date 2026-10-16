@@ -957,6 +957,22 @@ def test_untextured_materials_hide_texture_controls(vm, kind):
         assert not material_row_visible(panel, field), field
 
 
+def test_glass_shows_frost_and_tint_depth_and_other_kinds_hide_them(vm):
+    from PyQt6.QtWidgets import QWidget
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("glass")
+    assert material_row_visible(panel, "absorption")
+    roughness = panel.findChild(QWidget, "material.roughness")
+    assert roughness.parentWidget().layout().labelForField(roughness).text() == "Frost"
+    for kind in ("metal", "plastic", "stone", "wood"):
+        vm.apply_material(kind)
+        assert not material_row_visible(panel, "absorption"), kind
+        assert roughness.parentWidget().layout().labelForField(roughness).text() == "Roughness", kind
+
+
 def test_wood_shows_grain_controls_and_hides_side_color(vm):
     from PyQt6.QtWidgets import QWidget
 
