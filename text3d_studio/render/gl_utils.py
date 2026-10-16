@@ -152,6 +152,13 @@ class Texture2D:
             self.pixel_format, GL.GL_UNSIGNED_BYTE, None,
         )
 
+    @property
+    def max_lod(self) -> float:
+        """Index of the smallest mip level (0 without mipmaps)."""
+        if not self.mipmaps or self.width == 0:
+            return 0.0
+        return float(int(np.log2(max(self.width, self.height))))
+
     def bind(self, unit: int = 0) -> None:
         GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.handle)

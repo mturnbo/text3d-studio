@@ -257,3 +257,74 @@ def test_grid_offset_slides_lines_and_wraps_every_cell(compositor):
     whole = render_preview(compositor, grid_document(text={"content": ""}, grid={"offset_x": 1.0, "offset_z": -2.0}), True)
     assert np.abs(base.astype(int) - half).max() > 50  # lines visibly moved
     assert np.abs(base.astype(int) - whole).max() <= 1  # a whole-cell shift lands on the same lines (float rounding aside)
+
+
+# ----- Physically based materials -----------------------------------------------------------------
+
+RED = (0.8, 0.08, 0.08)
+
+
+def material_document(background_rgb=BG_COLOR, **material):
+    doc = make_document(shadow={"enabled": False}, material=material, light={"azimuth": 10, "elevation": 20})
+    doc.background[..., :3] = background_rgb
+    return doc
+
+
+def text_pixels(compositor, doc, erode=2):
+    """Colors of pixels well inside the text. The background is a flat color, so anything else is text;
+    eroding the mask drops antialiased edges, which blend in the background's color."""
+    pixels = render(compositor, doc)[..., :3].astype(float)
+    covered = np.any(pixels != doc.background[0, 0, :3], axis=-1)
+    interior = covered.copy()
+    for axis in (0, 1):
+        for shift in range(1, erode + 1):
+            interior &= np.roll(covered, shift, axis) & np.roll(covered, -shift, axis)
+    return pixels[interior]
+
+
+def highlight_saturation(colors, count=5):
+    """Saturation of the brightest few pixels (the light's highlight): ~0 when white, high when tinted."""
+    brightest = colors[np.argsort(colors.sum(-1))[-count:]]
+    return float(np.mean((brightest.max(-1) - brightest.min(-1)) / np.maximum(brightest.max(-1), 1)))
+
+
+def test_metal_tints_highlights_while_plastic_keeps_them_white(compositor):
+    def saturation(metallic):
+        doc = material_document(metallic=metallic, face_color=RED, side_color=RED, roughness=0.2)
+        doc.scene.light.reflect_photo = False  # isolate the light's own highlight
+        return highlight_saturation(text_pixels(compositor, doc))
+
+    assert saturation(0.0) < 0.1
+    assert saturation(1.0) > 0.3
+
+
+def test_rougher_surfaces_have_dimmer_highlights(compositor):
+    shared = dict(metallic=0.0, face_color=(0.5, 0.5, 0.5), side_color=(0.5, 0.5, 0.5))
+    smooth = text_pixels(compositor, material_document(roughness=0.08, **shared)).sum(-1)
+    rough = text_pixels(compositor, material_document(roughness=0.9, **shared)).sum(-1)
+    assert smooth.max() > rough.max() + 40
+
+
+@pytest.mark.parametrize("reflect", [True, False])
+def test_reflections_follow_the_photo_only_when_enabled(compositor, reflect):
+    def on(background):
+        doc = material_document(background_rgb=background, metallic=1.0, roughness=0.1,
+                                face_color=(0.9, 0.9, 0.9), side_color=(0.9, 0.9, 0.9))
+        doc.scene.light.reflect_photo = reflect
+        return text_pixels(compositor, doc).mean(axis=0)
+
+    red_scene, blue_scene = on((200, 40, 40)), on((40, 40, 200))
+    red_minus_blue = (red_scene[0] - red_scene[2]) - (blue_scene[0] - blue_scene[2])
+    if reflect:
+        assert red_minus_blue > 40  # a mirror-like metal takes on the scene's color
+    else:
+        assert abs(red_minus_blue) < 1
+
+
+def test_reflection_strength_scales_metal_brightness(compositor):
+    def brightness(strength):
+        doc = material_document(metallic=1.0, roughness=0.3)
+        doc.scene.light.reflection_strength = strength
+        return text_pixels(compositor, doc).mean()
+
+    assert brightness(0.0) < brightness(1.0) < brightness(2.0)

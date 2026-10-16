@@ -50,12 +50,13 @@ SLIDERS = {
         ("elevation", "Elevation", 0, 90, 1),
         ("intensity", "Intensity", 0, 3, 2),
         ("ambient_intensity", "Ambient", 0, 1.5, 2),
+        ("reflection_strength", "Reflections", 0, 2, 2),
     ],
     "material": [
         ("side_darkening", "Depth darkening", 0, 1, 2),
         ("bevel_strength", "Bevel strength", 0, 4, 2),
-        ("specular", "Specular", 0, 1, 2),
-        ("shininess", "Shininess", 2, 128, 0),
+        ("metallic", "Metallic", 0, 1, 2),
+        ("roughness", "Roughness", 0.02, 1, 2),
     ],
     "shadow": [
         ("opacity", "Opacity", 0, 1, 2),
@@ -66,6 +67,7 @@ SLIDERS = {
 
 CHECKBOXES = {
     "grid": [("visible", "Show grid"), ("fit_estimate_fov", "Fit: estimate field of view")],
+    "light": [("reflect_photo", "Reflect the photo")],
     "shadow": [("enabled", "Cast shadow")],
 }
 

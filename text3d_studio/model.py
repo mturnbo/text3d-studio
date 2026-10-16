@@ -61,8 +61,8 @@ class MaterialParams:
     side_color: Color = (0.70, 0.52, 0.25)
     side_darkening: float = 0.45  # how much darker the back of the stack gets
     bevel_strength: float = 1.6
-    specular: float = 0.35
-    shininess: float = 32.0
+    metallic: float = 1.0  # 0 = dielectric (plastic, stone, wood), 1 = metal; colors the highlight
+    roughness: float = 0.35  # 0 = mirror-polished, 1 = fully matte
 
 
 @dataclass
@@ -73,6 +73,8 @@ class LightParams:
     color: Color = (1.0, 0.97, 0.90)
     ambient_color: Color = (0.55, 0.62, 0.75)
     ambient_intensity: float = 0.35
+    reflect_photo: bool = True  # glossy surfaces reflect a blurred copy of the background photo
+    reflection_strength: float = 1.0
 
 
 @dataclass

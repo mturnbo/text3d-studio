@@ -6,7 +6,7 @@ import numpy as np
 
 from .. import ground as ground_model
 from .. import math3d
-from ..lighting import LightingState
+from ..lighting import LightingState, srgb_to_linear
 from ..model import Scene
 from ..text_raster import GlyphRaster
 from . import shaders
@@ -37,7 +37,11 @@ class Text3DRenderer:
     def has_text(self) -> bool:
         return self.raster is not None
 
-    def draw_beauty(self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int) -> None:
+    def draw_beauty(
+        self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int,
+        environment: Texture2D | None = None,
+    ) -> None:
+        """`environment`: the background photo to reflect, or None to reflect the ambient color instead."""
         program = self.beauty
         layers = self.effective_layers(scene, viewport_height)
         self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
@@ -46,12 +50,18 @@ class Text3DRenderer:
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
-        program.set_vec3("u_face_color", m.face_color)
-        program.set_vec3("u_side_color", m.side_color)
+        program.set_vec3("u_face_color", srgb_to_linear(m.face_color))
+        program.set_vec3("u_side_color", srgb_to_linear(m.side_color))
         program.set_float("u_side_darkening", m.side_darkening)
         program.set_float("u_bevel_strength", m.bevel_strength)
-        program.set_float("u_specular", m.specular)
-        program.set_float("u_shininess", m.shininess)
+        program.set_float("u_metallic", m.metallic)
+        program.set_float("u_roughness", m.roughness)
+        program.set_int("u_has_environment", int(environment is not None))
+        if environment is not None:
+            environment.bind(1)
+            program.set_int("u_environment", 1)
+            program.set_float("u_environment_lod", environment.max_lod)
+            program.set_float("u_environment_strength", scene.light.reflection_strength)
         self.quad.draw(layers)
 
     def draw_shadow_caster(self, scene: Scene, proj: np.ndarray, lighting: LightingState) -> None:

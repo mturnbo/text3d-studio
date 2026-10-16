@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from text3d_studio import ground, math3d
-from text3d_studio.lighting import MIN_SHADOW_ELEVATION, LightingEngine
+from text3d_studio.lighting import MIN_SHADOW_ELEVATION, LightingEngine, srgb_to_linear
 from text3d_studio.model import GroundParams, LightParams
 
 
@@ -10,8 +10,8 @@ def test_light_direction_is_unit_and_scaled_colors():
     light = LightParams(intensity=2.0, color=(1, 0.5, 0.25), ambient_color=(1, 1, 1), ambient_intensity=0.3)
     state = LightingEngine().compute(light, GroundParams())
     assert np.linalg.norm(state.light_dir) == pytest.approx(1.0)
-    np.testing.assert_allclose(state.light_color, [2.0, 1.0, 0.5])
-    np.testing.assert_allclose(state.ambient, [0.3, 0.3, 0.3])
+    np.testing.assert_allclose(state.light_color, 2.0 * srgb_to_linear((1, 0.5, 0.25)))
+    np.testing.assert_allclose(state.ambient, [0.3, 0.3, 0.3])  # white is 1.0 in both spaces
 
 
 def test_light_follows_ground_tilt_but_not_grid_yaw():
@@ -40,3 +40,10 @@ def test_grazing_light_shadow_stays_finite():
     assert abs(point[3]) > 1e-3
     assert np.all(np.isfinite(point[:3] / point[3]))
     assert MIN_SHADOW_ELEVATION > 0
+
+
+
+def test_srgb_to_linear_matches_the_standard_curve():
+    np.testing.assert_allclose(srgb_to_linear([0.0, 1.0]), [0.0, 1.0])
+    assert srgb_to_linear([0.5])[0] == pytest.approx(0.21404, abs=1e-5)
+    assert srgb_to_linear([0.04])[0] == pytest.approx(0.04 / 12.92)  # linear toe below the knee

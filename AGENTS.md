@@ -96,6 +96,21 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
   Exports flip rows after `glReadPixels`.
 
+### Shading (physically based, since v0.7)
+
+- **Linear light.** Colors are picked in sRGB. `lighting.srgb_to_linear` converts the light, ambient
+  and material colors in Python, the text shader does all math in linear, and `linear_to_srgb` encodes
+  its output. The background pass is untouched, so the photo stays bit-exact. Convert in exactly one
+  place, never in both.
+- **Model.** Metallic-roughness microfacet BRDF: GGX distribution, Smith geometry, Schlick Fresnel.
+  `f0 = mix(0.04, base, metallic)`. The light is scaled by π, so a white matte face turned to the light
+  reaches 1.0.
+- **Reflections.** With `light.reflect_photo`, the reflection vector does a sphere-map lookup into the
+  background texture, blurred by `roughness × max_lod` via its mipmaps. Without a photo the ambient color
+  is reflected instead. The split-sum environment BRDF uses Karis's analytic fit (`environment_brdf`).
+- Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
+  using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
+
 ## Hard-won gotchas (read before touching render code)
 
 - **macOS caps OpenGL at 4.1 core.** Keep shaders at `#version 410 core`. Every draw needs a bound
