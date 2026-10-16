@@ -732,3 +732,49 @@ def test_hovering_the_ground_in_grid_tool_shows_move_cursor(vm):
     canvas = grid_canvas(vm)
     mouse(canvas, QEvent.Type.MouseMove, (450, 400), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
     assert canvas.cursor().shape() == Qt.CursorShape.SizeAllCursor
+
+
+# ----- Fit Rectangle tool -------------------------------------------------------------------------
+
+
+def fit_canvas(vm):
+    from text3d_studio.views.image_canvas import FIT_TOOL
+
+    canvas = sized_canvas(vm)
+    canvas.set_tool(FIT_TOOL)
+    return canvas
+
+
+def true_rectangle_px(canvas, truth, corners=((-1.0, -7.0), (1.0, -7.0), (1.0, -10.0), (-1.0, -10.0))):
+    """Widget positions of a 2 x 3 rectangle lying on ground `truth`."""
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    fov = canvas.vm.scene.camera.fov
+    pixels = [math3d.project_to_image(ground_model.ground_to_world(truth, x, z), fov, (rect_w, rect_h)) for x, z in corners]
+    return [(rect_x + u, rect_y + v) for u, v in pixels]
+
+
+def drag_fit_corner(canvas, index, target, steps=5):
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    u, v = canvas.fit_corners_px()[index]
+    start = (rect_x + u, rect_y + v)
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    for k in range(1, steps + 1):
+        point = (start[0] + (target[0] - start[0]) * k / steps, start[1] + (target[1] - start[1]) * k / steps)
+        mouse(canvas, QEvent.Type.MouseMove, point, Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, target, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+
+
+def test_tracing_a_rectangle_recovers_the_ground_and_keeps_the_text_in_place(vm):
+    from text3d_studio.model import GroundParams
+
+    vm.set("grid", "fit_width", 2.0)
+    vm.set("grid", "fit_depth", 3.0)
+    canvas = fit_canvas(vm)
+    anchor_before = text_anchor_on_screen(canvas)
+    truth = GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8)
+    for index, target in enumerate(true_rectangle_px(canvas, truth)):
+        drag_fit_corner(canvas, index, target)
+    g = vm.scene.ground
+    np.testing.assert_allclose((g.pitch, g.yaw, g.roll, g.height), (14.0, 30.0, -3.0, 1.8), atol=1e-6)
+    assert canvas.fit_valid
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), anchor_before, atol=1e-6)
