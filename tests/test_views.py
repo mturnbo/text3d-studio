@@ -2,9 +2,11 @@ import os
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent
 
+from text3d_studio import ground as ground_model
+from text3d_studio import math3d
 from text3d_studio.image_io import save_image
 from text3d_studio.model import Document
 from text3d_studio.preferences import Preferences
@@ -384,3 +386,103 @@ def test_busy_cursor_restored_when_decode_fails(window, tmp_path, monkeypatch, q
     window.load_image_path(str(broken))
     assert qapp.overrideCursor() is None
     assert window.vm.document.background is None
+
+
+# ----- Ground model controls --------------------------------------------------------------------
+
+
+def test_panel_has_ground_controls_and_no_legacy_transform_controls(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    keys = set(ControlPanel(vm)._setters)
+    assert {("ground", f) for f in ("pitch", "roll", "yaw", "height")} <= keys
+    assert {("transform", f) for f in ("x", "z", "rot_y", "size", "depth", "layers")} <= keys
+    assert not {("transform", f) for f in ("y", "rot_x", "rot_z")} & keys
+
+
+def test_ground_slider_and_model_stay_in_sync(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    row = panel.findChild(SliderRow, "ground.pitch")
+    row.spin.setValue(12.0)
+    assert vm.scene.ground.pitch == 12.0
+    vm.set("ground", "pitch", -7.5)
+    assert row.spin.value() == -7.5
+
+
+
+def sized_canvas(vm, width=800, height=500):
+    canvas = ImageCanvas(vm)
+    canvas.resize(width, height)
+    return canvas
+
+
+def mouse(canvas, kind, pos, button, buttons=None):
+    event = QMouseEvent(
+        kind, QPointF(*pos), QPointF(*pos), button,
+        button if buttons is None else buttons, Qt.KeyboardModifier.NoModifier,
+    )
+    {
+        QEvent.Type.MouseButtonPress: canvas.mousePressEvent,
+        QEvent.Type.MouseMove: canvas.mouseMoveEvent,
+        QEvent.Type.MouseButtonRelease: canvas.mouseReleaseEvent,
+    }[kind](event)
+
+
+def drag(canvas, start, end, button=Qt.MouseButton.LeftButton):
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, button)
+    mouse(canvas, QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, button)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton)
+
+
+def text_anchor_on_screen(canvas):
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    scene = canvas.vm.scene
+    pixel = math3d.project_to_image(
+        ground_model.text_position(scene.ground, scene.transform), scene.camera.fov, (rect_w, rect_h)
+    )
+    return (pixel[0] + rect_x, pixel[1] + rect_y)
+
+
+@pytest.mark.parametrize("target", [(520, 420), (250, 330), (400, 290)])
+def test_dragging_text_keeps_the_grabbed_ground_point_under_the_cursor(vm, target):
+    vm.set("ground", "pitch", 15.0)
+    canvas = sized_canvas(vm)
+    drag(canvas, text_anchor_on_screen(canvas), target)
+    np.testing.assert_allclose(text_anchor_on_screen(canvas), target, atol=1e-6)
+
+
+def test_dragging_keeps_the_text_on_the_ground(vm):
+    canvas = sized_canvas(vm)
+    drag(canvas, text_anchor_on_screen(canvas), (600, 450))
+    position = ground_model.text_position(vm.scene.ground, vm.scene.transform)
+    plane = ground_model.ground_plane(vm.scene.ground)
+    assert plane[:3] @ position + plane[3] == pytest.approx(0, abs=1e-9)
+
+
+def test_drag_starting_in_the_sky_does_nothing(vm):
+    canvas = sized_canvas(vm)
+    before = (vm.scene.transform.x, vm.scene.transform.z)
+    drag(canvas, (400, 50), (450, 300))
+    assert (vm.scene.transform.x, vm.scene.transform.z) == before
+
+
+def test_dragging_into_the_sky_stops_at_the_last_ground_position(vm):
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 40, start[1]), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    settled = (vm.scene.transform.x, vm.scene.transform.z)
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 40, 20), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    assert (vm.scene.transform.x, vm.scene.transform.z) == settled
+
+
+def test_right_drag_only_changes_yaw(vm):
+    canvas = sized_canvas(vm)
+    before_ground = dict(vars(vm.scene.ground))
+    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.rot_y)
+    drag(canvas, (400, 300), (450, 340), Qt.MouseButton.RightButton)
+    assert (vm.scene.transform.x, vm.scene.transform.z) == before[:2]
+    assert vm.scene.transform.rot_y == pytest.approx(before[2] + 50 * 0.4)
+    assert vars(vm.scene.ground) == before_ground

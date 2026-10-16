@@ -40,14 +40,9 @@ def rotation_z(degrees: float) -> np.ndarray:
     return m
 
 
-def ground_frame(rot_x: float, rot_z: float) -> np.ndarray:
+def ground_frame(pitch: float, roll: float) -> np.ndarray:
     """Orientation of the ground plane the text stands on (tilt + roll, no yaw)."""
-    return rotation_z(rot_z) @ rotation_x(rot_x)
-
-
-def model_matrix(x, y, z, rot_x, rot_y, rot_z, size) -> np.ndarray:
-    # Yaw is applied first, around the local up axis, so it spins the text on its ground plane.
-    return translation(x, y, z) @ ground_frame(rot_x, rot_z) @ rotation_y(rot_y) @ scaling(size)
+    return rotation_z(roll) @ rotation_x(pitch)
 
 
 def perspective(fov_y_degrees: float, aspect: float, near: float, far: float) -> np.ndarray:

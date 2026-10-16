@@ -25,14 +25,17 @@ SLIDERS = {
     "text": [("bevel_width", "Bevel width", 1, 20, 1)],
     "transform": [
         ("x", "Position X", -30, 30, 2),
-        ("y", "Position Y", -30, 30, 2),
-        ("z", "Position Z", -100, -1, 2),
-        ("rot_x", "Tilt X", -180, 180, 1),
-        ("rot_y", "Yaw Y", -180, 180, 1),
-        ("rot_z", "Roll Z", -180, 180, 1),
+        ("z", "Position Z", -150, -0.5, 2),
+        ("rot_y", "Yaw", -180, 180, 1),
         ("size", "Size", 0.2, 30, 2),
         ("depth", "Extrude depth", 0, 2, 2),
         ("layers", "Layer count", 2, 256, 0),
+    ],
+    "ground": [
+        ("pitch", "Tilt", -89, 89, 1),
+        ("roll", "Roll", -60, 60, 1),
+        ("yaw", "Grid rotation", -180, 180, 1),
+        ("height", "Camera height", 0.05, 30, 2),
     ],
     "camera": [("fov", "Field of view", 10, 100, 1)],
     "light": [
@@ -62,7 +65,8 @@ COLORS = {
 
 GROUP_TITLES = [
     ("text", "Text"),
-    ("transform", "Position && Perspective"),
+    ("transform", "Text Placement"),
+    ("ground", "Ground"),
     ("camera", "Camera"),
     ("light", "Lighting"),
     ("material", "Material"),
@@ -197,6 +201,7 @@ class ControlPanel(QScrollArea):
 
     def _add_slider(self, form, section, field, label, lo, hi, decimals) -> None:
         row = SliderRow(lo, hi, decimals)
+        row.setObjectName(f"{section}.{field}")
         self._bind(section, field, row.set_value, row.value_changed)
         form.addRow(label, row)
 

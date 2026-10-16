@@ -23,7 +23,7 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 ## Architecture (MVVM)
 
 ```
-model.py            Pure dataclasses: Scene{text, transform, material, light, shadow, camera}, Document.
+model.py            Pure dataclasses: Scene{text, transform, ground, material, light, shadow, camera}, Document.
                     No Qt, no OpenGL. Document.native_size is the export size.
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
@@ -43,7 +43,9 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
                     Also image-space perspective: project_to_image / image_ray (pixels, origin
                     top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
                     focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
-lighting.py         LightingEngine: params → world light dir, colours, ground plane, shadow matrix
+ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
+                    placement on it (text_position, text_model_matrix, world_to_ground, text_distance)
+lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
 preferences.py      QSettings-backed last folder + recent files (max 8). MainWindow requires one.
@@ -71,10 +73,18 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - The camera is fixed at the origin looking down −Z, so world space = view space. Vertical FOV comes from `camera.fov`.
 - Text local space is in em units, scaled by `transform.size`. The ink's bottom sits at local y=0 and is centered on x.
   The front face is at z=0 and the extrusion goes to `z = -depth` (depth is a *fraction of size*).
-- Model matrix = `T · Rz(rot_z) · Rx(rot_x) · Ry(rot_y) · S`. Yaw is applied first, so it spins the
-  text **on its ground plane**. Tilt X / Roll Z tilt the ground itself.
-- The light is defined in the **ground frame** (`ground_frame(rot_x, rot_z)`): azimuth 0 = toward the
-  camera, elevation measured from the ground. Yaw does not move the light, but tilting the ground does.
+- **Ground model B**: the ground is posed relative to the camera by `scene.ground`
+  (pitch, roll, yaw, height). Its origin is the point `height` below the camera, along the ground's up axis.
+  The text stands on the ground at ground coordinates `(transform.x, transform.z)`. Negative z is away
+  from the camera. `transform.rot_y` spins the text around the ground's up axis.
+- Ground rotation = `Rz(roll) · Rx(pitch) · Ry(yaw)`. Text model matrix =
+  `T(text_position) · ground rotation · Ry(transform.rot_y) · S(size)`. Always use `ground.py`;
+  don't rebuild these by hand.
+- The light is defined in the ground's **tilt frame** (`ground.light_frame`, pitch and roll only):
+  azimuth 0 = toward the camera, elevation measured from the ground. Grid yaw and text yaw don't move
+  the light, but tilting the ground does.
+- The default scene (pitch 0, height 1.5, text at z −12, yaw −20) renders pixel-identically to
+  v0.5.0's defaults. `tests/test_ground.py` holds the legacy conversion if old values ever need migrating.
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
   Exports flip rows after `glReadPixels`.
 

@@ -18,15 +18,24 @@ class TextParams:
 
 @dataclass
 class TransformParams:
+    """Where the text stands on the ground (see ground.py); x and z run along the ground's axes."""
+
     x: float = 0.0
-    y: float = -1.5
-    z: float = -12.0
-    rot_x: float = 0.0  # ground tilt (pitch)
-    rot_y: float = -20.0  # yaw: spins the text on its ground plane
-    rot_z: float = 0.0  # ground roll
+    z: float = -12.0  # negative is away from the camera
+    rot_y: float = -20.0  # yaw: spins the text on the ground
     size: float = 3.0  # world height of one em
     depth: float = 0.35  # extrusion depth as a fraction of size
     layers: int = 96  # number of duplicated layers in the stack
+
+
+@dataclass
+class GroundParams:
+    """Pose of the ground plane relative to the camera. The text stands on this plane."""
+
+    pitch: float = 0.0  # tilt toward the camera; positive looks down onto the ground
+    roll: float = 0.0  # tilt around the view axis
+    yaw: float = 0.0  # spins the ground's grid axes (and the text placed on them) within the plane
+    height: float = 1.5  # camera height above the ground, in world units
 
 
 @dataclass
@@ -67,6 +76,7 @@ class CameraParams:
 class Scene:
     text: TextParams = field(default_factory=TextParams)
     transform: TransformParams = field(default_factory=TransformParams)
+    ground: GroundParams = field(default_factory=GroundParams)
     material: MaterialParams = field(default_factory=MaterialParams)
     light: LightParams = field(default_factory=LightParams)
     shadow: ShadowParams = field(default_factory=ShadowParams)

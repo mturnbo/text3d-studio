@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import ground as ground_model
 from . import math3d
-from .model import LightParams, TransformParams
+from .model import GroundParams, LightParams
 
 MIN_SHADOW_ELEVATION = 3.0  # below this a planar shadow stretches toward infinity
 
@@ -20,14 +21,10 @@ class LightingState:
 
 
 class LightingEngine:
-    def compute(self, light: LightParams, transform: TransformParams) -> LightingState:
-        frame = math3d.ground_frame(transform.rot_x, transform.rot_z)[:3, :3]
-        local_dir = math3d.direction_from_angles(light.azimuth, light.elevation)
-        light_dir = frame @ local_dir
-
-        ground_normal = frame @ np.array([0.0, 1.0, 0.0])
-        ground_point = np.array([transform.x, transform.y, transform.z])
-        plane = math3d.plane_from_point_normal(ground_point, ground_normal)
+    def compute(self, light: LightParams, ground: GroundParams) -> LightingState:
+        frame = ground_model.light_frame(ground)
+        light_dir = frame @ math3d.direction_from_angles(light.azimuth, light.elevation)
+        plane = ground_model.ground_plane(ground)
 
         shadow_dir = frame @ math3d.direction_from_angles(
             light.azimuth, max(light.elevation, MIN_SHADOW_ELEVATION)
