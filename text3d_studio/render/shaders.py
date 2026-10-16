@@ -243,6 +243,41 @@ void stone_surface(vec3 p, inout vec3 albedo, inout float roughness, inout vec3 
     n = perturb(n, gradient, 0.06 * u_bump_strength);
 }
 
+// Growth rings: distance from a trunk axis that runs along the grain, slightly below and behind the text, so
+// the face shows gentle arcs. Returns the dark latewood amount; `streak` is the fine fibre grain. `p` in em.
+float wood_latewood(vec3 p, out float streak) {
+    vec3 axis = vec3(cos(u_grain_angle), sin(u_grain_angle), 0.0);
+    vec3 side = vec3(-axis.y, axis.x, 0.0);
+    vec3 q = p - (side * -2.5 + vec3(0.0, 0.0, -1.2));
+    float along = dot(q, axis);
+    vec2 across = vec2(dot(q, side), q.z);
+    float distortion = fbm(vec3(along * 0.2, across * 1.2), 3);
+    float rings = (length(across) + 0.12 * distortion) / u_texture_scale;
+    float ring = fract(rings);
+    streak = gradient_noise(vec3(along * 2.0, across * (14.0 / u_texture_scale)))
+        + 0.5 * gradient_noise(vec3(along * 5.0, across * (40.0 / u_texture_scale)));
+    // Each year differs a little in tone; within a year, earlywood darkens gradually into a thin latewood band.
+    float year_tone = 0.25 * gradient_noise(vec3(floor(rings) * 0.37, 0.5, 0.5));
+    float latewood = 0.35 * smoothstep(0.2, 0.75, ring) + 0.65 * smoothstep(0.75, 0.9, ring) * (1.0 - smoothstep(0.93, 1.0, ring));
+    return clamp(latewood + year_tone, 0.0, 1.0);
+}
+
+void wood_surface(vec3 p, inout vec3 albedo, inout float roughness, inout vec3 n) {
+    float streak;
+    float latewood = wood_latewood(p, streak);
+    float strength = u_texture_strength;
+    albedo = mix(u_face_color, u_secondary_color, clamp(latewood * strength + 0.22 * streak * strength, 0.0, 1.0));
+    roughness = clamp(roughness + 0.15 * latewood, 0.02, 1.0);
+
+    // Latewood stands slightly proud of the softer earlywood.
+    const float e = 0.002;
+    float unused;
+    vec3 gradient = vec3(wood_latewood(p + vec3(e, 0.0, 0.0), unused) - latewood,
+                         wood_latewood(p + vec3(0.0, e, 0.0), unused) - latewood,
+                         wood_latewood(p + vec3(0.0, 0.0, e), unused) - latewood) / e;
+    n = perturb(n, gradient, 0.01 * u_bump_strength);
+}
+
 void main() {
     vec4 m;
     float coverage = mask_coverage(u_mask, v_uv, m);
@@ -267,8 +302,11 @@ void main() {
     }
 
     float roughness = u_roughness;
+    vec3 coat_local = n_local;  // varnish fills the texture's relief, so the coat uses the smooth normal
     if (u_pattern == PATTERN_STONE) {
         stone_surface(v_local / u_texture_scale, albedo, roughness, n_local);
+    } else if (u_pattern == PATTERN_WOOD) {
+        wood_surface(v_local, albedo, roughness, n_local);
     }
     vec3 base = albedo * shade;
 
@@ -293,7 +331,27 @@ void main() {
         ? environment(reflect(-v, n), roughness) * u_environment_strength
         : u_ambient;
     vec3 ambient = u_ambient * (1.0 - u_metallic) * base + reflected * (f0 * env.x + env.y);
-    frag = vec4(linear_to_srgb(direct + ambient), coverage);
+    vec3 color = direct + ambient;
+
+    if (u_varnish > 0.0) {
+        // Clear coat: a smooth dielectric layer over the base. It reflects light and the photo, and dims
+        // the base by what it reflects.
+        const float coat_roughness = 0.08;
+        vec3 nc = normalize(mat3(u_model) * coat_local);
+        float nc_dot_l = max(dot(nc, l), 0.0);
+        float nc_dot_v = max(dot(nc, v), 1e-4);
+        float coat_fresnel = fresnel_schlick(nc_dot_v, vec3(0.04)).x;
+        float coat_specular = distribution_ggx(max(dot(nc, h), 0.0), coat_roughness * coat_roughness)
+            * geometry_smith(nc_dot_v, nc_dot_l, coat_roughness)
+            * fresnel_schlick(max(dot(h, v), 0.0), vec3(0.04)).x / (4.0 * nc_dot_v * nc_dot_l + 1e-4);
+        vec2 coat_env = environment_brdf(nc_dot_v, coat_roughness);
+        vec3 coat_reflected = u_has_environment
+            ? environment(reflect(-v, nc), coat_roughness) * u_environment_strength
+            : u_ambient;
+        vec3 coat = coat_specular * PI * u_light_color * nc_dot_l + coat_reflected * (0.04 * coat_env.x + coat_env.y);
+        color = mix(color, color * (1.0 - coat_fresnel) + coat, u_varnish);
+    }
+    frag = vec4(linear_to_srgb(color), coverage);
 }
 """
 
