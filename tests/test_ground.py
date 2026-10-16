@@ -74,3 +74,34 @@ def test_grid_yaw_rotates_text_placement_but_not_the_light():
 def test_text_distance_is_positive_depth():
     assert ground.text_distance(GroundParams(), TransformParams(z=-12)) == pytest.approx(12)
     assert ground.text_distance(GroundParams(), TransformParams(z=5)) == pytest.approx(1e-3)
+
+
+def anchor_direction(g, t):
+    p = ground.text_position(g, t)
+    return p / np.linalg.norm(p)
+
+
+@pytest.mark.parametrize(
+    "change", [{"pitch": 9.0}, {"roll": -6.0}, {"height": 3.0}, {"yaw": 40.0}, {"pitch": -3.0, "yaw": -25.0, "roll": 4.0}]
+)
+def test_reanchored_text_stays_on_the_same_camera_ray(change):
+    old = GroundParams(pitch=2.0, yaw=5.0)
+    t = TransformParams(x=1.5, z=-14.0, rot_y=-20.0)
+    new = GroundParams(**{**vars(old), **change})
+    x, z, rot_y = ground.reanchor_text(old, new, t)
+    moved = TransformParams(x=x, z=z, rot_y=rot_y)
+    np.testing.assert_allclose(anchor_direction(new, moved), anchor_direction(old, t), atol=1e-9)
+
+
+def test_reanchoring_after_yaw_keeps_world_position_and_facing():
+    old, new = GroundParams(yaw=0.0), GroundParams(yaw=30.0)
+    t = TransformParams(x=2.0, z=-10.0, rot_y=-20.0)
+    x, z, rot_y = ground.reanchor_text(old, new, t)
+    moved = TransformParams(x=x, z=z, rot_y=rot_y)
+    np.testing.assert_allclose(ground.text_model_matrix(new, moved), ground.text_model_matrix(old, t), atol=1e-9)
+
+
+def test_reanchor_fails_when_the_anchor_would_be_above_the_new_horizon():
+    old = GroundParams(pitch=0.0)
+    t = TransformParams(z=-60.0)  # far away, just below the horizon
+    assert ground.reanchor_text(old, GroundParams(pitch=-10.0), t) is None

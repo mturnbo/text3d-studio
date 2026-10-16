@@ -67,3 +67,26 @@ def test_grid_settings_are_editable_and_hidden_by_default(vm):
     vm.set("grid", "visible", True)
     vm.set("grid", "cell_size", 0.5)
     assert events == [("grid", "visible"), ("grid", "cell_size")]
+
+
+def test_ground_edits_keep_the_text_on_the_same_camera_ray(vm):
+    from text3d_studio import ground
+
+    before = ground.text_position(vm.scene.ground, vm.scene.transform)
+    vm.set("ground", "pitch", 8.0)
+    after = ground.text_position(vm.scene.ground, vm.scene.transform)
+    np.testing.assert_allclose(after / np.linalg.norm(after), before / np.linalg.norm(before), atol=1e-9)
+
+
+def test_ground_edits_report_the_moved_text_fields(vm):
+    events = record(vm.scene_changed)
+    vm.set("ground", "yaw", 15.0)
+    assert ("ground", "yaw") in events
+    assert {("transform", "x"), ("transform", "z"), ("transform", "rot_y")} <= set(events)
+
+
+def test_text_stays_put_when_the_ground_tips_past_it(vm):
+    vm.set("transform", "z", -60.0)
+    before = (vm.scene.transform.x, vm.scene.transform.z)
+    vm.set("ground", "pitch", -10.0)
+    assert (vm.scene.transform.x, vm.scene.transform.z) == before
