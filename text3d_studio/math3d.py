@@ -124,3 +124,54 @@ def intersect_ray_plane(origin, direction, plane: np.ndarray) -> np.ndarray | No
     if t <= 0:
         return None
     return origin + t * direction
+
+
+def apply_homography(h: np.ndarray, points) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float64)
+    mapped = np.hstack([points, np.ones((len(points), 1))]) @ h.T
+    return mapped[:, :2] / mapped[:, 2:3]
+
+
+def homography_from_points(source, target) -> np.ndarray:
+    """3x3 matrix mapping four source points onto four target points (direct linear transform).
+
+    Raises ValueError unless there are exactly four pairs with no three points of either set collinear.
+    """
+    source, target = np.asarray(source, dtype=np.float64), np.asarray(target, dtype=np.float64)
+    if source.shape != (4, 2) or target.shape != (4, 2):
+        raise ValueError("Need exactly four matching point pairs")
+    if _has_collinear_triple(source) or _has_collinear_triple(target):
+        raise ValueError("Three of the points lie on one line")
+
+    # Hartley normalization keeps the SVD well conditioned for pixel-sized coordinates.
+    source_norm, target_norm = _normalizing_transform(source), _normalizing_transform(target)
+    s = apply_homography(source_norm, source)
+    t = apply_homography(target_norm, target)
+    rows = []
+    for (x, y), (u, v) in zip(s, t):
+        rows.append([-x, -y, -1, 0, 0, 0, u * x, u * y, u])
+        rows.append([0, 0, 0, -x, -y, -1, v * x, v * y, v])
+    _, _, vt = np.linalg.svd(np.array(rows))
+    h = np.linalg.inv(target_norm) @ vt[-1].reshape(3, 3) @ source_norm
+    return h / np.linalg.norm(h)
+
+
+def _normalizing_transform(points: np.ndarray) -> np.ndarray:
+    """Moves the centroid to the origin and scales the mean distance from it to sqrt(2)."""
+    centroid = points.mean(axis=0)
+    mean_distance = np.linalg.norm(points - centroid, axis=1).mean()
+    s = np.sqrt(2.0) / mean_distance
+    return np.array([[s, 0, -s * centroid[0]], [0, s, -s * centroid[1]], [0, 0, 1.0]])
+
+
+def _has_collinear_triple(points: np.ndarray) -> bool:
+    extent = np.ptp(points, axis=0).max()
+    if extent == 0:
+        return True
+    for i in range(len(points)):
+        for j in range(i + 1, len(points)):
+            for k in range(j + 1, len(points)):
+                a, b = points[j] - points[i], points[k] - points[i]
+                if abs(a[0] * b[1] - a[1] * b[0]) < 1e-6 * extent**2:
+                    return True
+    return False

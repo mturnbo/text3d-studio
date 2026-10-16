@@ -124,3 +124,43 @@ def test_ray_pointing_away_from_plane_misses():
     ground = math3d.plane_from_point_normal(np.array([0, -2.0, 0]), np.array([0, 1.0, 0]))
     above_horizon = math3d.image_ray((600, 100), 40, IMAGE)
     assert math3d.intersect_ray_plane((0, 0, 0), above_horizon, ground) is None
+
+
+UNIT_SQUARE = [(0, 0), (1, 0), (1, 1), (0, 1)]
+
+
+def test_homography_maps_square_onto_perspective_quad():
+    quad = [(412.5, 610.0), (905.0, 640.0), (780.0, 380.0), (450.0, 372.0)]
+    h = math3d.homography_from_points(UNIT_SQUARE, quad)
+    np.testing.assert_allclose(math3d.apply_homography(h, UNIT_SQUARE), quad, atol=1e-6)
+
+
+def test_homography_recovers_a_known_matrix_from_pixel_scale_points():
+    known = np.array([[1.2, 0.1, 300.0], [-0.05, 0.9, 150.0], [0.0004, 0.0002, 1.0]])
+    source = np.array([(0, 0), (1600, 0), (1600, 1000), (0, 1000)], dtype=float)
+    h = math3d.homography_from_points(source, math3d.apply_homography(known, source))
+    np.testing.assert_allclose(h / h[2, 2], known, rtol=1e-6, atol=1e-9)
+
+
+def test_identity_correspondence_gives_identity():
+    h = math3d.homography_from_points(UNIT_SQUARE, UNIT_SQUARE)
+    np.testing.assert_allclose(h / h[2, 2], np.eye(3), atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        [(0, 0), (1, 1), (2, 2), (0, 5)],  # three collinear
+        [(3, 3), (3, 3), (3, 3), (3, 3)],  # all the same point
+    ],
+)
+def test_degenerate_targets_are_rejected(target):
+    with pytest.raises(ValueError):
+        math3d.homography_from_points(UNIT_SQUARE, target)
+
+
+@pytest.mark.parametrize("count", [3, 5])
+def test_point_count_other_than_four_is_rejected(count):
+    points = [(0, 0), (1, 0), (1, 1), (0, 1), (2, 3)][:count]
+    with pytest.raises(ValueError):
+        math3d.homography_from_points(points, points)
