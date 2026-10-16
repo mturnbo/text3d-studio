@@ -165,9 +165,20 @@ uniform float u_texture_strength;
 uniform float u_bump_strength;
 uniform float u_grain_angle;         // radians
 uniform float u_varnish;
+uniform bool u_transmissive;         // glass: shows the backdrop, refracted
+uniform sampler2D u_backdrop;        // the viewport behind the text (background and shadow), with mipmaps
+uniform float u_backdrop_lod;        // smallest mip level
+uniform float u_absorption;
+uniform mat4 u_proj;
+uniform float u_depth;
+uniform float u_world_size;
 out vec4 frag;
 
 const float PI = 3.14159265359;
+const float GLASS_IOR = 1.5;
+// How far behind the surface (in em) the refracted ray meets the backdrop. A screen-space stand-in for the
+// unknown distance to the scene behind: larger values bend the view through the glass further.
+const float REFRACTION_DEPTH = 0.6;
 const int PATTERN_STONE = 1;
 const int PATTERN_WOOD = 2;
 
@@ -280,6 +291,39 @@ void wood_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness,
     n = perturb(n, gradient, 0.01 * u_bump_strength);
 }
 
+// Reflection off the glass surface: the photo (or ambient) and the light's highlight, both weighted by
+// a dielectric's Fresnel term.
+vec3 dielectric_reflection(vec3 n, vec3 v, vec3 l, vec3 h, float roughness) {
+    float n_dot_l = max(dot(n, l), 0.0);
+    float n_dot_v = max(dot(n, v), 1e-4);
+    float specular = distribution_ggx(max(dot(n, h), 0.0), max(roughness * roughness, 1e-3))
+        * geometry_smith(n_dot_v, n_dot_l, roughness)
+        * fresnel_schlick(max(dot(h, v), 0.0), vec3(0.04)).x / (4.0 * n_dot_v * n_dot_l + 1e-4);
+    vec2 env = environment_brdf(n_dot_v, roughness);
+    vec3 reflected = u_has_environment
+        ? environment(reflect(-v, n), roughness) * u_environment_strength
+        : u_ambient;
+    return specular * PI * u_light_color * n_dot_l + reflected * (0.04 * env.x + env.y);
+}
+
+// Glass: the backdrop seen along the refracted ray, blurred by roughness (frost) and tinted by Beer-Lambert
+// absorption over the thickness the ray crosses, plus the surface reflection. Fresnel splits the two, so
+// grazing angles reflect more and transmit less.
+vec3 glass(vec3 n, vec3 v, vec3 l, vec3 h, vec3 tint, float roughness) {
+    vec3 refracted = refract(-v, n, 1.0 / GLASS_IOR);
+    vec4 clip = u_proj * vec4(v_pos + refracted * (REFRACTION_DEPTH * u_world_size), 1.0);
+    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, 0.0, 1.0);
+    vec3 behind = srgb_to_linear(textureLod(u_backdrop, uv, roughness * u_backdrop_lod).rgb);
+
+    // Thickness along the view: the extrusion depth, longer when looking through the slab at an angle.
+    vec3 view_local = normalize(transpose(mat3(u_model)) * v);
+    float path = u_depth / max(abs(view_local.z), 0.3);
+    vec3 transmittance = pow(max(tint, vec3(1e-3)), vec3(path * u_absorption));
+
+    float fresnel = fresnel_schlick(max(dot(n, v), 0.0), vec3(0.04)).x;
+    return behind * transmittance * (1.0 - fresnel) + dielectric_reflection(n, v, l, h, roughness);
+}
+
 void main() {
     vec4 m;
     float coverage = mask_coverage(u_mask, v_uv, m);
@@ -322,6 +366,11 @@ void main() {
     float n_dot_l = max(dot(n, l), 0.0);
     float n_dot_v = max(dot(n, v), 1e-4);
     float alpha = max(roughness * roughness, 1e-3);
+
+    if (u_transmissive) {
+        frag = vec4(linear_to_srgb(glass(n, v, l, h, base, roughness)), coverage);
+        return;
+    }
 
     vec3 f0 = mix(vec3(0.04), base, u_metallic);  // metals tint their reflection; dielectrics reflect ~4% white
     vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);

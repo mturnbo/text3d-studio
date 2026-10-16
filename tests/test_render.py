@@ -490,3 +490,127 @@ def test_varnish_adds_a_sharp_highlight(compositor):
         return np.sort(text_pixels(compositor, doc).sum(-1))[-30:].mean()
 
     assert highlight(1.0) > highlight(0.0) + 150
+
+
+# ----- Glass --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind, expected", [
+    ("plastic", (0.0, 0.0, 0.0)),
+    ("glass", (0.65 * 0.8, 0.65 * 0.9, 0.65 * 1.0)),
+])
+def test_shadow_color_lightens_and_tints_only_for_transmissive_materials(kind, expected):
+    from text3d_studio.render.shadow_renderer import shadow_color
+
+    doc = make_document(material={"kind": kind, "face_color": (0.8, 0.9, 1.0)}, shadow={"color": (0.0, 0.0, 0.0)})
+    assert shadow_color(doc.scene) == pytest.approx(expected)
+
+
+def test_glass_shadow_keeps_a_custom_shadow_color_in_proportion():
+    from text3d_studio.render.shadow_renderer import shadow_color
+
+    doc = make_document(material={"kind": "glass", "face_color": (1.0, 1.0, 1.0)}, shadow={"color": (0.2, 0.4, 0.6)})
+    assert shadow_color(doc.scene) == pytest.approx((0.72, 0.79, 0.86))
+
+
+def glass_document(kind="glass", background=None, **material):
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
+    doc.scene.transform.rot_y = 0.0
+    doc.scene.transform.size = 4.0
+    doc.scene.light.reflect_photo = False  # opaque materials then ignore the photo entirely
+    if background is not None:
+        doc.background = background
+    return doc
+
+
+def glass_interior(compositor):
+    """Pixels well inside the text. Found from opaque text on a flat background: glass on a patterned
+    background can't be told apart from it by color, and every material covers the same pixels."""
+    _, interior = text_image(compositor, glass_document("plastic"), erode=3)
+    return interior
+
+
+def stripes(period=16):
+    background = np.full((400, 640, 4), 255, np.uint8)
+    background[:, (np.arange(640) // (period // 2)) % 2 == 1, :3] = 0
+    return background
+
+
+def luminance(pixels):
+    return pixels[..., :3].astype(float).mean(-1)
+
+
+def test_glass_shows_the_background_through_the_text_but_plastic_hides_it(compositor):
+    interior = glass_interior(compositor)
+    glass = luminance(render(compositor, glass_document(background=stripes())))[interior]
+    plastic = luminance(render(compositor, glass_document("plastic", background=stripes())))[interior]
+    assert glass.std() > 60
+    assert glass.std() > 2 * plastic.std()  # plastic varies only with its own shading
+
+
+def test_glass_bends_the_background_rather_than_just_tinting_it(compositor):
+    # Pure tinting keeps every stripe exactly where it was; refraction moves bright stripes over dark ones.
+    interior = glass_interior(compositor)
+    background = stripes()
+    glass = luminance(render(compositor, glass_document(background=background)))[interior]
+    behind = luminance(np.flipud(background))[interior]  # exported rows are flipped relative to the photo
+    assert np.mean((glass > 150) & (behind < 50)) > 0.05  # bright stripes seen over dark ones...
+    assert np.mean((glass < 80) & (behind > 200)) > 0.05  # ...and dark over bright
+
+
+def test_changing_the_photo_changes_glass_but_not_opaque_materials(compositor):
+    interior = glass_interior(compositor)
+
+    def text_colors(kind, rgb):
+        doc = glass_document(kind)
+        doc.background[..., :3] = rgb
+        return render(compositor, doc)[..., :3].astype(float)[interior]
+
+    for kind in ("plastic", "stone"):
+        changed = np.any(text_colors(kind, (200, 180, 150)) != text_colors(kind, (60, 90, 230)), axis=-1)
+        assert changed.mean() < 1e-3  # only stray diagonal edge pixels, which the erosion keeps, blend the photo
+    glass_shift = text_colors("glass", (200, 180, 150)) - text_colors("glass", (60, 90, 230))
+    assert glass_shift[:, 0].mean() > 60 and glass_shift[:, 2].mean() < 0
+
+
+def test_frost_blurs_the_background_seen_through_glass(compositor):
+    interior = glass_interior(compositor)
+
+    def contrast(roughness):
+        doc = glass_document(background=stripes(), roughness=roughness)
+        return luminance(render(compositor, doc))[interior].std()
+
+    assert contrast(0.6) < 0.4 * contrast(0.05)
+
+
+def test_absorption_deepens_the_glass_tint(compositor):
+    interior = glass_interior(compositor)
+    tint = (0.6, 0.8, 1.0)
+
+    def mean_color(absorption):
+        doc = glass_document(background_rgb=(255, 255, 255), face_color=tint, side_color=tint, absorption=absorption)
+        doc.background[..., :3] = 255
+        return render(compositor, doc)[..., :3].astype(float)[interior].mean(axis=0)
+
+    clear, light, deep = mean_color(0.0), mean_color(1.0), mean_color(4.0)
+    assert clear[0] > 230 and abs(clear[0] - clear[2]) < 10  # no absorption: the white photo shows untinted
+    assert deep[0] < light[0] - 20 < clear[0] - 20  # red is absorbed more with every step
+    assert deep[2] > 230  # the tint passes blue untouched
+
+
+def test_glass_casts_a_lighter_shadow_than_plastic(compositor):
+    light = {"azimuth": -110, "elevation": 30}
+    _, text_area = text_image(compositor, make_document(light=light, shadow={"enabled": False}), erode=0)
+    ground = ~text_area
+
+    def darkening(kind):
+        from text3d_studio.materials import PRESETS
+
+        material = {**PRESETS[kind], "kind": kind}
+        lit = render(compositor, make_document(light=light, material=material, shadow={"enabled": False}))
+        shaded = render(compositor, make_document(light=light, material=material, shadow={"softness": 0.1, "opacity": 0.8}))
+        return (luminance(lit) - luminance(shaded))[ground].sum()
+
+    assert 0 < darkening("glass") < 0.5 * darkening("plastic")

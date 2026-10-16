@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from text3d_studio.materials import KINDS, PRESETS
+from text3d_studio.materials import KINDS, PRESETS, TRANSMISSION
 from text3d_studio.model import MaterialParams
 
 MATERIAL_FIELDS = {f.name for f in dataclasses.fields(MaterialParams)}
@@ -32,6 +32,7 @@ def test_preset_values_are_in_range(kind):
     for name in ("texture_strength", "bump_strength", "varnish"):
         assert 0.0 <= preset[name] <= 1.0, name
     assert -90.0 <= preset["grain_angle"] <= 90.0
+    assert 0.0 <= preset["absorption"] <= 5.0
 
 
 def test_only_stone_and_wood_carry_a_texture():
@@ -40,3 +41,9 @@ def test_only_stone_and_wood_carry_a_texture():
 
 def test_only_metal_is_metallic():
     assert [kind for kind in KINDS if PRESETS[kind]["metallic"] > 0] == ["metal"]
+
+
+def test_only_glass_transmits_and_absorbs():
+    assert set(TRANSMISSION) == {"glass"}
+    assert all(0.0 < amount < 1.0 for amount in TRANSMISSION.values())
+    assert [kind for kind in KINDS if PRESETS[kind]["absorption"] > 0] == ["glass"]
