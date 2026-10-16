@@ -203,3 +203,19 @@ def focal_from_vanishing_points(first, second, image_size: tuple[float, float]) 
     if focal_squared <= 0:
         raise ValueError("These corners don't match a rectangle seen through this camera")
     return float(np.sqrt(focal_squared))
+
+
+def ground_rotation(pitch: float, yaw: float, roll: float) -> np.ndarray:
+    """Orientation of a ground frame: yaw spins it in its own plane, then pitch and roll tilt it."""
+    return ground_frame(pitch, roll) @ rotation_y(yaw)
+
+
+def ground_angles_from_rotation(rotation: np.ndarray) -> tuple[float, float, float]:
+    """(pitch, yaw, roll) in degrees such that ground_rotation(pitch, yaw, roll) reproduces `rotation`."""
+    r = np.asarray(rotation, dtype=np.float64)[:3, :3]
+    # The ground's up axis is unaffected by yaw: up = Rz(roll) Rx(pitch) e_y.
+    pitch = np.degrees(np.arcsin(np.clip(r[2, 1], -1.0, 1.0)))
+    roll = np.degrees(np.arctan2(-r[0, 1], r[1, 1]))
+    yaw_only = (rotation_x(pitch)[:3, :3].T @ rotation_z(roll)[:3, :3].T) @ r
+    yaw = np.degrees(np.arctan2(yaw_only[0, 2], yaw_only[0, 0]))
+    return float(pitch), float(yaw), float(roll)

@@ -200,3 +200,23 @@ def test_vanishing_points_on_the_same_side_are_rejected():
     first, second = np.array([900.0, 300.0, 1.0]), np.array([1000.0, 350.0, 1.0])
     with pytest.raises(ValueError):
         math3d.focal_from_vanishing_points(first, second, IMAGE)
+
+
+def test_ground_rotation_matches_text_model_convention():
+    np.testing.assert_allclose(
+        math3d.ground_rotation(15, -20, 7), math3d.model_matrix(0, 0, 0, 15, -20, 7, 1.0), atol=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    "angles", [(0.0, 0.0, 0.0), (20.0, 35.0, 5.0), (-40.0, 170.0, -25.0), (75.0, -90.0, 60.0), (10.0, -179.0, 0.5)]
+)
+def test_ground_angles_round_trip(angles):
+    recovered = math3d.ground_angles_from_rotation(math3d.ground_rotation(*angles))
+    np.testing.assert_allclose(recovered, angles, atol=1e-9)
+
+
+def test_ground_angles_accept_4x4_matrices():
+    m = math3d.ground_rotation(12, 34, -5)
+    assert m.shape == (4, 4)
+    np.testing.assert_allclose(math3d.ground_angles_from_rotation(m), (12, 34, -5), atol=1e-9)
