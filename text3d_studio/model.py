@@ -64,6 +64,13 @@ class MaterialParams:
     bevel_strength: float = 1.6
     metallic: float = 1.0  # 0 = dielectric (plastic, stone, wood), 1 = metal; colors the highlight
     roughness: float = 0.35  # 0 = mirror-polished, 1 = fully matte
+    # Procedural textures (stone, wood). Patterns live in the text's own space, in em units.
+    secondary_color: Color = (0.70, 0.52, 0.25)  # stone veins, wood's dark rings
+    texture_scale: float = 1.0  # feature size (stone grain, wood ring spacing)
+    texture_strength: float = 0.0  # how strongly the pattern shows
+    bump_strength: float = 0.0  # surface relief from the pattern
+    grain_angle: float = 0.0  # wood grain direction on the face, degrees (0 = horizontal)
+    varnish: float = 0.0  # glossy clear coat over the material
 
 
 @dataclass

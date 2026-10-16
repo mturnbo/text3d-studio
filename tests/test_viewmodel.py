@@ -153,7 +153,9 @@ def test_reapplying_the_same_material_resets_it(vm):
     vm.apply_material("wood")
     vm.set("material", "face_color", (0.1, 0.2, 0.3))
     vm.apply_material("wood")
-    assert vm.scene.material.face_color == (0.72, 0.50, 0.30)
+    from text3d_studio.materials import PRESETS
+
+    assert vm.scene.material.face_color == PRESETS["wood"]["face_color"]
 
 
 def test_unknown_material_is_rejected(vm):
