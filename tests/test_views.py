@@ -1081,3 +1081,68 @@ def test_wood_shows_grain_controls_and_hides_side_color(vm):
     vm.apply_material("stone")
     assert secondary.parentWidget().layout().labelForField(secondary).text() == "Vein color"
     assert not material_row_visible(panel, "grain_angle")
+
+
+# ----- Panel scrolling ----------------------------------------------------------------------------------
+
+
+def wheel_over(widget, steps=-1):
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtWidgets import QApplication
+
+    center = QPointF(widget.width() / 2, widget.height() / 2)
+    event = QWheelEvent(
+        center, widget.mapToGlobal(center), QPoint(), QPoint(0, int(120 * steps)),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def scrollable_panel(window, qapp):
+    window.resize(1200, 500)  # short enough that the panel scrolls
+    window.show()
+    window.activateWindow()
+    qapp.processEvents()
+    return window.panel
+
+
+@pytest.mark.parametrize("control", ["slider", "spin", "material"])
+def test_wheel_over_an_unfocused_control_scrolls_the_panel_instead(window, qapp, control):
+    from PyQt6.QtWidgets import QComboBox
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    panel = scrollable_panel(window, qapp)
+    row = panel.findChild(SliderRow, "transform.size")
+    widget = {"slider": row.slider, "spin": row.spin, "material": panel.findChild(QComboBox, "material.kind")}[control]
+    panel.ensureWidgetVisible(widget)
+    window.canvas.setFocus()
+    scrolled = panel.verticalScrollBar().value()
+    before = (window.vm.scene.transform.size, window.vm.scene.material.kind)
+    wheel_over(widget)
+    assert (window.vm.scene.transform.size, window.vm.scene.material.kind) == before
+    assert panel.verticalScrollBar().value() > scrolled
+
+
+@pytest.mark.parametrize("control", ["slider", "spin"])
+def test_wheel_over_a_focused_control_changes_its_value(window, qapp, control):
+    from text3d_studio.views.control_panel import SliderRow
+
+    panel = scrollable_panel(window, qapp)
+    row = panel.findChild(SliderRow, "transform.size")
+    widget = row.slider if control == "slider" else row.spin
+    widget.setFocus()
+    qapp.processEvents()
+    wheel_over(widget, steps=1)
+    assert window.vm.scene.transform.size != 3.0
+
+
+def test_clicking_a_slider_gives_it_focus(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    panel = scrollable_panel(window, qapp)
+    slider = panel.findChild(SliderRow, "transform.size").slider
+    QTest.mouseClick(slider, Qt.MouseButton.LeftButton)
+    assert slider.hasFocus()
