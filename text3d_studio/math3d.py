@@ -81,3 +81,26 @@ def planar_shadow_matrix(plane: np.ndarray, light_dir: np.ndarray) -> np.ndarray
 def to_gl(m: np.ndarray) -> np.ndarray:
     """Column-major float32 copy for glUniformMatrix4fv(..., GL_FALSE, ...)."""
     return np.ascontiguousarray(m.T, dtype=np.float32)
+
+
+# ----- Image-space perspective helpers ----------------------------------------------------------
+# The camera sits at the origin looking down -Z (view = identity). Image coordinates are pixels with
+# the origin at the top-left and y pointing down; the principal point is the image center.
+
+
+def focal_length_px(fov_y_degrees: float, image_height: float) -> float:
+    return (image_height / 2.0) / np.tan(np.radians(fov_y_degrees) / 2.0)
+
+
+def fov_from_focal(focal_px: float, image_height: float) -> float:
+    return float(np.degrees(2.0 * np.arctan((image_height / 2.0) / focal_px)))
+
+
+def project_to_image(point, fov_y_degrees: float, image_size: tuple[float, float]) -> np.ndarray | None:
+    """Pixel position of a camera-space point, or None if it is not in front of the camera."""
+    x, y, z = point
+    if z >= -1e-9:
+        return None
+    width, height = image_size
+    f = focal_length_px(fov_y_degrees, height)
+    return np.array([width / 2.0 + f * x / -z, height / 2.0 - f * y / -z])

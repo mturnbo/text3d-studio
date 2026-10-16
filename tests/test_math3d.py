@@ -57,3 +57,41 @@ def test_to_gl_is_column_major_float32():
     gl = math3d.to_gl(m)
     assert gl.dtype == np.float32 and gl.flags["C_CONTIGUOUS"]
     np.testing.assert_allclose(gl.ravel()[12:15], [1, 2, 3])
+
+
+# ----- Image-space perspective helpers ----------------------------------------------------------
+
+IMAGE = (1200, 800)
+
+
+def test_focal_and_fov_are_inverse():
+    for fov in (10.0, 40.0, 90.0, 120.0):
+        assert math3d.fov_from_focal(math3d.focal_length_px(fov, 800), 800) == pytest.approx(fov)
+
+
+def test_focal_matches_ninety_degree_fov():
+    assert math3d.focal_length_px(90, 800) == pytest.approx(400)
+
+
+def test_point_on_axis_projects_to_image_center():
+    np.testing.assert_allclose(math3d.project_to_image((0, 0, -5), 40, IMAGE), [600, 400])
+
+
+def test_projection_agrees_with_gl_perspective_matrix():
+    point = np.array([1.5, -0.7, -9.0])
+    pixel = math3d.project_to_image(point, 40, IMAGE)
+    clip = math3d.perspective(40, IMAGE[0] / IMAGE[1], 0.1, 100) @ np.append(point, 1.0)
+    ndc = clip[:2] / clip[3]
+    expected = [(ndc[0] + 1) / 2 * IMAGE[0], (1 - ndc[1]) / 2 * IMAGE[1]]
+    np.testing.assert_allclose(pixel, expected, atol=1e-9)
+
+
+def test_image_y_grows_downward():
+    above = math3d.project_to_image((0, 1, -5), 40, IMAGE)
+    below = math3d.project_to_image((0, -1, -5), 40, IMAGE)
+    assert above[1] < 400 < below[1]
+
+
+@pytest.mark.parametrize("z", [0.0, 3.0])
+def test_points_at_or_behind_camera_do_not_project(z):
+    assert math3d.project_to_image((1, 1, z), 40, IMAGE) is None
