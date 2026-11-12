@@ -293,3 +293,54 @@ def test_duplicate_or_missing_ids_are_renumbered(qapp, tmp_path):
     scene = load_project(write_json(tmp_path / "scene.t3d", project_dict(scene={"objects": objects}))).document.scene
     assert [o.id for o in scene.objects] == [0, 1, 2]
     assert [o.text.content for o in scene.objects] == ["A", "B", "C"]
+
+
+# ----- Photo path hardening ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("network", ["\\\\host\\share\\p.png", "//host/share/p.png"])
+@pytest.mark.parametrize("field", ["relative_path", "absolute_path"])
+def test_network_photo_paths_are_rejected_without_touching_them(qapp, tmp_path, monkeypatch, network, field):
+    from text3d_studio import project_io
+
+    touched = []
+    real_isfile = os.path.isfile
+    monkeypatch.setattr(project_io.os.path, "isfile", lambda p: touched.append(p) or real_isfile(p))
+    monkeypatch.setattr(project_io, "load_image", lambda p: touched.append(p))
+    path = write_json(tmp_path / "scene.t3d", project_dict(photo={field: network}))
+    loaded = load_project(path)
+    assert touched == []
+    assert loaded.document.background is None and loaded.missing_photo == network
+    assert "network path not allowed" in loaded.warnings[0]
+
+
+def test_non_image_photo_path_is_rejected(qapp, tmp_path):
+    secret = tmp_path / "notes.txt"
+    secret.write_text("private")
+    entry = {"relative_path": "notes.txt", "absolute_path": str(secret)}
+    loaded = load_project(write_json(tmp_path / "scene.t3d", project_dict(photo=entry)))
+    assert loaded.document.background is None
+    assert "not a supported image type" in loaded.warnings[0]
+
+
+def test_image_extension_check_ignores_case(qapp, tmp_path):
+    photo_file(tmp_path, "PHOTO.PNG")
+    loaded = load_project(write_json(tmp_path / "scene.t3d", project_dict(photo={"relative_path": "PHOTO.PNG"})))
+    assert loaded.warnings == [] and loaded.document.background is not None
+
+
+def test_rejected_relative_path_still_falls_back_to_a_safe_absolute_one(qapp, tmp_path):
+    photo = photo_file(tmp_path)
+    entry = {"relative_path": "//host/share/p.png", "absolute_path": photo}
+    loaded = load_project(write_json(tmp_path / "scene.t3d", project_dict(photo=entry)))
+    assert loaded.warnings == [] and loaded.document.background_path == photo
+
+
+def test_relative_photo_outside_the_project_folder_loads(qapp, tmp_path):
+    (tmp_path / "photos").mkdir()
+    (tmp_path / "projects").mkdir()
+    photo_file(tmp_path / "photos", "p.png")
+    entry = {"relative_path": os.path.join("..", "photos", "p.png")}
+    loaded = load_project(write_json(tmp_path / "projects" / "scene.t3d", project_dict(photo=entry)))
+    assert loaded.warnings == []
+    assert loaded.document.background_path == str(tmp_path / "photos" / "p.png")

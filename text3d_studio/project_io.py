@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
 from PyQt6.QtGui import QImage
 
-from .image_io import load_image, qimage_to_rgba, rgba_to_qimage
+from .image_io import SUPPORTED_EXTENSIONS, load_image, qimage_to_rgba, rgba_to_qimage
 from .model import (
     CameraParams,
     Document,
@@ -175,10 +175,17 @@ def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
     project_dir = os.path.dirname(os.path.abspath(path))
     candidates = []
     if photo.get("relative_path"):
-        candidates.append(os.path.normpath(os.path.join(project_dir, photo["relative_path"])))
+        candidates.append((photo["relative_path"], os.path.join(project_dir, photo["relative_path"])))
     if photo.get("absolute_path"):
-        candidates.append(photo["absolute_path"])
-    for candidate in candidates:
+        candidates.append((photo["absolute_path"], photo["absolute_path"]))
+    reasons = []
+    for stored, candidate in candidates:
+        # A shared project can name any path: never open network shares or non-image files it points at.
+        reason = _rejected_photo_path(stored, os.path.normpath(candidate))
+        if reason:
+            reasons.append(reason)
+            continue
+        candidate = os.path.normpath(candidate)
         if os.path.isfile(candidate):
             try:
                 loaded.document.background = load_image(candidate)
@@ -187,4 +194,15 @@ def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
             loaded.document.background_path = candidate
             return
     loaded.missing_photo = photo.get("absolute_path") or photo.get("relative_path") or "(unknown)"
-    loaded.warnings.append(f"Photo not found: {loaded.missing_photo}")
+    detail = f" ({'; '.join(reasons)})" if reasons else ""
+    loaded.warnings.append(f"Photo not found: {loaded.missing_photo}{detail}")
+
+
+def _rejected_photo_path(stored: str, candidate: str) -> str | None:
+    """Why a photo path from a project file must not be opened, or None when it may be."""
+    for value in (stored, candidate):
+        if value.startswith(("\\\\", "//")) or os.path.splitdrive(value)[0].startswith(("\\\\", "//")):
+            return f"network path not allowed: {stored}"
+    if not candidate.lower().endswith(SUPPORTED_EXTENSIONS):
+        return f"not a supported image type: {stored}"
+    return None
