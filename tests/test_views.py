@@ -1204,3 +1204,49 @@ def test_clicking_a_slider_gives_it_focus(window, qapp):
     slider = panel.findChild(SliderRow, "transform.size").slider
     QTest.mouseClick(slider, Qt.MouseButton.LeftButton)
     assert slider.hasFocus()
+
+
+# ----- Multiple text objects ----------------------------------------------------------------------
+
+
+def test_canvas_rasterizes_only_objects_whose_text_changed(vm):
+    vm.add_object()
+    canvas = sized_canvas(vm)
+    canvas._update_rasters()
+    first, second = (canvas._rasters[o.id][1] for o in vm.scene.objects)
+    vm.set("text", "content", "NEW")  # the selected (second) object
+    vm.set("transform", "size", 4.0)  # not a raster field
+    canvas._update_rasters()
+    assert canvas._rasters[vm.scene.objects[0].id][1] is first
+    assert canvas._rasters[vm.scene.objects[1].id][1] is not second
+    deleted = vm.selected_object.id
+    vm.delete_object()
+    canvas._update_rasters()
+    assert set(canvas._rasters) == {vm.scene.objects[0].id}
+    assert deleted not in canvas._unsent
+
+
+def test_new_objects_rasterize_at_once_but_typing_waits_for_the_debounce(vm):
+    canvas = sized_canvas(vm)
+    canvas._glyph_dirty = False
+    vm.set("text", "content", "TYPING")
+    assert not canvas._glyph_dirty and canvas._text_timer.isActive()
+    vm.add_object()
+    assert canvas._glyph_dirty
+
+
+def test_export_renders_every_object(window, qapp):
+    window.vm.set_background(np.full((200, 320, 4), 255, np.uint8), "photo.png")
+    window.vm.set("shadow", "enabled", False)
+    window.show()
+    qapp.processEvents()
+    one = window.canvas.render_export()
+    window.vm.add_object()
+    window.vm.set("text", "content", "MORE")
+    two = window.canvas.render_export()
+    assert set(window.canvas.compositor.glyphs) == {o.id for o in window.vm.scene.objects}
+    covered = lambda pixels: np.any(pixels[..., :3] != 255, axis=-1)
+    assert covered(two).sum() > covered(one).sum() + 200
+    assert (covered(two) & covered(one)).sum() >= 0.99 * covered(one).sum()  # the first object is still there
+    window.vm.delete_object()
+    np.testing.assert_array_equal(window.canvas.render_export(), one)

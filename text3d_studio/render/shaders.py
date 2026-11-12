@@ -436,12 +436,14 @@ in float v_height;
 uniform sampler2D u_mask;
 uniform bool u_use_mask;
 uniform float u_falloff;
+uniform vec3 u_darken;  // how much this object's full-strength shadow darkens each channel
 out vec4 frag;
 void main() {
     // The flattened quad is heavily foreshortened, so sample full resolution instead of a mip level.
     if (u_use_mask && textureLod(u_mask, v_uv, 0.0).a < 0.5) discard;
-    // Parts of the text further from the ground cast weaker shadow (blended with MAX).
-    frag = vec4(clamp(1.0 - max(v_height, 0.0) * u_falloff, 0.0, 1.0));
+    // Parts of the text further from the ground cast weaker shadow (blended with MAX, per channel, so where
+    // objects' shadows overlap the darker one wins).
+    frag = vec4(clamp(1.0 - max(v_height, 0.0) * u_falloff, 0.0, 1.0) * u_darken, 1.0);
 }
 """
 
@@ -452,15 +454,15 @@ uniform sampler2D u_image;
 uniform vec2 u_step;
 out vec4 frag;
 void main() {
-    float total = 0.0;
+    vec3 total = vec3(0.0);
     float weights = 0.0;
     for (int i = -12; i <= 12; ++i) {
         float x = float(i) / 6.0;
         float w = exp(-0.5 * x * x);
-        total += texture(u_image, v_uv + u_step * float(i)).r * w;
+        total += texture(u_image, v_uv + u_step * float(i)).rgb * w;
         weights += w;
     }
-    frag = vec4(total / weights);
+    frag = vec4(total / weights, 1.0);
 }
 """
 
@@ -468,12 +470,11 @@ SHADOW_COMPOSITE_FS = """
 #version 410 core
 in vec2 v_uv;
 uniform sampler2D u_image;
-uniform vec3 u_color;
 uniform float u_opacity;
 out vec4 frag;
 void main() {
-    float s = texture(u_image, v_uv).r * u_opacity;
-    frag = vec4(mix(vec3(1.0), u_color, s), 1.0);  // multiplied onto the background
+    // The mask holds each channel's darkening, 1 - shadow color at full strength (see SHADOW_FS).
+    frag = vec4(1.0 - texture(u_image, v_uv).rgb * u_opacity, 1.0);  // multiplied onto the background
 }
 """
 

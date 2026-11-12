@@ -18,7 +18,8 @@ from ..image_io import SUPPORTED_EXTENSIONS
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
 from ..render.grid_renderer import GridRenderer
-from ..text_raster import rasterize_text
+from ..model import TextObject, TextParams
+from ..text_raster import GlyphRaster, rasterize_text
 from ..viewmodel import SceneViewModel
 
 TEXT_DEBOUNCE_MS = 60
@@ -145,6 +146,9 @@ class ImageCanvas(QOpenGLWidget):
         self.compositor: Compositor | None = None
         self.grid_renderer: GridRenderer | None = None
         self._glyph_dirty = True
+        # Each object's raster with the text it was made from, so only objects whose text changed re-rasterize.
+        self._rasters: dict[int, tuple[TextParams, GlyphRaster | None]] = {}
+        self._unsent: set[int] = set()  # rasterized but not yet uploaded to the compositor
         self._background_dirty = True
         self._drag_origin: QPointF | None = None  # previous cursor position (yaw drags are incremental)
         self._drag_press: QPointF | None = None
@@ -169,6 +173,8 @@ class ImageCanvas(QOpenGLWidget):
         self._text_timer.timeout.connect(self._mark_glyph_dirty)
         self.vm.scene_changed.connect(lambda *_: self.update())
         self.vm.text_changed.connect(self._text_timer.start)
+        self.vm.objects_changed.connect(self._mark_glyph_dirty)  # new objects show at once, without the debounce
+        self.vm.selection_changed.connect(lambda *_: self.update())
         self.vm.background_changed.connect(self._mark_background_dirty)
 
         self.empty_state = EmptyStateOverlay(self)
@@ -190,6 +196,7 @@ class ImageCanvas(QOpenGLWidget):
     def initializeGL(self) -> None:
         self.compositor = Compositor()
         self.grid_renderer = GridRenderer(self.compositor.quad)
+        self._unsent = set(self._rasters)  # a new context starts without glyphs
         self.context().aboutToBeDestroyed.connect(self._release_gl)
 
     def paintGL(self) -> None:
@@ -203,8 +210,9 @@ class ImageCanvas(QOpenGLWidget):
         self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), rect)
         if self.vm.scene.grid.visible:
             # Editor overlay: drawn here, after the composite, so exports never contain it.
+            obj = self.vm.scene.objects[0]
             self.grid_renderer.render(
-                self.vm.scene, self.compositor.text.raster, self.defaultFramebufferObject(), rect, dpr
+                self.vm.scene, self.compositor.glyph_raster(obj.id), self.defaultFramebufferObject(), rect, dpr
             )
         self._track_fps()
 
@@ -217,7 +225,29 @@ class ImageCanvas(QOpenGLWidget):
                 self.error.emit(str(exc))
         if self._glyph_dirty:
             self._glyph_dirty = False
-            self.compositor.set_glyph(rasterize_text(self.vm.scene.objects[0].text))
+            self._update_rasters()
+        self.compositor.retain_glyphs(self._rasters)
+        for object_id in self._unsent:
+            self.compositor.set_glyph(object_id, self._rasters[object_id][1])
+        self._unsent.clear()
+
+    def _update_rasters(self) -> None:
+        """Re-rasterizes the objects whose text changed since their last raster, and forgets deleted ones."""
+        objects = self.vm.scene.objects
+        ids = {obj.id for obj in objects}
+        for object_id in [i for i in self._rasters if i not in ids]:
+            del self._rasters[object_id]
+            self._unsent.discard(object_id)
+        for obj in objects:
+            cached = self._rasters.get(obj.id)
+            if cached is None or cached[0] != obj.text:
+                self._rasterize(obj)
+
+    def _rasterize(self, obj: TextObject) -> GlyphRaster | None:
+        raster = rasterize_text(obj.text)
+        self._rasters[obj.id] = (dataclasses.replace(obj.text), raster)
+        self._unsent.add(obj.id)
+        return raster
 
     def _release_gl(self) -> None:
         self.makeCurrent()
