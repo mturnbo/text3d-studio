@@ -23,6 +23,7 @@ MIN_FONT_PIXEL_SIZE = 16
 ALIGNMENTS = {"left": 0.0, "center": 0.5, "right": 1.0}  # TextParams.align -> share of the slack put before a line
 # The layout values' allowed ranges (the panel's sliders use them too). Text params can come from a project file,
 # so rasterize_text clamps them: extreme values would otherwise defeat the size limit or crash the paint.
+MIN_ARC_DEGREES = 1e-3  # smaller bends are straight text
 LAYOUT_RANGES = {
     "bevel_width": (1.0, 20.0),
     "letter_spacing": (-0.1, 0.5),
@@ -88,6 +89,8 @@ def _sanitized(params: TextParams) -> TextParams:
     for name, (low, high) in LAYOUT_RANGES.items():
         value = getattr(params, name)
         values[name] = min(max(value, low), high) if math.isfinite(value) else getattr(defaults, name)
+    if abs(values["arc"]) < MIN_ARC_DEGREES:
+        values["arc"] = 0.0  # a vanishing bend would put the arc's center at infinity (or divide by zero)
     align = params.align if params.align in ALIGNMENTS else defaults.align
     return dataclasses.replace(params, align=align, **values)
 

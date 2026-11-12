@@ -270,6 +270,12 @@ def test_out_of_range_layout_values_render_like_the_range_ends(qapp, field, valu
     assert np.array_equal(out.rgba, end.rgba)
 
 
+@pytest.mark.parametrize("arc", [5e-324, -5e-324, 1e-300, 1e-4])
+def test_vanishing_arcs_render_as_straight_text(qapp, arc):
+    assert np.array_equal(rasterize_text(TextParams(content="AB\nCD", arc=arc)).rgba,
+                          rasterize_text(TextParams(content="AB\nCD", arc=0.0)).rgba)
+
+
 def test_text_too_long_for_the_limit_even_at_the_smallest_font_is_clipped(qapp):
     raster = rasterize_text(TextParams(content="W" * 5000))
     assert raster is not None
