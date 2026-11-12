@@ -1394,3 +1394,99 @@ def test_export_renders_every_object(window, qapp):
     assert (covered(two) & covered(one)).sum() >= 0.99 * covered(one).sum()  # the first object is still there
     window.vm.delete_object()
     np.testing.assert_array_equal(window.canvas.render_export(), one)
+
+
+# ----- Objects list in the panel ------------------------------------------------------------------
+
+
+def object_rows(panel):
+    return [panel.object_list.item(i).text() for i in range(panel.object_list.count())]
+
+
+def test_objects_list_starts_with_the_one_object_and_delete_disabled(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    assert object_rows(panel) == ["HELLO"]
+    assert panel.object_list.currentRow() == 0
+    assert panel.add_button.isEnabled() and panel.duplicate_button.isEnabled()
+    assert not panel.delete_button.isEnabled()
+
+
+def test_add_duplicate_and_delete_buttons_edit_the_objects(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.set("text", "content", "FIRST")
+    panel.add_button.click()
+    assert object_rows(panel) == ["FIRST", "HELLO"] and panel.object_list.currentRow() == 1
+    assert panel.delete_button.isEnabled()
+    panel.duplicate_button.click()
+    assert object_rows(panel) == ["FIRST", "HELLO", "HELLO"] and vm.selected == 2
+    panel.object_list.setCurrentRow(0)
+    panel.delete_button.click()
+    assert object_rows(panel) == ["HELLO", "HELLO"] and vm.selected == 0
+    panel.delete_button.click()
+    assert object_rows(panel) == ["HELLO"]
+    assert not panel.delete_button.isEnabled()
+    panel.delete_button.click()  # disabled: does nothing
+    assert len(vm.scene.objects) == 1
+
+
+def test_choosing_a_row_selects_the_object_and_refreshes_every_control(vm):
+    from PyQt6.QtWidgets import QLineEdit
+
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    vm.set("text", "content", "WOOD")
+    vm.set("transform", "depth", 1.5)
+    vm.apply_material("wood")
+    text = panel.findChild(QLineEdit, "text.content")
+    assert (text.text(), material_combo(panel).currentData()) == ("WOOD", "wood")
+    panel.object_list.setCurrentRow(0)
+    assert vm.selected == 0
+    assert text.text() == "HELLO"
+    assert panel.findChild(SliderRow, "transform.depth").spin.value() == 0.35
+    assert material_combo(panel).currentData() == "metal"
+    assert not material_row_visible(panel, "grain_angle") and material_row_visible(panel, "side_color")
+    panel.object_list.setCurrentRow(1)
+    assert material_row_visible(panel, "grain_angle") and not material_row_visible(panel, "side_color")
+    assert panel.findChild(SliderRow, "transform.depth").spin.value() == 1.5
+
+
+def test_controls_edit_the_object_chosen_in_the_list(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    panel.object_list.setCurrentRow(0)
+    panel.findChild(SliderRow, "transform.layers").spin.setValue(200)
+    assert [o.transform.layers for o in vm.scene.objects] == [200, 96]
+
+
+def test_typing_renames_the_selected_row(vm):
+    from PyQt6.QtWidgets import QLineEdit
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    panel.findChild(QLineEdit, "text.content").setText("SIGN")
+    assert object_rows(panel) == ["HELLO", "SIGN"]
+    vm.set("text", "content", "   ")
+    assert object_rows(panel) == ["HELLO", "(empty)"]
+
+
+def test_picking_on_the_canvas_updates_the_list(window):
+    from text3d_studio.views.control_panel import SliderRow
+
+    vm, panel, canvas = window.vm, window.panel, window.canvas
+    vm.add_object()
+    place(vm, 0, "OO", x=-3.5, z=-12.0, size=3.0)
+    place(vm, 1, "XX", x=3.5, z=-12.0, size=3.0)
+    canvas.resize(800, 500)
+    click(canvas, on_face(canvas, 0, ink_point(canvas, 0)))
+    assert vm.selected == 0 and panel.object_list.currentRow() == 0
+    assert panel.findChild(SliderRow, "transform.x").spin.value() == -3.5
