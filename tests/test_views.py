@@ -634,7 +634,7 @@ def activate(window, qapp):
 def test_g_key_on_canvas_toggles_grid(window, qapp):
     from PyQt6.QtTest import QTest
 
-    window.show()
+    activate(window, qapp)
     window.canvas.setFocus()
     qapp.processEvents()
     QTest.keyClick(window.canvas, Qt.Key.Key_G)
