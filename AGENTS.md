@@ -24,12 +24,13 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 
 ```
 model.py            Pure dataclasses: Scene{objects: [TextObject{id, text, transform, material}], ground, grid,
-                    light, shadow, camera}, Document. No Qt, no OpenGL. Document.native_size is the export size.
+                    light, shadow, camera, wall}, Document. No Qt, no OpenGL. Document.native_size is the export size.
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
                       "text", "transform" and "material" (OBJECT_SECTIONS) address the SELECTED object
                       (vm.selected, vm.selected_object: editor state); other sections are shared by the scene
                       add_object() / duplicate_object() / delete_object() / select(index)
+                      set_mount("floor" | "wall"): moves the selected object, keeping it where it appears
                       undo() / redo() / can_undo / can_redo / begin_edit() / end_edit() / clear_history()
                       load_document(document) / dirty / mark_saved()
                       signals: scene_changed(section, field), text_changed(), background_changed(),
@@ -44,8 +45,9 @@ views/              Qt widgets only. Never touch GL state or numpy image math he
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
                       Keeps a CPU raster per object id (re-rasterized only when that object's text changes),
                       uploads them to the compositor and uses them to pick objects under the cursor.
-                      Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL), which is editor state, not
-                      scene state. FitHandlesOverlay (a plain child widget) draws the fit handles
+                      Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL / WALL_TOOL / SUN_TOOL) and the
+                      eyedropper, which are editor state, not scene state. FitHandlesOverlay and ToolOverlay (plain
+                      child widgets) draw the fit handles, the wall preview and the Match Sun points
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
@@ -64,8 +66,11 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
 materials.py        Material KINDS (metal, plastic, stone, wood, glass) and their PRESETS (every MaterialParams
                     field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset
 ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
-                    placement on it (text_position, text_model_matrix, world_to_ground, text_distance)
-lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
+                    placement on it (text_position, text_model_matrix, world_to_ground, text_distance);
+                    the wall (wall_rotation, wall_to_world, world_to_wall, wall_plane, wall_through,
+                    reanchor_wall, reanchor_wall_text, mount_on_wall, mount_on_floor, wall_grid_lines)
+lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix;
+                    solve_sun: azimuth and elevation from a vertical object's top, base and shadow tip
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
 preferences.py      QSettings-backed last folder + recent files (images and projects, max 8). MainWindow requires one.
@@ -112,6 +117,18 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   distance along that ray (so apparent size is kept), and text yaw offsets grid yaw. Expect
   `transform.x/z/rot_y/size` change events (for any object, not only the selected one) after a ground edit.
   An object whose ray misses the new ground is left as is.
+- **The wall** (`scene.wall`, `WallParams`) is an upright plane on the ground. Its frame is
+  `ground rotation · Ry(wall.angle)` (x along the base line, y = ground up, z = its normal, facing the camera's
+  side), and its base line passes `wall.offset` from the point below the camera, so it stands at local
+  z = −offset. Wall coordinates are (along, height above the floor). `transform.mount` picks the placement:
+  `"floor"` uses `x/z/rot_y`, `"wall"` uses `wall_x/wall_y` and ignores the floor fields (and yaw). Wall text's
+  back cap lies on the wall (`T(wall point + normal · depth · size) · wall rotation · S(size)`). Every
+  placement function takes the scene's wall (`text_model_matrix(ground, transform, wall)`); pass it
+  everywhere, or wall text renders on the floor. Wall text still casts a planar shadow on the floor only.
+- **Ground edits keep the wall where it appears too.** `_place_objects_from` re-places the wall first
+  (`reanchor_wall`: the plane through the camera and the old base line meets the new ground), then wall text
+  along its camera ray onto the new wall (`reanchor_wall_text`). `placement_snapshot()` is
+  `(ground, [transforms], wall)`. Wall edits themselves move wall text with the wall (it's attached).
 - The default scene (pitch 0, height 1.5, text at z −12, yaw −20) renders pixel-identically to
   v0.5.0's defaults. `tests/test_ground.py` holds the legacy conversion if old values ever need migrating.
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
@@ -223,6 +240,21 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 | **Move Text** (V) | press: select the object under the cursor (empty ground keeps the selection) · drag: move the selected object on screen at constant on-screen size (size rescales with distance) · Shift: lock to dominant axis · Option/Alt: slide on the ground in perspective (grabbed point stays under the cursor) · Cmd/Ctrl: yaw | text yaw | size (pinch too); Ctrl/Cmd: distance |
 | **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
 | **Fit Rectangle** (R) | drag the 4 corner handles onto a rectangle in the photo; the ground is solved live (`ground.fit_ground_to_rectangle`) | — | — |
+| **Set Wall** (W) | drag along the wall's foot: the base line runs through the press and the cursor (`ground.wall_through`); from or into the sky does nothing | — | — |
+| **Match Sun** (L) | click top, base, shadow tip; the third click sets azimuth + elevation as one undo step (`lighting.solve_sun`), a fourth starts over; problems go to `tool_status` | — | — |
+
+With wall-mounted text selected, Move Text drags it on the wall: plain drag keeps its on-screen size (the anchor
+follows the cursor's pixels onto `ground.wall_plane`), Option slides it along the wall (`wall_point_at`), and it
+never goes below `wall_y = 0`. Cmd/Ctrl yaw and Cmd/Ctrl+wheel distance don't apply to it.
+
+**Eyedropper.** The panel's **Pick** buttons (`EYEDROPPER_COLORS`: light colour and ambient colour) emit
+`eyedropper_requested(section, field)`; `MainWindow` calls `canvas.start_eyedropper`. The next press on the photo
+sets the colour to the 5×5 photo-pixel average under it, mapped through `_image_rect`, as one undo step; a press
+off the photo keeps it waiting, Escape (`keyPressEvent`) or a tool change cancels it.
+
+`ToolOverlay` draws the wall preview (base line + grid up the wall, `math3d.project_segment` clips segments
+behind the camera) and the Match Sun points, clipped to the photo. Like `FitHandlesOverlay` it's a child widget,
+so exports can't contain it.
 
 Qt reports macOS's Command key as `ControlModifier` and Option as `AltModifier`. The drag mode is fixed on
 press; Shift can be toggled mid-drag. Pinch arrives as a native gesture, caught by `PinchFilter`. Every
@@ -265,7 +297,8 @@ glyphs. Use a child widget overlay (like `FitHandlesOverlay` and the empty-state
 
 Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_horizon_through` and
 `tilt_for_horizon_through`. Drag tests drive real `QMouseEvent`s on a sized, unshown canvas; see
-`tests/test_views.py` (`drag`, `grid_canvas`).
+`tests/test_views.py` (`drag`, `grid_canvas`); the wall, sun and eyedropper tools are tested in
+`tests/test_views_tools.py`, which reuses those helpers.
 
 ### Undo history
 

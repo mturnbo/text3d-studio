@@ -88,10 +88,10 @@ with a link to the photo.
 1. **Turn on the grid** (**G**, or **Show Grid** on the toolbar). It shows the ground the text stands on, the horizon, and orange lanes marking the path the text can slide along.
 2. **Match the ground.** Fastest: pick **Fit Rectangle** (**R**) and drag the four handles onto the corners of something rectangular on the floor: a tile, rug, doormat or table top. Set its real size under **Grid › Fit width/depth** first; that sets the scale. Tick **Fit: estimate field of view** if you don't know the lens. Handles turn red if the shape can't be a rectangle. Or do it by hand: pick **Adjust Grid** (**P**) and drag the grid's white horizon line onto the photo's horizon. Drag near either end of it to roll it if the photo is slanted. Right-drag to rotate the grid until its lines run along floor tiles, curbs or walls, and drag the ground to slide the lines onto real seams. The **Ground** panel has the same settings as sliders. The text stays where it is on screen while you adjust. Then set **Field of view** to match the lens: wide-angle photos need 60–80°, telephoto 15–30°. **Camera height** sets how far the eye is above the floor.
 3. **Place the text.** Switch back to **Move Text** (**V**) and drag the text to move it; it keeps its size on screen. Hold **Shift** to move only straight across or straight up and down. Hold **Option** (Alt) to slide it along the floor in perspective instead, so it shrinks into the distance. Hold **Command** (Ctrl) and drag, or right-drag, to turn it (**Yaw**) to line up with walls, curbs and other strong lines in the scene. Pinch or scroll to resize it.
-4. **Find the sun.** Look at the existing shadows in the photo and set **Azimuth** so the text's shadow points the same way. Set **Elevation** low (10–25°) for long morning or evening shadows, high (60–80°) for midday.
+4. **Find the sun.** Fastest: pick **Match Sun** (**L**) and click three points on something upright that casts a clear shadow on the floor (a post, a person, a bottle): its **top**, its **base** where it meets the floor, then the **tip of its shadow**. The light's **Azimuth** and **Elevation** are solved from them (match the ground first; the solve uses it). Click again to start over. Or set them by hand: **Azimuth** so the text's shadow points the same way as the photo's shadows, **Elevation** low (10–25°) for long morning or evening shadows, high (60–80°) for midday.
 5. **Match the softness.** Overcast scenes need high **Softness** and low **Opacity**. Hard sunlight needs low softness. Tint the **Shadow color** toward the scene's shadow color, usually a desaturated blue.
 6. **Pick a material.** Choose **Metal**, **Plastic**, **Stone**, **Wood** or **Glass** from the **Material** dropdown. It loads a starting point that you can adjust, and choosing it again resets it. **Glass** shows the photo behind it, bent by its surface. Raise **Frost** to blur what's behind it and **Tint depth** to deepen the colour in thicker glass. Its shadow is lighter and takes on its tint.
-7. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. Use **Metallic** 1 for metals and 0 for everything else, and raise **Roughness** for matte or brushed surfaces. Leave **Reflect the photo** on so glossy text picks up the scene's colors.
+7. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. The **Pick** button next to either colour samples it straight from the photo: click it, then click the photo (**Esc** cancels). Use **Metallic** 1 for metals and 0 for everything else, and raise **Roughness** for matte or brushed surfaces. Leave **Reflect the photo** on so glossy text picks up the scene's colors.
 8. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
 
 ## Several pieces of text
@@ -103,6 +103,24 @@ the text itself on the canvas, to select it. The Text, Text Placement and Materi
 scroll and pinch, and the grid's orange lanes then apply to that object. Clicking inside a letter's hole
 or on empty floor doesn't change the selection, so you can still drag the selected text from there. The
 ground, lighting, shadow and camera are shared, and adjusting the ground keeps every object in place.
+
+## Text on a wall
+
+The scene has one wall: an upright plane standing on the floor. To put text on a wall in the photo:
+
+1. Match the ground first (step 2 above).
+2. Pick **Set Wall** (**W**) and drag along the line where the wall meets the floor. An orange base line and a
+   faint grid on the wall show where it is while the tool is active (they never appear in exports). The **Wall**
+   panel group has the same settings as sliders (**Facing** and **Distance**).
+3. Select the text and set **Text Placement › Mount** to **Wall**. The text moves onto the wall where it appears
+   on screen (or onto the wall's base line, if it stood in front of the wall), flat against it and facing out.
+4. With **Move Text** (**V**), drag it around the wall; it keeps its size on screen. Hold **Option** (Alt) to slide
+   it along the wall at its real size instead. It can't go below the floor. **Wall position** and **Wall height**
+   in the panel place it exactly. Yaw doesn't apply to wall text.
+
+Wall text still casts its shadow on the floor (the wall itself doesn't catch shadows). Setting **Mount** back
+to **Floor** stands it on the floor where it appears, facing the way the wall does. Moving the wall carries its
+text along; adjusting the ground keeps both the wall and its text where they are on screen.
 
 ## Undo and redo
 
