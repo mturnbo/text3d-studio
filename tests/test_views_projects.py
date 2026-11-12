@@ -352,23 +352,15 @@ def test_opening_a_project_into_a_clean_window_does_not_ask(window, tmp_path, mo
     assert prompts[0] == []
 
 
-def test_opening_an_image_over_changes_can_be_cancelled(window, tmp_path, monkeypatch, prompts):
-    saved_window(window, tmp_path, monkeypatch)
-    prompts[1][0] = CANCEL
-    window.load_image_path(image_file(tmp_path, "other.png"))
-    assert window.vm.document.background_path == str(tmp_path / "photo.png")
-
-
-def test_opening_an_image_over_changes_can_discard_or_save(window, tmp_path, monkeypatch, prompts):
+def test_opening_an_image_never_asks_and_keeps_the_scene_as_an_unsaved_change(window, tmp_path, monkeypatch, prompts):
     path = saved_window(window, tmp_path, monkeypatch)
-    window.load_image_path(image_file(tmp_path, "other.png"))
-    assert window.vm.document.background_path == str(tmp_path / "other.png")
-    assert load_project(path).document.scene.camera.fov != 21.0
     window.vm.set("camera", "fov", 33.0)
-    prompts[1][0] = SAVE
-    window.load_image_path(image_file(tmp_path, "third.png"))
-    assert load_project(path).document.scene.camera.fov == 33.0
-    assert window.vm.document.background_path == str(tmp_path / "third.png")
+    window.load_image_path(image_file(tmp_path, "other.png"))
+    assert prompts[0] == []
+    assert window.vm.document.background_path == str(tmp_path / "other.png")
+    assert window.vm.scene.camera.fov == 33.0  # the edit survives the new photo
+    assert window.vm.dirty and window.isWindowModified()
+    assert load_project(path).document.scene.camera.fov != 33.0  # nothing was saved behind the user's back
 
 
 def test_opening_an_image_into_a_clean_window_does_not_ask(window, tmp_path, prompts):

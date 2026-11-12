@@ -388,7 +388,8 @@ fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel s
 - **Dirty tracking.** `vm.dirty` is set by `scene_changed`, `objects_changed` and `background_changed`, and
   cleared by `mark_saved()` and `load_document()`. It isn't tied to the undo history: undoing back to the
   saved state still leaves the window marked modified. `MainWindow.maybe_save_changes()` (Save / Discard /
-  Cancel) runs before closing, opening a project and opening an image. Tests monkeypatch
+  Cancel) runs before closing and opening a project. Opening an image doesn't ask: it replaces only the
+  photo, keeps the scene, and marks the document dirty. Tests monkeypatch
   `main_window.QMessageBox.question` (the `window` fixtures answer Discard).
 - `MainWindow.open_path(path)` dispatches drops and Open Recent by extension to `open_project_path` or
   `load_image_path`.

@@ -79,7 +79,8 @@ with a link to the photo.
   a project file.
 - **File → Open Project…** (⇧⌘O / Ctrl+Shift+O), dragging a `.t3d` onto the canvas, or **Open Recent** opens one.
 - The window title shows the project's name, with the unsaved-changes marker when there are edits. Closing
-  the window, opening a project or opening an image with unsaved changes asks whether to save them first.
+  the window or opening a project with unsaved changes asks whether to save them first. Opening a new photo
+  keeps your text and just swaps the picture.
   Opening a project starts a fresh undo history.
 
 ## Getting a natural look

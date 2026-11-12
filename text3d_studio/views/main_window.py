@@ -310,8 +310,8 @@ class MainWindow(QMainWindow):
             self.load_image_path(path)
 
     def load_image_path(self, path: str) -> None:
-        if not self.maybe_save_changes():
-            return
+        # No save prompt: a new photo replaces only the photo. The scene stays, and the change itself becomes
+        # an unsaved change of the open project.
         had_background = self.vm.document.background is not None
         previous_size = self.vm.document.native_size
         try:
