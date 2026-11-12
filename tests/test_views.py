@@ -1,3 +1,4 @@
+import dataclasses
 import os
 
 import numpy as np
@@ -1233,6 +1234,149 @@ def test_new_objects_rasterize_at_once_but_typing_waits_for_the_debounce(vm):
     assert not canvas._glyph_dirty and canvas._text_timer.isActive()
     vm.add_object()
     assert canvas._glyph_dirty
+
+
+def place(vm, index, content, **transform):
+    vm.select(index)
+    vm.set("text", "content", content)
+    for name, value in {"rot_y": 0.0, **transform}.items():
+        vm.set("transform", name, value)
+
+
+def two_objects(vm, first="OO", second="XX"):
+    """A sized canvas with two objects side by side, facing the camera; the first is selected."""
+    vm.add_object()
+    place(vm, 0, first, x=-3.5, z=-12.0, size=3.0)
+    place(vm, 1, second, x=3.5, z=-12.0, size=3.0)
+    vm.select(0)
+    return sized_canvas(vm)
+
+
+def on_face(canvas, index, local):
+    """Widget position of a point on an object's front face, given in em units."""
+    scene = canvas.vm.scene
+    model = ground_model.text_model_matrix(scene.ground, scene.objects[index].transform)
+    world = model @ np.array([local[0], local[1], 0.0, 1.0])
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    pixel = math3d.project_to_image(world[:3], scene.camera.fov, (rect_w, rect_h))
+    return (pixel[0] + rect_x, pixel[1] + rect_y)
+
+
+def ink_point(canvas, index):
+    """An em-unit point well inside an object's ink: the solid texel nearest the raster's middle."""
+    raster = canvas._raster_of(canvas.vm.scene.objects[index])
+    alpha = raster.rgba[..., 3]
+    solid = alpha == 255
+    for axis in (0, 1):
+        for shift in (-6, 6):
+            solid &= np.roll(alpha, shift, axis) == 255
+    rows, cols = np.nonzero(solid)
+    height, width = alpha.shape
+    nearest = np.argmin((rows - height / 2) ** 2 + (cols - width / 2) ** 2)
+    u, v = (cols[nearest] + 0.5) / width, (rows[nearest] + 0.5) / height
+    return (raster.origin[0] + u * raster.size[0], raster.origin[1] + (1 - v) * raster.size[1])
+
+
+def counter_of_o(canvas, index):
+    """The middle of the hole of an object whose text is a single O."""
+    raster = canvas._raster_of(canvas.vm.scene.objects[index])
+    pad = -raster.origin[1]
+    return (0.0, (raster.size[1] - 2 * pad) / 2)
+
+
+def click(canvas, pos, button=Qt.MouseButton.LeftButton):
+    mouse(canvas, QEvent.Type.MouseButtonPress, pos, button)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, pos, button, Qt.MouseButton.NoButton)
+
+
+def transforms(vm):
+    return [dataclasses.replace(o.transform) for o in vm.scene.objects]
+
+
+def test_clicking_an_object_selects_it_without_moving_anything(vm):
+    canvas = two_objects(vm)
+    before = transforms(vm)
+    for index in (1, 0, 1):
+        click(canvas, on_face(canvas, index, ink_point(canvas, index)))
+        assert vm.selected == index
+    assert transforms(vm) == before
+
+
+def test_dragging_an_object_selects_and_moves_only_it(vm):
+    canvas = two_objects(vm)
+    before = transforms(vm)
+    start = on_face(canvas, 1, ink_point(canvas, 1))
+    drag(canvas, start, (start[0] - 40, start[1] + 30))
+    assert vm.selected == 1
+    assert vm.scene.objects[0].transform == before[0]
+    assert vm.scene.objects[1].transform != before[1]
+
+
+def test_a_press_on_empty_ground_keeps_the_selection_and_drags_it(vm):
+    canvas = two_objects(vm)
+    vm.select(1)
+    before = transforms(vm)
+    assert canvas.object_at(QPointF(400, 470)) is None
+    drag(canvas, (400, 470), (430, 450))
+    assert vm.selected == 1
+    assert vm.scene.objects[0].transform == before[0]
+    assert vm.scene.objects[1].transform != before[1]
+
+
+def test_a_press_in_a_letters_hole_does_not_pick_that_object(vm):
+    canvas = two_objects(vm, first="O")
+    vm.select(1)
+    hole = on_face(canvas, 0, counter_of_o(canvas, 0))
+    assert canvas.object_at(QPointF(*hole)) is None
+    click(canvas, hole)
+    assert vm.selected == 1
+
+
+def test_a_press_through_a_hole_picks_the_object_behind(vm):
+    canvas = two_objects(vm, first="O", second="MMMM")
+    place(vm, 1, "MMMM", x=0.0, z=-40.0, size=12.0)  # far behind the O, showing through its counter
+    hole = on_face(canvas, 0, counter_of_o(canvas, 0))
+    ring = on_face(canvas, 0, ink_point(canvas, 0))
+    vm.select(0)
+    click(canvas, hole)
+    assert vm.selected == 1
+    click(canvas, ring)
+    assert vm.selected == 0
+
+
+def test_the_nearest_object_wins_where_they_overlap(vm):
+    canvas = two_objects(vm, first="I", second="I")
+    place(vm, 0, "I", x=0.0, z=-20.0, size=6.0)  # twice as far and twice as big: behind the other I
+    place(vm, 1, "I", x=0.0, z=-10.0, size=3.0)
+    point = QPointF(*on_face(canvas, 1, ink_point(canvas, 1)))
+    assert canvas.object_at(point) == 1
+    vm.set("transform", "x", 40.0)  # move the near I aside: the far one was under it all along
+    assert canvas.object_at(point) == 0
+    vm.select(0)
+    vm.set("transform", "z", -8.0)  # bring the far one in front of where the near one stood
+    vm.select(1)
+    vm.set("transform", "x", 0.0)
+    assert canvas.object_at(point) == 0
+
+
+def test_a_press_off_the_image_picks_nothing(vm):
+    canvas = two_objects(vm)
+    canvas.vm.set_background(np.zeros((100, 400, 4), np.uint8))  # wide: letterboxed above and below
+    assert canvas.object_at(QPointF(400, 5)) is None
+
+
+def test_wheel_and_yaw_act_only_on_the_selected_object(vm):
+    canvas = two_objects(vm)
+    vm.select(1)
+    before = transforms(vm)
+    wheel(canvas, 1)
+    assert vm.scene.objects[1].transform.size == pytest.approx(before[1].size * 1.06)
+    start = on_face(canvas, 0, ink_point(canvas, 0))
+    drag(canvas, start, (start[0] + 50, start[1]), Qt.MouseButton.RightButton)  # picks the first, then yaws it
+    assert vm.selected == 0
+    assert vm.scene.objects[0].transform.rot_y == pytest.approx(50 * 0.4)
+    assert vm.scene.objects[0].transform.size == before[0].size
+    assert vm.scene.objects[1].transform.rot_y == before[1].rot_y
 
 
 def test_export_renders_every_object(window, qapp):

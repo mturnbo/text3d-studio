@@ -349,6 +349,7 @@ class ImageCanvas(QOpenGLWidget):
         self.tool_changed.emit(tool)
 
     # ----- Mouse interaction --------------------------------------------------------------------
+    # Press: select the object under the cursor; every gesture acts on the selected object
     # Drag: move the text on screen, keeping its on-screen size    Shift+drag: lock to horizontal/vertical
     # Option/Alt+drag: slide along the ground in perspective        Cmd/Ctrl+drag or right drag: yaw
     # Wheel or pinch: scale                                         Cmd/Ctrl+wheel: nearer/farther
@@ -362,6 +363,12 @@ class ImageCanvas(QOpenGLWidget):
             if self._pose_snapshot() != self._fit_settled:
                 self._capture_pose_base()  # something else moved the ground or text since the last fit
             return
+        # A press on an object selects it; elsewhere the selection stays, so the drag still moves it. With one
+        # object there is nothing to choose, which also spares a raster for a canvas that never painted.
+        if len(self.vm.scene.objects) > 1:
+            index = self.object_at(event.position())
+            if index is not None:
+                self.vm.select(index)
         self._drag_origin = self._drag_press = event.position()
         self._drag_mode = self._text_drag_mode(event)
         self._drag_ground_start = self.ground_point_at(event.position())
@@ -417,6 +424,33 @@ class ImageCanvas(QOpenGLWidget):
             self._slide_text_to(position)
         else:
             self._move_text_on_screen(position)
+
+    def object_at(self, position: QPointF) -> int | None:
+        """Index of the nearest object whose ink is under a widget position, or None.
+
+        Tests the cursor ray against each object's front face and its glyph mask, so a press in a letter's
+        counter (the hole of an O) or between letters goes through to whatever is behind.
+        """
+        pixel = self._image_pixel(position)
+        _, _, rect_w, rect_h = self._image_rect()
+        if not (0 <= pixel[0] <= rect_w and 0 <= pixel[1] <= rect_h):
+            return None
+        scene = self.vm.scene
+        ray = math3d.image_ray(pixel, scene.camera.fov, (rect_w, rect_h))
+        nearest, nearest_distance = None, np.inf
+        for index, obj in enumerate(scene.objects):
+            hit = ground_model.text_face_hit(scene.ground, obj.transform, ray)
+            if hit is None or hit[0] >= nearest_distance:
+                continue
+            raster = self._raster_of(obj)
+            if raster is not None and raster.covers(hit[1], hit[2]):
+                nearest, nearest_distance = index, hit[0]
+        return nearest
+
+    def _raster_of(self, obj: TextObject) -> GlyphRaster | None:
+        """The raster on screen for `obj` (it can lag the text by the debounce), made now if it has none yet."""
+        cached = self._rasters.get(obj.id)
+        return cached[1] if cached is not None else self._rasterize(obj)
 
     def _locked_to_axis(self, position: QPointF) -> QPointF:
         """The cursor position with the smaller of its horizontal and vertical motion since the press removed."""

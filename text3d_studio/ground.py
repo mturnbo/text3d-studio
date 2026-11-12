@@ -75,6 +75,18 @@ def text_model_matrix(ground: GroundParams, transform: TransformParams) -> np.nd
     )
 
 
+def text_face_hit(ground: GroundParams, transform: TransformParams, ray) -> tuple[float, float, float] | None:
+    """Where a camera ray meets the plane of the text's front face: (distance along the ray, local x, local y),
+    local coordinates in em units like the glyph raster's. None when the ray runs parallel to or away from it."""
+    model = text_model_matrix(ground, transform)
+    plane = math3d.plane_from_point_normal(model[:3, 3], model[:3, 2])
+    hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), ray, plane)
+    if hit is None:
+        return None
+    local = np.linalg.inv(model) @ np.append(hit, 1.0)
+    return float(np.linalg.norm(hit)), float(local[0]), float(local[1])
+
+
 def text_distance(ground: GroundParams, transform: TransformParams) -> float:
     """Depth of the text's anchor along the view axis (always positive for visible text)."""
     return max(-float(text_position(ground, transform)[2]), 1e-3)
