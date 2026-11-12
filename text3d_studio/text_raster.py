@@ -10,14 +10,15 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter
 
 from .image_io import qimage_to_rgba
 from .model import TextParams
 
 FONT_PIXEL_SIZE = 384
-MAX_TEXTURE_WIDTH = 8192
+MAX_TEXTURE_WIDTH = 8192  # the mask's limit on both sides; larger text is rasterized at a smaller font size
+MIN_FONT_PIXEL_SIZE = 16
 WALL_STEP = 2  # outline tracing resolution (texels per step); the shadow is blurred, so coarse is fine
 
 
@@ -39,21 +40,20 @@ class GlyphRaster:
 
 
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
-    text = params.content
-    if not text.strip():
+    """Rasterizes every line of the text, stacked downward. Blank lines keep their height; the mask is
+    cropped to the ink, so leading and trailing blank lines don't count."""
+    if not params.content.strip():
         return None
 
     pad = int(math.ceil(params.bevel_width * 3)) + 8
     font_px = FONT_PIXEL_SIZE
-    font = _make_font(params, font_px)
-    bounds = QFontMetricsF(font).boundingRect(text)
-    needed_width = bounds.width() + 2 * pad + font_px * 0.5
-    if needed_width > MAX_TEXTURE_WIDTH:
-        font_px = max(16, int(font_px * MAX_TEXTURE_WIDTH / needed_width))
-        font = _make_font(params, font_px)
-        bounds = QFontMetricsF(font).boundingRect(text)
+    pieces, bounds = _layout(params, font_px)
+    limit = MAX_TEXTURE_WIDTH - 2 * pad
+    while max(bounds.width(), bounds.height()) > limit and font_px > MIN_FONT_PIXEL_SIZE:
+        font_px = max(MIN_FONT_PIXEL_SIZE, int(font_px * limit / max(bounds.width(), bounds.height())))
+        pieces, bounds = _layout(params, font_px)
 
-    alpha = _paint_alpha(text, font, bounds, pad, font_px)
+    alpha = _paint_alpha(pieces, _make_font(params, font_px), bounds, pad)
     cropped = _crop_to_ink(alpha, pad)
     if cropped is None:
         return None
@@ -118,10 +118,28 @@ def _make_font(params: TextParams, pixel_size: int) -> QFont:
     return font
 
 
-def _paint_alpha(text, font, bounds, pad, font_px) -> np.ndarray:
-    slack = int(font_px * 0.25)  # room for italic overhang the bounding rect may miss
-    width = int(math.ceil(bounds.width())) + 2 * (pad + slack)
-    height = int(math.ceil(bounds.height())) + 2 * (pad + slack)
+def _layout(params: TextParams, font_px: int) -> tuple[list[tuple[str, QPointF]], QRectF]:
+    """Places each line's text at its baseline start, in pixels (y down). Returns the pieces and the box their
+    ink can reach (with slack for italic overhang the metrics may miss)."""
+    metrics = QFontMetricsF(_make_font(params, font_px))
+    lines = params.content.split("\n")
+    inks = [metrics.tightBoundingRect(line) if line.strip() else None for line in lines]
+    widest = max(ink.width() for ink in inks if ink is not None)
+    pitch = metrics.lineSpacing()
+    slack = font_px * 0.25
+    pieces, bounds = [], QRectF()
+    for index, (line, ink) in enumerate(zip(lines, inks)):
+        if ink is None:
+            continue
+        start = QPointF((widest - ink.width()) / 2 - ink.left(), index * pitch)
+        pieces.append((line, start))
+        bounds = bounds.united(ink.translated(start).adjusted(-slack, -slack, slack, slack))
+    return pieces, bounds
+
+
+def _paint_alpha(pieces, font, bounds, pad) -> np.ndarray:
+    width = int(math.ceil(bounds.width())) + 2 * pad
+    height = int(math.ceil(bounds.height())) + 2 * pad
     image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
@@ -129,7 +147,9 @@ def _paint_alpha(text, font, bounds, pad, font_px) -> np.ndarray:
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setFont(font)
     painter.setPen(QColor(255, 255, 255))
-    painter.drawText(QPointF(pad + slack - bounds.left(), pad + slack - bounds.top()), text)
+    painter.translate(pad - bounds.left(), pad - bounds.top())
+    for text, start in pieces:
+        painter.drawText(start, text)
     painter.end()
     return qimage_to_rgba(image)[..., 3].astype(np.float32) / 255.0
 

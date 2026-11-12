@@ -101,3 +101,109 @@ def test_covers_follows_the_ink_and_its_holes(qapp):
 @pytest.mark.parametrize("point", [(-10.0, 0.3), (10.0, 0.3), (0.0, -5.0), (0.0, 5.0)])
 def test_covers_is_false_off_the_raster(qapp, point):
     assert not rasterize_text(TextParams(content="H")).covers(*point)
+
+
+# ----- Multi-line text ----------------------------------------------------------------------------------
+
+
+def ink_bands(raster):
+    """The (first, last) row of each horizontal band of ink, top to bottom."""
+    rows = raster.rgba[..., 3].max(axis=1) > 5
+    edges = np.diff(np.concatenate([[0], rows.astype(np.int8), [0]]))
+    return list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1))
+
+
+def ink_columns(raster, band):
+    """The (first, last) column with ink within one band's rows."""
+    cols = np.flatnonzero(raster.rgba[band[0] : band[1] + 1, :, 3].max(axis=0) > 127)
+    return cols[0], cols[-1]
+
+
+def assert_walls_closed(raster):
+    """Every vertex of the traced outline joins an even number of unit wall edges, so no wall is left open."""
+    from collections import Counter
+
+    from text3d_studio.text_raster import WALL_STEP
+
+    height, width = raster.rgba.shape[:2]
+    quads = raster.walls.reshape(-1, 6, 3)
+    assert len(quads) > 0
+    p0, p1 = quads[:, 0, :2], quads[:, 1, :2]
+    to_grid = lambda p: np.rint(np.stack([
+        (p[:, 0] - raster.origin[0]) / raster.size[0] * width,
+        (1 - (p[:, 1] - raster.origin[1]) / raster.size[1]) * height,
+    ], axis=1) / WALL_STEP).astype(int)
+    degree = Counter()
+    for (x0, y0), (x1, y1) in zip(to_grid(p0), to_grid(p1)):
+        steps = max(abs(x1 - x0), abs(y1 - y0))
+        dx, dy = np.sign(x1 - x0), np.sign(y1 - y0)
+        for i in range(steps):
+            degree[(x0 + i * dx, y0 + i * dy)] += 1
+            degree[(x0 + (i + 1) * dx, y0 + (i + 1) * dy)] += 1
+    assert all(count % 2 == 0 for count in degree.values())
+
+
+@pytest.mark.parametrize("lines", [2, 3])
+def test_each_line_is_its_own_band_of_ink(qapp, lines):
+    single = rasterize_text(TextParams(content="HI"))
+    raster = rasterize_text(TextParams(content="\n".join(["HI"] * lines)))
+    assert len(ink_bands(raster)) == lines
+    assert raster.rgba.shape[0] > single.rgba.shape[0] * (lines - 0.5)
+    assert raster.size[1] > single.size[1] * (lines - 0.5)
+    assert_walls_closed(raster)
+
+
+def test_lines_are_one_line_spacing_apart(qapp):
+    raster = rasterize_text(TextParams(content="HI\nHI"))
+    first, second = ink_bands(raster)
+    em_rows = raster.rgba.shape[0] / raster.size[1]  # pixels per em
+    assert (second[0] - first[0]) / em_rows == pytest.approx(1.0, abs=0.02)  # Helvetica's line spacing is 1 em
+
+
+def test_blank_line_keeps_its_height(qapp):
+    tight = ink_bands(rasterize_text(TextParams(content="HI\nHI")))
+    spaced_raster = rasterize_text(TextParams(content="HI\n\nHI"))
+    spaced = ink_bands(spaced_raster)
+    em_rows = spaced_raster.rgba.shape[0] / spaced_raster.size[1]
+    assert len(spaced) == 2
+    assert ((spaced[1][0] - spaced[0][0]) - (tight[1][0] - tight[0][0])) / em_rows == pytest.approx(1.0, abs=0.02)
+
+
+@pytest.mark.parametrize("content", ["HI\n", "HI\n\n", "\nHI", "\n\nHI\n"])
+def test_leading_and_trailing_newlines_change_nothing(qapp, content):
+    plain = rasterize_text(TextParams(content="HI"))
+    raster = rasterize_text(TextParams(content=content))
+    assert np.array_equal(raster.rgba, plain.rgba)
+    assert raster.origin == plain.origin and raster.size == plain.size
+
+
+@pytest.mark.parametrize("content", ["\n", "\n\n", " \n \t\n"])
+def test_text_of_only_blank_lines_returns_none(qapp, content):
+    assert rasterize_text(TextParams(content=content)) is None
+
+
+def test_ink_bottom_of_the_last_line_sits_on_local_ground(qapp):
+    raster = rasterize_text(TextParams(content="HI\nHH"))
+    last = ink_bands(raster)[-1]
+    height = raster.rgba.shape[0]
+    bottom_local = raster.origin[1] + (1 - (last[1] + 1) / height) * raster.size[1]
+    assert bottom_local == pytest.approx(0.0, abs=2 / height * raster.size[1])
+
+
+def test_many_lines_are_clamped_to_the_texture_limit(qapp):
+    raster = rasterize_text(TextParams(content="\n".join(["HI"] * 40)))
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+    assert len(ink_bands(raster)) == 40
+
+
+def test_covers_hits_the_second_line(qapp):
+    raster = rasterize_text(TextParams(content="I\nOOOO"))
+    first, second = ink_bands(raster)
+    row = (second[0] + second[1]) // 2
+    col = int(np.flatnonzero(raster.rgba[row, :, 3] == 255)[0]) + 2
+    height, width = raster.rgba.shape[:2]
+    x = raster.origin[0] + (col + 0.5) / width * raster.size[0]
+    y = raster.origin[1] + (1 - (row + 0.5) / height) * raster.size[1]
+    assert raster.covers(x, y)
+    gap_row = (first[1] + second[0]) // 2
+    assert not raster.covers(x, raster.origin[1] + (1 - (gap_row + 0.5) / height) * raster.size[1])

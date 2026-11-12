@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLineEdit,
     QListWidget,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -111,6 +111,8 @@ MATERIAL_LABELS = {
     "wood": {"face_color": "Light wood", "secondary_color": "Dark wood", "texture_scale": "Ring spacing",
              "texture_strength": "Grain contrast"},
 }
+
+TEXT_EDITOR_LINES = 3  # visible lines in the Text field; more scroll
 
 GROUP_TITLES = [
     ("text", "Text"),
@@ -264,6 +266,7 @@ class ControlPanel(QScrollArea):
         self.setWidgetResizable(True)
         self.setMinimumWidth(340)
 
+        self.wheel_guard = WheelGuard(self)
         content = QWidget()
         column = QVBoxLayout(content)
         self._add_object_list(column)
@@ -286,7 +289,6 @@ class ControlPanel(QScrollArea):
             column.addWidget(group)
         column.addStretch(1)
         self.setWidget(content)
-        self.wheel_guard = WheelGuard(self)
         for control in content.findChildren((QSlider, QAbstractSpinBox, QComboBox)):
             control.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # focus by click or Tab, never by wheel
             control.installEventFilter(self.wheel_guard)
@@ -354,15 +356,21 @@ class ControlPanel(QScrollArea):
         signal.connect(lambda value: self.vm.set(section, field, value))
 
     def _add_text_inputs(self, form: QFormLayout) -> None:
-        edit = QLineEdit()
+        edit = QPlainTextEdit()
         edit.setObjectName("text.content")
+        edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)  # only typed newlines break the 3D text's lines
+        edit.setTabChangesFocus(True)
+        edit.setFixedHeight(round(edit.fontMetrics().lineSpacing() * TEXT_EDITOR_LINES) + 12)
+        edit.viewport().installEventFilter(self.wheel_guard)
 
         def set_text(value: str) -> None:
             # Only push text back when it differs, so refreshes don't move the cursor while typing.
-            if edit.text() != value:
-                _set_quietly(edit, edit.setText, value)
+            if edit.toPlainText() != value:
+                _set_quietly(edit, edit.setPlainText, value)
 
-        self._bind("text", "content", set_text, edit.textChanged)
+        set_text(self.vm.get("text", "content"))
+        self._setters[("text", "content")] = set_text
+        edit.textChanged.connect(lambda: self.vm.set("text", "content", edit.toPlainText()))
         form.addRow("Text", edit)
 
         fonts = QFontComboBox()
@@ -435,7 +443,9 @@ class ControlPanel(QScrollArea):
 
 
 def _object_label(content: str) -> str:
-    return content if content.strip() else "(empty)"
+    """The object's first line of text (leading blank lines skipped)."""
+    lines = [line for line in content.split("\n") if line.strip()]
+    return lines[0] if lines else "(empty)"
 
 
 def _set_quietly(widget: QWidget, setter, value) -> None:

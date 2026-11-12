@@ -5,7 +5,7 @@ import os
 import numpy as np
 import pytest
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent, QTextCursor
 from PyQt6.QtWidgets import QMessageBox
 
 from text3d_studio import ground as ground_model
@@ -683,15 +683,15 @@ def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, q
 
 def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QLineEdit
+    from PyQt6.QtWidgets import QPlainTextEdit
 
     window.show()
-    edit = window.panel.findChild(QLineEdit)
+    edit = window.panel.findChild(QPlainTextEdit, "text.content")
     edit.setFocus()
-    edit.end(False)
+    edit.moveCursor(QTextCursor.MoveOperation.End)
     qapp.processEvents()
     QTest.keyClick(edit, Qt.Key.Key_G)
-    assert edit.text() == "HELLOg"
+    assert edit.toPlainText() == "HELLOg"
     assert not window.vm.scene.grid.visible
 
 
@@ -1440,7 +1440,7 @@ def test_add_duplicate_and_delete_buttons_edit_the_objects(vm):
 
 
 def test_choosing_a_row_selects_the_object_and_refreshes_every_control(vm):
-    from PyQt6.QtWidgets import QLineEdit
+    from PyQt6.QtWidgets import QPlainTextEdit
 
     from text3d_studio.views.control_panel import ControlPanel, SliderRow
 
@@ -1449,11 +1449,11 @@ def test_choosing_a_row_selects_the_object_and_refreshes_every_control(vm):
     vm.set("text", "content", "WOOD")
     vm.set("transform", "depth", 1.5)
     vm.apply_material("wood")
-    text = panel.findChild(QLineEdit, "text.content")
-    assert (text.text(), material_combo(panel).currentData()) == ("WOOD", "wood")
+    text = panel.findChild(QPlainTextEdit, "text.content")
+    assert (text.toPlainText(), material_combo(panel).currentData()) == ("WOOD", "wood")
     panel.object_list.setCurrentRow(0)
     assert vm.selected == 0
-    assert text.text() == "HELLO"
+    assert text.toPlainText() == "HELLO"
     assert panel.findChild(SliderRow, "transform.depth").spin.value() == 0.35
     assert material_combo(panel).currentData() == "metal"
     assert not material_row_visible(panel, "grain_angle") and material_row_visible(panel, "side_color")
@@ -1473,13 +1473,13 @@ def test_controls_edit_the_object_chosen_in_the_list(vm):
 
 
 def test_typing_renames_the_selected_row(vm):
-    from PyQt6.QtWidgets import QLineEdit
+    from PyQt6.QtWidgets import QPlainTextEdit
 
     from text3d_studio.views.control_panel import ControlPanel
 
     panel = ControlPanel(vm)
     vm.add_object()
-    panel.findChild(QLineEdit, "text.content").setText("SIGN")
+    panel.findChild(QPlainTextEdit, "text.content").setPlainText("SIGN")
     assert object_rows(panel) == ["HELLO", "SIGN"]
     vm.set("text", "content", "   ")
     assert object_rows(panel) == ["HELLO", "(empty)"]
@@ -1706,7 +1706,7 @@ def test_undo_and_redo_actions_follow_the_history(window):
 
 
 def test_undo_refreshes_the_panel_list_and_grid_action(window):
-    from PyQt6.QtWidgets import QLineEdit
+    from PyQt6.QtWidgets import QPlainTextEdit
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -1720,7 +1720,7 @@ def test_undo_refreshes_the_panel_list_and_grid_action(window):
         vm.undo()
     assert object_rows(panel) == ["HELLO"]
     assert panel.findChild(SliderRow, "transform.size").spin.value() == 3.0
-    assert panel.findChild(QLineEdit, "text.content").text() == "HELLO"
+    assert panel.findChild(QPlainTextEdit, "text.content").toPlainText() == "HELLO"
     assert material_combo(panel).currentData() == "metal"
     assert not window.grid_action.isChecked()
     for _ in range(5):
@@ -1798,17 +1798,128 @@ def test_cmd_z_in_the_font_field_undoes_the_scene(window, qapp):
 
 def test_cmd_z_in_the_text_field_undoes_typing_not_the_scene(window, qapp):
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QLineEdit
+    from PyQt6.QtWidgets import QPlainTextEdit
 
     activate(window, qapp)
     window.vm.set("light", "azimuth", 10.0)
-    edit = window.panel.findChild(QLineEdit, "text.content")
+    edit = window.panel.findChild(QPlainTextEdit, "text.content")
     edit.setFocus()
-    edit.end(False)
+    edit.moveCursor(QTextCursor.MoveOperation.End)
     qapp.processEvents()
     QTest.keyClicks(edit, "XY")
     assert window.vm.scene.objects[0].text.content == "HELLOXY"
     press_undo(edit)
-    assert edit.text() == "HELLO"  # QLineEdit's own undo took the whole typed run back
+    assert edit.toPlainText() == "HELLO"  # the field's own undo took the whole typed run back
     assert window.vm.scene.objects[0].text.content == "HELLO"
     assert window.vm.scene.light.azimuth == 10.0  # the scene's undo didn't run
+
+
+# ----- Text layout ------------------------------------------------------------------------------------
+
+
+def text_field(panel):
+    from PyQt6.QtWidgets import QPlainTextEdit
+
+    return panel.findChild(QPlainTextEdit, "text.content")
+
+
+def test_text_field_round_trips_text_with_newlines(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.set("text", "content", "OPEN\nLATE\n")
+    assert text_field(panel).toPlainText() == "OPEN\nLATE\n"
+    text_field(panel).setPlainText("A\n\nB")
+    assert vm.scene.objects[0].text.content == "A\n\nB"
+
+
+def test_return_in_the_text_field_starts_a_new_line(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    activate(window, qapp)
+    edit = text_field(window.panel)
+    edit.setFocus()
+    edit.moveCursor(QTextCursor.MoveOperation.End)
+    qapp.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_Return)
+    QTest.keyClicks(edit, "WORLD")
+    assert window.vm.scene.objects[0].text.content == "HELLO\nWORLD"
+    assert object_rows(window.panel) == ["HELLO"]
+
+
+def test_tab_in_the_text_field_moves_focus_instead_of_typing(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    activate(window, qapp)
+    edit = text_field(window.panel)
+    edit.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_Tab)
+    assert window.vm.scene.objects[0].text.content == "HELLO"
+    assert not edit.hasFocus()
+
+
+def test_typing_lines_is_one_undo_step_per_burst(qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    now = [0.0]
+    vm = SceneViewModel(Document(), clock=lambda: now[0])
+    panel = ControlPanel(vm)
+    edit = text_field(panel)
+    edit.moveCursor(QTextCursor.MoveOperation.End)
+    for key in (Qt.Key.Key_Return, Qt.Key.Key_A, Qt.Key.Key_Return, Qt.Key.Key_B):
+        QTest.keyClick(edit, key)
+        now[0] += 0.1
+    assert vm.scene.objects[0].text.content == "HELLO\na\nb"
+    vm.undo()
+    assert vm.scene.objects[0].text.content == "HELLO"
+    assert edit.toPlainText() == "HELLO"
+    assert not vm.can_undo
+
+
+def test_cmd_z_in_the_text_field_undoes_a_typed_newline(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    edit = text_field(window.panel)
+    edit.setFocus()
+    edit.moveCursor(QTextCursor.MoveOperation.End)
+    qapp.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_Return)
+    QTest.keyClicks(edit, "X")
+    press_undo(edit)  # the field's own undo steps back the typed line, then the line break
+    assert window.vm.scene.objects[0].text.content == "HELLO\n"
+    press_undo(edit)
+    assert window.vm.scene.objects[0].text.content == "HELLO"
+    assert window.vm.scene.light.azimuth == 10.0
+
+
+@pytest.mark.parametrize(("content", "label"), [
+    ("OPEN\nLATE", "OPEN"),
+    ("\n  \nSALE\nNOW", "SALE"),
+    ("\n\n", "(empty)"),
+])
+def test_objects_list_shows_the_first_line(vm, content, label):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.set("text", "content", content)
+    assert object_rows(panel) == [label]
+    vm.add_object()
+    vm.undo()
+    assert object_rows(panel) == [label]
+
+
+def test_wheel_over_the_unfocused_text_field_scrolls_the_panel(window, qapp):
+    panel = scrollable_panel(window, qapp)
+    window.vm.set("text", "content", "\n".join("ABCDEFGH"))  # more lines than the field shows
+    edit = text_field(panel)
+    window.canvas.setFocus()
+    qapp.processEvents()
+    panel.verticalScrollBar().setValue(0)
+    wheel_over(edit.viewport())
+    assert panel.verticalScrollBar().value() > 0
+    assert edit.verticalScrollBar().value() == 0
