@@ -481,3 +481,13 @@ def test_missing_recent_project_is_removed_with_message(window, tmp_path, monkey
     recent_entries(window)[0].trigger()
     assert len(shown) == 1 and missing in shown[0][2]
     assert preferences.recent_files() == []
+
+
+def test_opening_a_project_disables_undo(window, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    window.vm.set("camera", "fov", 21.0)
+    assert window.undo_action.isEnabled()
+    window.open_project_path(path)
+    assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+    window.undo_action.trigger()
+    assert window.vm.scene.camera.fov != 21.0

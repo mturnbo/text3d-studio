@@ -473,6 +473,25 @@ def test_load_document_clears_dirty_before_document_loaded(vm):
     assert seen == [False]
 
 
+def test_loading_a_document_cannot_be_undone(qapp):
+    vm = SceneViewModel(Document())
+    vm.set("light", "azimuth", 1.0)
+    assert vm.can_undo
+    history = record(vm.history_changed)
+    vm.load_document(loaded_document())
+    assert not vm.can_undo and not vm.can_redo
+    assert history
+    assert vm.undo() is False
+    assert vm.scene.light.azimuth == 100.0
+
+
+def test_undo_after_saving_marks_the_document_dirty_again(vm):
+    vm.set("light", "azimuth", 1.0)
+    vm.mark_saved()
+    vm.undo()
+    assert vm.dirty  # dirty isn't tied to the history: undoing back to the saved state still counts as a change
+
+
 # ----- Undo / redo ------------------------------------------------------------------------------
 
 

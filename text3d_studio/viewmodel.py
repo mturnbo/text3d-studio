@@ -251,8 +251,8 @@ class SceneViewModel(QObject):
     def load_document(self, document: Document) -> None:
         """Replaces the document wholesale (opening a project), refreshes every view and leaves it clean.
 
-        Selection resets to the first object. Listeners that keep per-document state (such as edit history)
-        reset it on `document_loaded`, emitted last.
+        Selection resets to the first object and the undo history is cleared. Other listeners that keep
+        per-document state reset it on `document_loaded`, emitted last.
         """
         self.document = document
         self.selected = 0
@@ -263,6 +263,7 @@ class SceneViewModel(QObject):
         for section in SHARED_SECTIONS:
             for f in dataclasses.fields(getattr(self.scene, section)):
                 self.scene_changed.emit(section, f.name)
+        self.clear_history()  # opening a project can't be undone
         self._set_dirty(False)
         self.document_loaded.emit()
 
