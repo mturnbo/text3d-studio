@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
 
+from .. import project_io
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
@@ -29,7 +30,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.vm = viewmodel
         self.preferences = preferences
-        self.setWindowTitle("Text3D Studio")
+        self.project_path: str | None = None  # the open project file, or None for an unsaved scene
+        self.project_embeds_photo = False  # Save Project keeps the photo embedded when the project was saved that way
         self.resize(1440, 900)
 
         self.canvas = ImageCanvas(viewmodel)
@@ -55,6 +57,9 @@ class MainWindow(QMainWindow):
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
         self._build_actions()
+        self._build_project_actions()
+        self.vm.dirty_changed.connect(self.setWindowModified)
+        self._update_title()
 
     def _build_actions(self) -> None:
         # Wrapped in a lambda: QAction.triggered passes a `checked` bool the handler must not receive.
@@ -64,7 +69,7 @@ class MainWindow(QMainWindow):
         self.export_action = self._make_action("&Export…", QKeySequence("Ctrl+E"), self.export_image)
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
-        file_menu = self.menuBar().addMenu("&File")
+        file_menu = self.file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
         self.recent_menu = file_menu.addMenu("Open &Recent")
         file_menu.addAction(self.export_action)
@@ -109,6 +114,99 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         for action in self.tool_actions.values():
             self.toolbar.addAction(action)
+
+    def _build_project_actions(self) -> None:
+        self.open_project_action = self._make_action(
+            "Open &Project…", QKeySequence("Ctrl+Shift+O"), lambda: self.open_project_dialog()
+        )
+        self.save_project_action = self._make_action(
+            "&Save Project", QKeySequence.StandardKey.Save, lambda: self.save_project()
+        )
+        self.save_project_as_action = self._make_action(
+            "Save Project &As…", QKeySequence("Ctrl+Shift+S"), lambda: self.save_project_as()
+        )
+        self.save_project_with_photo_action = self._make_action(
+            "Save Project &With Photo…", QKeySequence(), lambda: self.save_project_as(embed_photo=True)
+        )
+        self.save_project_with_photo_action.setStatusTip("Save a copy of the photo inside the project file")
+        before = self.export_action
+        self.file_menu.insertAction(before, self.open_project_action)
+        self.file_menu.insertSeparator(before)
+        for action in (self.save_project_action, self.save_project_as_action, self.save_project_with_photo_action):
+            self.file_menu.insertAction(before, action)
+        self.file_menu.insertSeparator(before)
+
+    def open_project_dialog(self) -> None:
+        start_dir = self.preferences.last_directory()
+        path, _ = QFileDialog.getOpenFileName(self, "Open project", start_dir, project_io.PROJECT_FILTER)
+        if path:
+            self.open_project_path(path)
+
+    def open_project_path(self, path: str) -> None:
+        try:
+            loaded = project_io.load_project(path)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Could not open project", str(exc))
+            return
+        self.vm.load_document(loaded.document)
+        self.project_path = path
+        self.project_embeds_photo = loaded.photo_embedded
+        self._remember_file(path)
+        self.canvas.empty_state.show_missing_photo(loaded.missing_photo)
+        self._update_title()
+        if loaded.warnings:
+            self.statusBar().showMessage(" · ".join(loaded.warnings))
+        else:
+            self.statusBar().showMessage(f"Opened {os.path.basename(path)}", 8000)
+
+    def save_project(self) -> bool:
+        """Saves to the open project file, or asks for one. Returns False when cancelled or failed."""
+        if self.project_path is None:
+            return self.save_project_as()
+        return self._write_project(self.project_path, self.project_embeds_photo)
+
+    def save_project_as(self, embed_photo: bool = False) -> bool:
+        path, _ = QFileDialog.getSaveFileName(self, "Save project", self._suggested_project_path(),
+                                              project_io.PROJECT_FILTER)
+        if not path:
+            return False
+        if not os.path.splitext(path)[1]:
+            path += project_io.PROJECT_EXTENSION
+        return self._write_project(path, embed_photo)
+
+    def _suggested_project_path(self) -> str:
+        if self.project_path:
+            return self.project_path
+        photo = self.vm.document.background_path
+        if photo:
+            return os.path.splitext(photo)[0] + project_io.PROJECT_EXTENSION
+        return os.path.join(self.preferences.last_directory(), "Untitled" + project_io.PROJECT_EXTENSION)
+
+    def _write_project(self, path: str, embed_photo: bool) -> bool:
+        document = self.vm.document
+        try:
+            project_io.save_project(path, document, embed_photo=embed_photo)
+        except (ValueError, OSError) as exc:
+            QMessageBox.critical(self, "Could not save project", str(exc))
+            return False
+        self.project_path = path
+        self.project_embeds_photo = embed_photo or (document.background is not None and document.background_path is None)
+        self.vm.mark_saved()
+        self._remember_file(path)
+        self._update_title()
+        self.statusBar().showMessage(f"Saved {os.path.basename(path)}", 8000)
+        return True
+
+    def _remember_file(self, path: str) -> None:
+        self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
+        self.preferences.add_recent_file(path)
+        self._rebuild_recent_menu()
+
+    def _update_title(self) -> None:
+        """The project's name, else the photo's; "[*]" is where Qt shows the unsaved-changes marker."""
+        name = self.project_path or self.vm.document.background_path
+        self.setWindowTitle(f"Text3D Studio — {os.path.basename(name)}[*]" if name else "Text3D Studio[*]")
+        self.setWindowModified(self.vm.dirty)
 
     def _on_tool_changed(self, tool: str) -> None:
         self.tool_actions[tool].setChecked(True)
@@ -177,7 +275,7 @@ class MainWindow(QMainWindow):
         self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
         self.preferences.add_recent_file(path)
         self._rebuild_recent_menu()
-        self.setWindowTitle(f"Text3D Studio — {os.path.basename(path)}")
+        self._update_title()
         self.statusBar().showMessage(self._load_message(path, previous_size if had_background else None), 8000)
 
     def _load_message(self, path: str, previous_size: tuple[int, int] | None) -> str:
