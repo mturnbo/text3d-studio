@@ -625,6 +625,7 @@ def activate(window, qapp):
     from PyQt6.QtWidgets import QApplication
 
     window.show()
+    qapp.processEvents()  # first let the OS's activation events for this and earlier windows arrive
     QApplication.setActiveWindow(window)
     qapp.processEvents()
 
