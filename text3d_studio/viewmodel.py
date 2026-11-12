@@ -11,6 +11,7 @@ from .model import Document
 
 # Fields that change the rasterized glyph mask (expensive, CPU) rather than just uniforms (cheap, GPU).
 RASTER_FIELDS = {"content", "font_family", "bold", "italic", "bevel_width"}
+OBJECT_SECTIONS = ("text", "transform", "material")  # per-object sections; the rest are shared by the scene
 
 
 class SceneViewModel(QObject):
@@ -36,7 +37,7 @@ class SceneViewModel(QObject):
         old_ground = dataclasses.replace(self.scene.ground) if section == "ground" else None
         self._assign(target, section, name, value)
         if old_ground is not None:
-            self._place_text_from(old_ground, dataclasses.replace(self.scene.transform))
+            self._place_text_from(old_ground, dataclasses.replace(self.scene.objects[0].transform))
 
     def set_ground_pose(self, anchor=None, **values) -> None:
         """Sets several ground fields together and re-places the text once, against the final pose.
@@ -47,7 +48,7 @@ class SceneViewModel(QObject):
         strand it for the rest of the drag.
         """
         old_ground = dataclasses.replace(self.scene.ground)
-        base = anchor if anchor is not None else (old_ground, dataclasses.replace(self.scene.transform))
+        base = anchor if anchor is not None else (old_ground, dataclasses.replace(self.scene.objects[0].transform))
         for name, value in values.items():
             target = self._section("ground", name)
             if getattr(target, name) != value:
@@ -87,7 +88,8 @@ class SceneViewModel(QObject):
         self.background_changed.emit()
 
     def _section(self, section: str, name: str):
-        target = getattr(self.document.scene, section, None)
+        owner = self.scene.objects[0] if section in OBJECT_SECTIONS else self.scene
+        target = getattr(owner, section, None)
         if target is None or not dataclasses.is_dataclass(target):
             raise KeyError(f"Unknown scene section: {section!r}")
         if name not in {f.name for f in dataclasses.fields(target)}:

@@ -67,7 +67,7 @@ class Text3DRenderer:
         program = self.beauty
         self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
-        m = scene.material
+        m = scene.objects[0].material
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
@@ -122,7 +122,7 @@ class Text3DRenderer:
     @staticmethod
     def effective_layers(scene: Scene, viewport_height: int) -> int:
         """The user's layer count, raised if needed so slices never separate into visible bands."""
-        t = scene.transform
+        t = scene.objects[0].transform
         if t.depth <= 1e-4:
             return 1
         focal_px = (viewport_height / 2) / math.tan(math.radians(scene.camera.fov) / 2)
@@ -132,11 +132,11 @@ class Text3DRenderer:
 
     @staticmethod
     def _layer_count(scene: Scene) -> int:
-        t = scene.transform
+        t = scene.objects[0].transform
         return max(1, int(t.layers)) if t.depth > 1e-4 else 1
 
     def _bind_common(self, program, scene, proj, flatten_gl, lighting) -> None:
-        t = scene.transform
+        t = scene.objects[0].transform
         model = ground_model.text_model_matrix(scene.ground, t)
         program.use()
         self.mask.bind(0)

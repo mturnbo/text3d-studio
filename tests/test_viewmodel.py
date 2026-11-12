@@ -27,7 +27,7 @@ def test_set_updates_model_and_emits_scene_changed(vm):
 
 def test_setting_same_value_emits_nothing(vm):
     events = record(vm.scene_changed)
-    vm.set("transform", "x", vm.scene.transform.x)
+    vm.set("transform", "x", vm.scene.objects[0].transform.x)
     assert events == []
 
 
@@ -42,7 +42,7 @@ def test_raster_fields_emit_text_changed_but_transform_does_not(vm):
 def test_nudge_adds_delta(vm):
     vm.set("transform", "rot_y", 10.0)
     vm.nudge("transform", "rot_y", -2.5)
-    assert vm.scene.transform.rot_y == 7.5
+    assert vm.scene.objects[0].transform.rot_y == 7.5
 
 
 @pytest.mark.parametrize("section, field", [("nope", "x"), ("transform", "nope"), ("background", "x")])
@@ -63,6 +63,27 @@ def test_default_native_size_without_background():
     assert Document().native_size == (1600, 1000)
 
 
+def test_default_scene_holds_one_default_text_object():
+    from text3d_studio.model import MaterialParams, Scene, TextObject, TextParams, TransformParams
+
+    scene = Scene()
+    assert scene.objects == [TextObject(id=0, text=TextParams(), transform=TransformParams(), material=MaterialParams())]
+    assert not any(hasattr(scene, name) for name in ("text", "transform", "material"))  # they live on objects
+
+
+def test_scenes_and_objects_never_share_mutable_state():
+    from text3d_studio.model import Scene, TextObject
+
+    first, second = Scene(), Scene()
+    first.objects.append(TextObject(id=1))
+    first.objects[0].transform.x = 4.0
+    assert len(second.objects) == 1
+    assert second.objects[0].transform.x == 0.0
+    a, b = TextObject(), TextObject()
+    a.text.content = "A"
+    assert b.text.content == "HELLO"
+
+
 def test_grid_settings_are_editable_and_hidden_by_default(vm):
     events = record(vm.scene_changed)
     assert vm.scene.grid.visible is False
@@ -74,9 +95,9 @@ def test_grid_settings_are_editable_and_hidden_by_default(vm):
 def test_ground_edits_keep_the_text_on_the_same_camera_ray(vm):
     from text3d_studio import ground
 
-    before = ground.text_position(vm.scene.ground, vm.scene.transform)
+    before = ground.text_position(vm.scene.ground, vm.scene.objects[0].transform)
     vm.set("ground", "pitch", 8.0)
-    after = ground.text_position(vm.scene.ground, vm.scene.transform)
+    after = ground.text_position(vm.scene.ground, vm.scene.objects[0].transform)
     np.testing.assert_allclose(after / np.linalg.norm(after), before / np.linalg.norm(before), atol=1e-9)
 
 
@@ -89,9 +110,9 @@ def test_ground_edits_report_the_moved_text_fields(vm):
 
 def test_text_stays_put_when_the_ground_tips_past_it(vm):
     vm.set("transform", "z", -60.0)
-    before = (vm.scene.transform.x, vm.scene.transform.z)
+    before = (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z)
     vm.set("ground", "pitch", -10.0)
-    assert (vm.scene.transform.x, vm.scene.transform.z) == before
+    assert (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z) == before
 
 
 def test_set_ground_pose_reanchors_once_against_the_final_pose(vm):
@@ -99,9 +120,9 @@ def test_set_ground_pose_reanchors_once_against_the_final_pose(vm):
     from text3d_studio.model import GroundParams
 
     old = dataclasses.replace(vm.scene.ground)
-    expected = ground.reanchor_text(old, GroundParams(pitch=9.0, yaw=25.0, roll=-3.0, height=2.2), vm.scene.transform)
+    expected = ground.reanchor_text(old, GroundParams(pitch=9.0, yaw=25.0, roll=-3.0, height=2.2), vm.scene.objects[0].transform)
     vm.set_ground_pose(pitch=9.0, yaw=25.0, roll=-3.0, height=2.2)
-    g, t = vm.scene.ground, vm.scene.transform
+    g, t = vm.scene.ground, vm.scene.objects[0].transform
     assert (g.pitch, g.yaw, g.roll, g.height) == (9.0, 25.0, -3.0, 2.2)
     np.testing.assert_allclose((t.x, t.z, t.rot_y, t.size), expected, atol=1e-12)
 
@@ -119,15 +140,15 @@ def test_set_ground_pose_keeps_text_that_one_by_one_edits_would_lose(qapp):
     # can't be re-placed on that intermediate pose. The final pose (pitch 10, roll 55) reaches it again.
     one_step, one_by_one = start(), start()
     old = dataclasses.replace(one_step.scene.ground)
-    assert ground.reanchor_text(old, dataclasses.replace(old, roll=55.0), one_step.scene.transform) is None
+    assert ground.reanchor_text(old, dataclasses.replace(old, roll=55.0), one_step.scene.objects[0].transform) is None
     one_step.set_ground_pose(roll=55.0, pitch=10.0)
     one_by_one.set("ground", "roll", 55.0)
     one_by_one.set("ground", "pitch", 10.0)
 
-    expected = ground.reanchor_text(old, one_step.scene.ground, start().scene.transform)
-    t = one_step.scene.transform
+    expected = ground.reanchor_text(old, one_step.scene.ground, start().scene.objects[0].transform)
+    t = one_step.scene.objects[0].transform
     np.testing.assert_allclose((t.x, t.z, t.rot_y, t.size), expected, atol=1e-12)
-    u = one_by_one.scene.transform
+    u = one_by_one.scene.objects[0].transform
     assert not np.allclose((u.x, u.z, u.size), (t.x, t.z, t.size))
 
 
@@ -136,7 +157,7 @@ def test_apply_material_loads_the_preset(vm, kind):
     from text3d_studio.materials import PRESETS
 
     vm.apply_material(kind)
-    material = vm.scene.material
+    material = vm.scene.objects[0].material
     assert material.kind == kind
     assert {name: getattr(material, name) for name in PRESETS[kind]} == PRESETS[kind]
 
@@ -145,7 +166,7 @@ def test_apply_material_replaces_adjustments_and_reports_each_field(vm):
     vm.set("material", "roughness", 0.9)
     events = record(vm.scene_changed)
     vm.apply_material("plastic")
-    assert vm.scene.material.roughness == 0.3
+    assert vm.scene.objects[0].material.roughness == 0.3
     assert ("material", "kind") in events and ("material", "roughness") in events
 
 
@@ -155,10 +176,10 @@ def test_reapplying_the_same_material_resets_it(vm):
     vm.apply_material("wood")
     from text3d_studio.materials import PRESETS
 
-    assert vm.scene.material.face_color == PRESETS["wood"]["face_color"]
+    assert vm.scene.objects[0].material.face_color == PRESETS["wood"]["face_color"]
 
 
 def test_unknown_material_is_rejected(vm):
     with pytest.raises(ValueError):
         vm.apply_material("cheese")
-    assert vm.scene.material.kind == "metal"
+    assert vm.scene.objects[0].material.kind == "metal"

@@ -49,7 +49,7 @@ class GridRenderer:
         GL.glDisable(GL.GL_BLEND)
 
     def _draw_grid(self, scene: Scene, raster: GlyphRaster | None, proj: np.ndarray, pixel_ratio: float) -> None:
-        g, t, grid = scene.ground, scene.transform, scene.grid
+        g, t, grid = scene.ground, scene.objects[0].transform, scene.grid
         ground_to_camera = math3d.translation(*ground_model.ground_origin(g)) @ ground_model.ground_rotation(g)
         program = self.grid
         program.use()
@@ -70,7 +70,7 @@ class GridRenderer:
 
     def _draw_horizon(self, scene: Scene, viewport, pixel_ratio: float) -> None:
         x, y, width, height = viewport
-        g, t = scene.ground, scene.transform
+        g, t = scene.ground, scene.objects[0].transform
         text_axes = ground_model.ground_rotation(g)[:3, :3] @ math3d.rotation_y(t.rot_y)[:3, :3]
         program = self.horizon
         program.use()

@@ -78,7 +78,7 @@ class Compositor:
 
         if self.text.has_text:
             backdrop = None
-            if scene.material.kind in TRANSMISSION:
+            if scene.objects[0].material.kind in TRANSMISSION:
                 self._capture_backdrop(target_fbo, viewport)
                 backdrop = self.backdrop.texture
             GL.glDisable(GL.GL_SCISSOR_TEST)

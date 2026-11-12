@@ -78,6 +78,6 @@ class ShadowRenderer:
 def shadow_color(scene: Scene) -> tuple[float, float, float]:
     """The shadow's color at full strength. Light passing through a transmissive material lightens the
     shadow and takes on the material's tint."""
-    transmission = TRANSMISSION.get(scene.material.kind, 0.0)
-    tint = scene.material.face_color
+    transmission = TRANSMISSION.get(scene.objects[0].material.kind, 0.0)
+    tint = scene.objects[0].material.face_color
     return tuple(s * (1 - transmission) + t * transmission for s, t in zip(scene.shadow.color, tint))

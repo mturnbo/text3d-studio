@@ -27,14 +27,15 @@ def make_document(width=640, height=400, **scene_overrides) -> Document:
     background[..., 3] = 255
     doc.background = background
     for section, values in scene_overrides.items():
+        owner = doc.scene.objects[0] if section in ("text", "transform", "material") else doc.scene
         for name, value in values.items():
-            setattr(getattr(doc.scene, section), name, value)
+            setattr(getattr(owner, section), name, value)
     return doc
 
 
 def render(compositor, doc):
     compositor.set_background(doc.background)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    compositor.set_glyph(rasterize_text(doc.scene.objects[0].text))
     return render_document(compositor, doc)
 
 
@@ -90,7 +91,7 @@ def test_lighting_azimuth_changes_text_shading(compositor):
 def test_render_without_background_uses_default_canvas(compositor):
     doc = Document()
     compositor.set_background(None)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    compositor.set_glyph(rasterize_text(doc.scene.objects[0].text))
     assert render_document(compositor, doc).shape == (1000, 1600, 4)
 
 
@@ -107,7 +108,7 @@ def test_interactive_frame_rate_exceeds_30_fps(compositor, gl_context):
 
     doc = make_document(width=1600, height=1000)
     compositor.set_background(doc.background)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    compositor.set_glyph(rasterize_text(doc.scene.objects[0].text))
     target = RenderTarget(1600, 1000, samples=4)
     try:
         compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
@@ -115,7 +116,7 @@ def test_interactive_frame_rate_exceeds_30_fps(compositor, gl_context):
         frames = 30
         start = time.perf_counter()
         for i in range(frames):
-            doc.scene.transform.rot_y = -40 + i  # simulate a slider drag
+            doc.scene.objects[0].transform.rot_y = -40 + i  # simulate a slider drag
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         fps = frames / (time.perf_counter() - start)
@@ -128,14 +129,14 @@ def test_layer_count_auto_increases_when_extrusion_spans_many_pixels():
     from text3d_studio.render.text3d_renderer import MAX_LAYERS, Text3DRenderer
 
     doc = make_document()
-    doc.scene.transform.layers = 8
-    doc.scene.transform.depth = 0.5
+    doc.scene.objects[0].transform.layers = 8
+    doc.scene.objects[0].transform.depth = 0.5
     assert Text3DRenderer.effective_layers(doc.scene, 4000) > 8
-    doc.scene.transform.z = -1000
+    doc.scene.objects[0].transform.z = -1000
     assert Text3DRenderer.effective_layers(doc.scene, 400) == 8  # far away: user count suffices
-    doc.scene.transform.z = -0.01
+    doc.scene.objects[0].transform.z = -0.01
     assert Text3DRenderer.effective_layers(doc.scene, 4000) == MAX_LAYERS
-    doc.scene.transform.depth = 0.0
+    doc.scene.objects[0].transform.depth = 0.0
     assert Text3DRenderer.effective_layers(doc.scene, 4000) == 1
 
 
@@ -150,7 +151,7 @@ def render_preview(compositor, doc, with_grid):
     from text3d_studio.render.grid_renderer import GridRenderer
 
     height, width = doc.background.shape[:2]
-    raster = rasterize_text(doc.scene.text)
+    raster = rasterize_text(doc.scene.objects[0].text)
     compositor.set_background(doc.background)
     compositor.set_glyph(raster)
     target = RenderTarget(width, height, 0)
@@ -232,7 +233,7 @@ def test_preview_with_grid_still_exceeds_30_fps(compositor):
 
     doc = grid_document(ground={"pitch": 8.0})
     doc.background = make_document(width=1600, height=1000).background
-    raster = rasterize_text(doc.scene.text)
+    raster = rasterize_text(doc.scene.objects[0].text)
     compositor.set_background(doc.background)
     compositor.set_glyph(raster)
     target, grid = RenderTarget(1600, 1000, samples=4), GridRenderer(compositor.quad)
@@ -240,7 +241,7 @@ def test_preview_with_grid_still_exceeds_30_fps(compositor):
         GL.glFinish()
         start = time.perf_counter()
         for i in range(30):
-            doc.scene.transform.rot_y = -40 + i
+            doc.scene.objects[0].transform.rot_y = -40 + i
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
             grid.render(doc.scene, raster, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
@@ -354,7 +355,7 @@ def test_neutral_materials_stay_neutral_at_grazing_angles(compositor, kind):
     doc = material_document(background_rgb=(128, 128, 128), **{**PRESETS[kind], "face_color": neutral, "side_color": neutral})
     doc.scene.light.color = (1.0, 1.0, 1.0)
     doc.scene.light.ambient_color = (1.0, 1.0, 1.0)
-    doc.scene.transform.rot_y = -60  # plenty of grazing side walls
+    doc.scene.objects[0].transform.rot_y = -60  # plenty of grazing side walls
     pixels = text_pixels(compositor, doc)
     saturation = (pixels.max(-1) - pixels.min(-1)) / np.maximum(pixels.max(-1), 1)
     assert saturation.max() < 0.2
@@ -406,14 +407,14 @@ def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
     doc = make_document(width=1600, height=1000, material={**PRESETS[kind], "kind": kind},
                         transform={"size": 6.0, "depth": 1.2, "z": -10.0})
     compositor.set_background(doc.background)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    compositor.set_glyph(rasterize_text(doc.scene.objects[0].text))
     target = RenderTarget(1600, 1000, samples=4)
     try:
         compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         start = time.perf_counter()
         for i in range(20):
-            doc.scene.transform.rot_y = -40 + i
+            doc.scene.objects[0].transform.rot_y = -40 + i
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         fps = 20 / (time.perf_counter() - start)
@@ -430,8 +431,8 @@ def textured_document(kind, **material):
     from text3d_studio.materials import PRESETS
 
     doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
-    doc.scene.transform.rot_y = 0.0  # face the camera so the face fills most of the text
-    doc.scene.transform.size = 4.0
+    doc.scene.objects[0].transform.rot_y = 0.0  # face the camera so the face fills most of the text
+    doc.scene.objects[0].transform.size = 4.0
     doc.scene.light.reflect_photo = False
     return doc
 
@@ -517,8 +518,8 @@ def glass_document(kind="glass", background=None, **material):
     from text3d_studio.materials import PRESETS
 
     doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
-    doc.scene.transform.rot_y = 0.0
-    doc.scene.transform.size = 4.0
+    doc.scene.objects[0].transform.rot_y = 0.0
+    doc.scene.objects[0].transform.size = 4.0
     doc.scene.light.reflect_photo = False  # opaque materials then ignore the photo entirely
     if background is not None:
         doc.background = background
