@@ -183,3 +183,134 @@ def test_unknown_material_is_rejected(vm):
     with pytest.raises(ValueError):
         vm.apply_material("cheese")
     assert vm.scene.objects[0].material.kind == "metal"
+
+
+# ----- Multiple text objects ----------------------------------------------------------------------
+
+
+def test_text_transform_and_material_edits_address_only_the_selected_object(vm):
+    vm.add_object()
+    assert vm.selected == 1
+    vm.set("text", "content", "SECOND")
+    vm.set("transform", "rot_y", 33.0)
+    vm.apply_material("wood")
+    first, second = vm.scene.objects
+    assert (second.text.content, second.transform.rot_y, second.material.kind) == ("SECOND", 33.0, "wood")
+    assert (first.text.content, first.transform.rot_y, first.material.kind) == ("HELLO", -20.0, "metal")
+    vm.select(0)
+    assert vm.get("text", "content") == "HELLO"
+    vm.nudge("transform", "rot_y", 5.0)
+    assert (first.transform.rot_y, second.transform.rot_y) == (-15.0, 33.0)
+
+
+def test_shared_sections_are_the_same_whichever_object_is_selected(vm):
+    vm.add_object()
+    vm.set("light", "azimuth", 77.0)
+    vm.select(0)
+    assert vm.get("light", "azimuth") == 77.0
+
+
+def test_add_object_appends_a_default_object_in_front_of_the_selected_one_and_selects_it(vm):
+    from text3d_studio import ground
+    from text3d_studio.model import MaterialParams, TextParams
+
+    objects, selections = record(vm.objects_changed), record(vm.selection_changed)
+    vm.set("text", "content", "FIRST")
+    vm.apply_material("glass")
+    vm.add_object()
+    first, new = vm.scene.objects
+    assert (new.text, new.material) == (TextParams(), MaterialParams())  # a default object, not a copy
+    assert new.id != first.id
+    assert (len(objects), selections) == (1, [(1,)])
+    assert new.transform == ground.placement_in_front(vm.scene.ground, first.transform)
+
+
+def test_duplicate_copies_the_selected_object_with_a_new_id(vm):
+    from text3d_studio import ground
+
+    vm.set("text", "content", "COPY ME")
+    vm.set("transform", "depth", 0.9)
+    vm.apply_material("stone")
+    vm.set("material", "roughness", 0.123)
+    vm.duplicate_object()
+    source, copy = vm.scene.objects
+    assert vm.selected == 1
+    assert copy.id != source.id
+    assert copy.text == source.text and copy.material == source.material
+    assert copy.transform == ground.placement_in_front(vm.scene.ground, source.transform)
+    assert copy.transform.depth == 0.9
+    vm.set("text", "content", "CHANGED")  # a copy, not shared sections
+    vm.set("material", "roughness", 0.9)
+    assert (source.text.content, source.material.roughness) == ("COPY ME", 0.123)
+
+
+def test_a_new_object_shows_below_the_one_it_was_placed_in_front_of(vm):
+    """The camera's ray to the original's base passes above the new object's top, so they can't overlap."""
+    from text3d_studio import ground
+
+    for pitch, size in ((0.0, 3.0), (20.0, 8.0), (-5.0, 0.5)):
+        vm.set("ground", "pitch", pitch)
+        vm.set("transform", "size", size)
+        old = vm.selected_object.transform
+        new = ground.placement_in_front(vm.scene.ground, old)
+        up = ground.ground_up(vm.scene.ground)
+        old_base = ground.text_position(vm.scene.ground, old)
+        new_top = ground.text_position(vm.scene.ground, new) + up * new.size * ground.INK_HEIGHT_EM
+        # The new top sits below the plane through the camera, the original's base and the ground's x axis.
+        normal = np.cross(old_base, ground.ground_rotation(vm.scene.ground)[:3, 0])
+        normal *= np.sign(normal @ up)
+        assert new_top @ normal < 0
+        assert new.size < old.size and np.linalg.norm(ground.text_position(vm.scene.ground, new)) < np.linalg.norm(old_base)
+
+
+def test_delete_refuses_to_remove_the_last_object(vm):
+    objects, selections = record(vm.objects_changed), record(vm.selection_changed)
+    assert vm.delete_object() is False
+    assert len(vm.scene.objects) == 1
+    assert (objects, selections) == ([], [])
+
+
+def test_delete_removes_the_selected_object_and_clamps_the_selection(vm):
+    vm.add_object()
+    vm.add_object()
+    ids = [o.id for o in vm.scene.objects]
+    objects, selections = record(vm.objects_changed), record(vm.selection_changed)
+    assert vm.selected == 2
+    assert vm.delete_object() is True
+    assert [o.id for o in vm.scene.objects] == ids[:2]
+    assert vm.selected == 1  # the last object went, so the selection moves to the new last one
+    vm.select(0)
+    vm.delete_object()
+    assert [o.id for o in vm.scene.objects] == [ids[1]]
+    assert vm.selected == 0
+    assert len(objects) == 2
+    assert selections == [(1,), (0,), (0,)]  # deleting always reports a change: the selected object is new
+
+
+def test_ids_of_deleted_objects_are_never_reused(vm):
+    vm.add_object()
+    deleted = vm.selected_object.id
+    vm.delete_object()
+    vm.add_object()
+    assert vm.selected_object.id != deleted
+    assert len({o.id for o in vm.scene.objects}) == 2
+
+
+def test_new_ids_continue_after_those_already_in_the_document(qapp):
+    from text3d_studio.model import Scene, TextObject
+
+    model = SceneViewModel(Document(scene=Scene(objects=[TextObject(id=7), TextObject(id=3)])))
+    model.add_object()
+    assert model.selected_object.id == 8
+
+
+def test_select_emits_only_on_change_and_rejects_missing_indices(vm):
+    vm.add_object()
+    events = record(vm.selection_changed)
+    vm.select(1)
+    vm.select(0)
+    assert events == [(0,)]
+    for index in (-1, 2):
+        with pytest.raises(IndexError):
+            vm.select(index)
+    assert vm.selected == 0

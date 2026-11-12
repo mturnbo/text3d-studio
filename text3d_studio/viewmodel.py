@@ -7,7 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from . import ground as ground_model
 from .materials import KINDS, PRESETS
-from .model import Document
+from .model import Document, TextObject, TransformParams
 
 # Fields that change the rasterized glyph mask (expensive, CPU) rather than just uniforms (cheap, GPU).
 RASTER_FIELDS = {"content", "font_family", "bold", "italic", "bevel_width"}
@@ -18,14 +18,23 @@ class SceneViewModel(QObject):
     scene_changed = pyqtSignal(str, str)  # (section, field)
     text_changed = pyqtSignal()
     background_changed = pyqtSignal()
+    objects_changed = pyqtSignal()  # an object was added or deleted
+    selection_changed = pyqtSignal(int)  # the selected object's index; its text, transform and material changed
 
     def __init__(self, document: Document | None = None):
         super().__init__()
         self.document = document or Document()
+        self.selected = 0  # editor state: the object that "text", "transform" and "material" edits address
+        # Ids are never reused, so nothing keyed by a deleted object's id (a cached raster) can match a new one.
+        self._next_object_id = max(o.id for o in self.scene.objects) + 1
 
     @property
     def scene(self):
         return self.document.scene
+
+    @property
+    def selected_object(self) -> TextObject:
+        return self.scene.objects[self.selected]
 
     def get(self, section: str, name: str):
         return getattr(self._section(section, name), name)
@@ -37,7 +46,7 @@ class SceneViewModel(QObject):
         old_ground = dataclasses.replace(self.scene.ground) if section == "ground" else None
         self._assign(target, section, name, value)
         if old_ground is not None:
-            self._place_text_from(old_ground, dataclasses.replace(self.scene.objects[0].transform))
+            self._place_text_from(old_ground, dataclasses.replace(self.selected_object.transform))
 
     def set_ground_pose(self, anchor=None, **values) -> None:
         """Sets several ground fields together and re-places the text once, against the final pose.
@@ -48,7 +57,7 @@ class SceneViewModel(QObject):
         strand it for the rest of the drag.
         """
         old_ground = dataclasses.replace(self.scene.ground)
-        base = anchor if anchor is not None else (old_ground, dataclasses.replace(self.scene.objects[0].transform))
+        base = anchor if anchor is not None else (old_ground, dataclasses.replace(self.selected_object.transform))
         for name, value in values.items():
             target = self._section("ground", name)
             if getattr(target, name) != value:
@@ -79,6 +88,48 @@ class SceneViewModel(QObject):
         for name, value in PRESETS[kind].items():
             self.set("material", name, value)
 
+    def select(self, index: int) -> None:
+        if not 0 <= index < len(self.scene.objects):
+            raise IndexError(f"No text object at index {index}")
+        if index != self.selected:
+            self.selected = index
+            self.selection_changed.emit(index)
+
+    def add_object(self) -> None:
+        """Adds a default text object in front of the selected one and selects it."""
+        base = ground_model.placement_in_front(self.scene.ground, self.selected_object.transform)
+        transform = TransformParams(x=base.x, z=base.z, rot_y=base.rot_y, size=base.size)
+        self._insert(TextObject(id=self._next_id(), transform=transform))
+
+    def duplicate_object(self) -> None:
+        """Adds a copy of the selected object in front of it and selects the copy."""
+        source = self.selected_object
+        self._insert(TextObject(
+            id=self._next_id(),
+            text=dataclasses.replace(source.text),
+            transform=ground_model.placement_in_front(self.scene.ground, source.transform),
+            material=dataclasses.replace(source.material),
+        ))
+
+    def delete_object(self) -> bool:
+        """Deletes the selected object. Refuses (returns False) when it is the last one."""
+        if len(self.scene.objects) == 1:
+            return False
+        del self.scene.objects[self.selected]
+        self.selected = min(self.selected, len(self.scene.objects) - 1)
+        self.objects_changed.emit()
+        self.selection_changed.emit(self.selected)
+        return True
+
+    def _insert(self, obj: TextObject) -> None:
+        self.scene.objects.append(obj)
+        self.objects_changed.emit()
+        self.select(len(self.scene.objects) - 1)
+
+    def _next_id(self) -> int:
+        self._next_object_id += 1
+        return self._next_object_id - 1
+
     def nudge(self, section: str, name: str, delta: float) -> None:
         self.set(section, name, self.get(section, name) + delta)
 
@@ -88,7 +139,7 @@ class SceneViewModel(QObject):
         self.background_changed.emit()
 
     def _section(self, section: str, name: str):
-        owner = self.scene.objects[0] if section in OBJECT_SECTIONS else self.scene
+        owner = self.selected_object if section in OBJECT_SECTIONS else self.scene
         target = getattr(owner, section, None)
         if target is None or not dataclasses.is_dataclass(target):
             raise KeyError(f"Unknown scene section: {section!r}")

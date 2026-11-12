@@ -335,7 +335,7 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_origin = self._drag_press = event.position()
         self._drag_mode = self._text_drag_mode(event)
         self._drag_ground_start = self.ground_point_at(event.position())
-        self._drag_transform = dataclasses.replace(self.vm.scene.objects[0].transform)
+        self._drag_transform = dataclasses.replace(self.vm.selected_object.transform)
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     @staticmethod
@@ -445,7 +445,7 @@ class ImageCanvas(QOpenGLWidget):
             cell = self.vm.scene.grid.cell_size * factor
             self.vm.set("grid", "cell_size", float(np.clip(cell, MIN_CELL, MAX_CELL)))
         elif self.tool == TEXT_TOOL:
-            self.vm.set("transform", "size", self.vm.scene.objects[0].transform.size * factor)
+            self.vm.set("transform", "size", self.vm.selected_object.transform.size * factor)
 
     # ----- Grid tool --------------------------------------------------------------------------
     # Drag the horizon's middle: tilt   Drag its outer ends: roll around its center
@@ -456,7 +456,7 @@ class ImageCanvas(QOpenGLWidget):
 
     def _pose_snapshot(self):
         scene = self.vm.scene
-        return (dataclasses.replace(scene.ground), dataclasses.replace(scene.objects[0].transform))
+        return (dataclasses.replace(scene.ground), dataclasses.replace(self.vm.selected_object.transform))
 
     def _grid_press(self, event) -> None:
         self._drag_origin = event.position()
