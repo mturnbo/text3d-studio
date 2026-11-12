@@ -51,7 +51,8 @@ def test_every_text_field_re_rasterizes(vm):
     vm.set("text", "align", "left")
     vm.set("text", "letter_spacing", 0.2)
     vm.set("text", "line_height", 1.5)
-    assert len(text_events) == 3
+    vm.set("text", "arc", 45.0)
+    assert len(text_events) == 4
 
 
 def test_nudge_adds_delta(vm):

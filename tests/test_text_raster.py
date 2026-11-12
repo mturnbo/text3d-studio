@@ -293,3 +293,115 @@ def test_tight_line_height_shrinks_the_mask_and_keeps_walls_closed(qapp):
 def test_line_height_changes_nothing_for_a_single_line(qapp):
     plain = rasterize_text(TextParams(content="HI"))
     assert np.array_equal(rasterize_text(TextParams(content="HI", line_height=2.0)).rgba, plain.rgba)
+
+
+# ----- Arc ----------------------------------------------------------------------------------------------
+
+
+def ink_row_center(alpha, cols):
+    """Mean row of the ink within a range of columns."""
+    rows, _ = np.nonzero(alpha[:, cols] > 127)
+    return rows.mean()
+
+
+def middle_minus_ends(raster):
+    """How far the ink's middle third sits below its outer thirds, in rows (negative: the middle is higher)."""
+    alpha = raster.rgba[..., 3]
+    third = alpha.shape[1] // 3
+    middle = ink_row_center(alpha, slice(third, 2 * third))
+    ends = (ink_row_center(alpha, slice(0, third)) + ink_row_center(alpha, slice(2 * third, None))) / 2
+    return middle - ends
+
+
+def test_zero_arc_is_straight_text(qapp):
+    straight = rasterize_text(TextParams(content="HELLO\nWORLD"))
+    arced = rasterize_text(TextParams(content="HELLO\nWORLD", arc=0.0))
+    assert np.array_equal(arced.rgba, straight.rgba)
+
+
+def test_a_tiny_arc_matches_straight_text(qapp):
+    straight = rasterize_text(TextParams(content="HELLO"))
+    arced = rasterize_text(TextParams(content="HELLO", arc=0.01))
+    assert abs(arced.rgba.shape[0] - straight.rgba.shape[0]) <= 2
+    assert abs(arced.rgba.shape[1] - straight.rgba.shape[1]) <= 2
+    height = min(arced.rgba.shape[0], straight.rgba.shape[0])
+    width = min(arced.rgba.shape[1], straight.rgba.shape[1])
+    a = arced.rgba[:height, :width, 3] > 127
+    b = straight.rgba[:height, :width, 3] > 127
+    assert (a & b).sum() / (a | b).sum() > 0.95
+
+
+def test_positive_arc_bends_the_middle_up_and_negative_down(qapp):
+    straight = rasterize_text(TextParams(content="HELLO WORLD"))
+    up = rasterize_text(TextParams(content="HELLO WORLD", arc=90))
+    down = rasterize_text(TextParams(content="HELLO WORLD", arc=-90))
+    em_rows = straight.rgba.shape[0] / straight.size[1]
+    assert abs(middle_minus_ends(straight)) < 0.05 * em_rows
+    assert middle_minus_ends(up) < -0.5 * em_rows
+    assert middle_minus_ends(down) > 0.5 * em_rows
+    assert up.size[1] > straight.size[1] and down.size[1] > straight.size[1]
+
+
+def test_arc_ink_bottom_sits_on_local_ground_and_is_centered(qapp):
+    raster = rasterize_text(TextParams(content="HELLO", arc=120))
+    alpha = raster.rgba[..., 3]
+    height = alpha.shape[0]
+    ink_rows = np.flatnonzero(alpha.max(axis=1) > 5)
+    bottom_local = raster.origin[1] + (1 - (ink_rows[-1] + 1) / height) * raster.size[1]
+    assert bottom_local == pytest.approx(0.0, abs=2 / height * raster.size[1])
+    assert raster.origin[0] == pytest.approx(-raster.size[0] / 2)
+
+
+def test_arced_lines_stay_on_separate_concentric_arcs(qapp):
+    raster = rasterize_text(TextParams(content="HHHHH\nHHHHH", arc=60))
+    alpha = raster.rgba[..., 3]
+    middle = alpha[:, alpha.shape[1] // 2 - 3 : alpha.shape[1] // 2 + 3].max(axis=1) > 127
+    runs = np.flatnonzero(np.diff(np.concatenate([[0], middle.astype(np.int8), [0]])) == 1)
+    assert len(runs) == 2  # down the middle: one letter from each line, with a gap between
+    assert_walls_closed(raster)
+
+
+@pytest.mark.parametrize("arc", [-180, -45, 45, 180])
+def test_arced_text_has_closed_walls(qapp, arc):
+    raster = rasterize_text(TextParams(content="ARC\nTEXT", arc=arc, letter_spacing=-0.05))
+    assert_walls_closed(raster)
+
+
+@pytest.mark.parametrize("arc", [-180, 180])
+def test_half_circle_arcs_stay_within_the_texture_limit(qapp, arc):
+    raster = rasterize_text(TextParams(content="W" * 120 + "\n" + "W" * 60, arc=arc))
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+    assert raster.rgba[..., 3].max() == 255
+
+
+def test_half_circle_arc_reaches_down_to_its_ends(qapp):
+    raster = rasterize_text(TextParams(content="HHHHHHHHHHHH", arc=180))
+    width, height = raster.size
+    assert height > 0.4 * width  # a semicircle of letters: about half as tall as wide
+
+
+def test_edge_directions_point_outward_on_rotated_glyphs(qapp):
+    raster = rasterize_text(TextParams(content="IIIIIII", arc=150))
+    alpha = raster.rgba[..., 3].astype(np.float64) / 255
+    direction = decode_direction(raster.rgba)
+    grad_row, grad_col = np.gradient(alpha)
+    outward = np.stack([-grad_col, grad_row], axis=-1)  # toward lower coverage, y up
+    edge = (alpha > 0.3) & (alpha < 0.7) & (np.linalg.norm(outward, axis=-1) > 0.05)
+    outward = outward[edge] / np.linalg.norm(outward[edge], axis=-1, keepdims=True)
+    assert edge.sum() > 1000
+    assert np.mean(np.sum(direction[edge] * outward, axis=-1)) > 0.9
+    assert np.median(raster.rgba[..., 2][edge]) > 150  # the bevel is high at the silhouette
+
+
+def test_covers_hits_the_ink_of_arced_text(qapp):
+    raster = rasterize_text(TextParams(content="HELLO WORLD", arc=120))
+    alpha = raster.rgba[..., 3]
+    height, width = alpha.shape
+    to_local = lambda row, col: (
+        raster.origin[0] + (col + 0.5) / width * raster.size[0],
+        raster.origin[1] + (1 - (row + 0.5) / height) * raster.size[1],
+    )
+    rows, cols = np.nonzero(alpha == 255)
+    for i in np.linspace(0, len(rows) - 1, 25).astype(int):
+        assert raster.covers(*to_local(rows[i], cols[i]))
+    assert not raster.covers(*to_local(height - 10, width // 2))  # under the arch: empty

@@ -1923,3 +1923,19 @@ def test_wheel_over_the_unfocused_text_field_scrolls_the_panel(window, qapp):
     wheel_over(edit.viewport())
     assert panel.verticalScrollBar().value() > 0
     assert edit.verticalScrollBar().value() == 0
+
+
+def test_clicking_arced_text_picks_it(vm):
+    canvas = two_objects(vm, first="OPEN\nLATE", second="XX")
+    vm.select(0)
+    vm.set("text", "arc", 120.0)
+    vm.select(1)
+    point = ink_point(canvas, 0)
+    assert canvas._raster_of(vm.scene.objects[0]).covers(*point)
+    click(canvas, on_face(canvas, 0, point))
+    assert vm.selected == 0
+    raster = canvas._raster_of(vm.scene.objects[0])
+    under_arch = (0.0, raster.origin[1] + 0.05)  # the middle of the bottom edge, below the bent lines
+    assert not raster.covers(*under_arch)
+    click(canvas, on_face(canvas, 1, ink_point(canvas, 1)))
+    assert vm.selected == 1

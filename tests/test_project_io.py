@@ -67,7 +67,8 @@ def test_multi_object_scene_round_trips_every_section(qapp, tmp_path):
 
 
 def test_text_layout_round_trips(qapp, tmp_path):
-    text = TextParams(content="OPEN\n\nLATE\n", align="right", letter_spacing=-0.05, line_height=1.4)
+    text = TextParams(content="OPEN\n\nLATE\n", align="right", letter_spacing=-0.05, line_height=1.4,
+                      arc=-72.5)
     path = str(tmp_path / "layout.t3d")
     save_project(path, Document(scene=Scene(objects=[TextObject(text=text)])))
     assert load_project(path).document.scene.objects[0].text == text
