@@ -460,3 +460,341 @@ def test_exports_ignore_the_before_after_view(window, qapp):
     window.original_action.setChecked(True)
     assert np.array_equal(window.canvas.render_export(), normal)
     assert window.canvas.render_export(transparent=True)[..., 3].max() == 255
+
+
+# ----- Zoom and pan -------------------------------------------------------------------------------
+
+
+def zoom_canvas(qapp, width=800, height=500, image=(1600, 1000)):
+    from text3d_studio.views.image_canvas import ImageCanvas
+
+    vm = SceneViewModel(Document())
+    pixels = np.zeros((image[1], image[0], 4), np.uint8)
+    pixels[..., :3] = (200, 180, 150)
+    pixels[..., 3] = 255
+    vm.set_background(pixels, "photo.png")
+    canvas = ImageCanvas(vm)
+    canvas.resize(width, height)
+    return canvas
+
+
+def mouse(canvas, kind, pos, button, buttons=None, modifiers=None):
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    modifiers = Qt.KeyboardModifier.NoModifier if modifiers is None else modifiers
+    event = QMouseEvent(kind, QPointF(*pos), QPointF(*pos), button, button if buttons is None else buttons, modifiers)
+    {
+        QEvent.Type.MouseButtonPress: canvas.mousePressEvent,
+        QEvent.Type.MouseMove: canvas.mouseMoveEvent,
+        QEvent.Type.MouseButtonRelease: canvas.mouseReleaseEvent,
+    }[kind](event)
+
+
+def drag(canvas, start, end, modifiers=None):
+    from PyQt6.QtCore import QEvent, Qt
+
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, left, modifiers=modifiers)
+    mouse(canvas, QEvent.Type.MouseMove, end, none, left, modifiers)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, end, left, none, modifiers)
+
+
+def key(canvas, qapp, kind, which):
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtGui import QKeyEvent
+
+    event_type = QEvent.Type.KeyPress if kind == "press" else QEvent.Type.KeyRelease
+    qapp.sendEvent(canvas, QKeyEvent(event_type, which, Qt.KeyboardModifier.NoModifier))
+
+
+def test_canvas_starts_fitted(qapp):
+    canvas = zoom_canvas(qapp)
+    dpr = canvas.devicePixelRatioF()
+    assert canvas.is_fitted
+    assert canvas.zoom_factor() == pytest.approx(0.5 * dpr)
+    assert canvas._image_rect() == (0, 0, 800, 500)
+
+
+def test_zoom_in_and_out_step_through_the_levels(qapp):
+    from text3d_studio.views.image_canvas import ZOOM_LEVELS
+
+    canvas = zoom_canvas(qapp, image=(400, 250))  # small enough that every level fits under the size cap
+    fit = canvas.zoom_factor()
+    canvas.zoom_in()
+    assert canvas.zoom_factor() == min(z for z in ZOOM_LEVELS if z > fit * 1.001)
+    canvas.zoom_out()
+    canvas.zoom_out()
+    assert canvas.zoom_factor() == max(z for z in ZOOM_LEVELS if z < fit / 1.001)
+    for _ in range(len(ZOOM_LEVELS) + 2):
+        canvas.zoom_in()
+    assert canvas.zoom_factor() == ZOOM_LEVELS[-1]
+    for _ in range(len(ZOOM_LEVELS) + 2):
+        canvas.zoom_out()
+    assert canvas.zoom_factor() == ZOOM_LEVELS[0]
+    canvas.zoom_to_fit()
+    assert canvas.is_fitted and canvas.zoom_factor() == fit
+
+
+def test_zoom_stops_before_the_image_gets_too_large_to_render(qapp):
+    from text3d_studio.views.image_canvas import MAX_ZOOMED_SIDE_PX
+
+    canvas = zoom_canvas(qapp, image=(4000, 2500))
+    for _ in range(20):
+        canvas.zoom_in()
+    assert canvas.zoom_factor() == pytest.approx(MAX_ZOOMED_SIDE_PX / 4000)
+    canvas.zoom_actual_size()
+    assert canvas.zoom_factor() == 1.0  # 4000 px fits under the cap
+
+
+def test_actual_size_shows_one_image_pixel_per_device_pixel(qapp):
+    canvas = zoom_canvas(qapp, image=(1600, 1000))
+    canvas.zoom_actual_size()
+    assert canvas._image_rect(canvas.devicePixelRatioF())[2:] == (1600, 1000)
+    dpr = canvas.devicePixelRatioF()
+    _, _, w, h = canvas._image_rect()
+    assert (w, h) == (round(1600 / dpr), round(1000 / dpr))
+
+
+def test_actual_size_preview_matches_the_photo_pixel_for_pixel(window, qapp):
+    from text3d_studio.image_io import qimage_to_rgba
+
+    stripes = np.zeros((60, 90, 4), np.uint8)
+    stripes[..., 3] = 255
+    stripes[:, ::2, :3] = 255  # one-pixel columns: any resampling would blur them to grey
+    stripes[::3, :, 1] = 128
+    window.vm.set_background(stripes, "/photos/stripes.png")
+    window.vm.set("text", "content", "")
+    window.show()
+    qapp.processEvents()
+    canvas = window.canvas
+    canvas.zoom_actual_size()
+    qapp.processEvents()
+    grabbed = qimage_to_rgba(canvas.grabFramebuffer())
+    x, y, w, h = canvas._image_rect(canvas.devicePixelRatioF())
+    assert (w, h) == (90, 60)
+    assert np.array_equal(grabbed[y: y + h, x: x + w, :3], stripes[..., :3])
+
+
+def test_zooming_keeps_the_point_at_the_center(qapp):
+    canvas = zoom_canvas(qapp)
+    canvas.zoom_actual_size()
+    canvas.pan_by(-100, 40)
+    before = canvas._image_pixel(canvas.rect().center().toPointF())
+    x, y, w, h = canvas._image_rect()
+    fraction = (before[0] / w, before[1] / h)
+    canvas.zoom_in()
+    after = canvas._image_pixel(canvas.rect().center().toPointF())
+    _, _, w, h = canvas._image_rect()
+    assert after[0] / w == pytest.approx(fraction[0], abs=0.003)
+    assert after[1] / h == pytest.approx(fraction[1], abs=0.003)
+
+
+def test_space_drag_pans_and_is_clamped_to_the_image(qapp):
+    from PyQt6.QtCore import Qt
+
+    canvas = zoom_canvas(qapp, image=(3200, 2000))  # larger than the canvas at 100% on any screen
+    canvas.zoom_actual_size()
+    x0, y0, w, h = canvas._image_rect()
+    key(canvas, qapp, "press", Qt.Key.Key_Space)
+    drag(canvas, (400, 250), (430, 260))
+    x1, y1, _, _ = canvas._image_rect()
+    assert (x1 - x0, y1 - y0) == (30, 10)
+    drag(canvas, (400, 250), (5000, 5000))
+    x2, y2, _, _ = canvas._image_rect()
+    assert (x2, y2) == (0, 0)  # the image's top left corner reaches the canvas's and stops
+    drag(canvas, (400, 250), (-9000, -9000))
+    x3, y3, _, _ = canvas._image_rect()
+    assert (x3 + w, y3 + h) == pytest.approx((800, 500), abs=1)
+    key(canvas, qapp, "release", Qt.Key.Key_Space)
+
+
+def test_panning_does_nothing_while_the_image_fits(qapp):
+    from PyQt6.QtCore import Qt
+
+    canvas = zoom_canvas(qapp)
+    before = canvas._image_rect()
+    transform = dataclasses.replace(canvas.vm.selected_object.transform)
+    key(canvas, qapp, "press", Qt.Key.Key_Space)
+    drag(canvas, (400, 300), (300, 200))
+    assert canvas._image_rect() == before
+    assert canvas.vm.selected_object.transform == transform  # Space + drag never moves the text
+
+
+def test_panning_is_not_an_undo_step_and_moves_no_text(qapp):
+    from PyQt6.QtCore import Qt
+
+    canvas = zoom_canvas(qapp)
+    canvas.zoom_actual_size()
+    transform = dataclasses.replace(canvas.vm.selected_object.transform)
+    key(canvas, qapp, "press", Qt.Key.Key_Space)
+    drag(canvas, (400, 300), (300, 200))
+    key(canvas, qapp, "release", Qt.Key.Key_Space)
+    assert canvas.vm.selected_object.transform == transform
+    assert not canvas.vm.can_undo
+    drag(canvas, (400, 300), (420, 300))  # without Space, the drag moves the text again
+    assert canvas.vm.selected_object.transform != transform
+
+
+def text_anchor(canvas):
+    from text3d_studio import ground as ground_model
+    from text3d_studio import math3d
+
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    scene = canvas.vm.scene
+    pixel = math3d.project_to_image(
+        ground_model.text_position(scene.ground, canvas.vm.selected_object.transform), scene.camera.fov, (rect_w, rect_h)
+    )
+    return (pixel[0] + rect_x, pixel[1] + rect_y)
+
+
+def test_dragging_the_text_while_zoomed_follows_the_cursor(qapp):
+    canvas = zoom_canvas(qapp)
+    canvas.vm.set("ground", "pitch", 12.0)
+    canvas.zoom_in()
+    canvas.zoom_in()
+    start = text_anchor(canvas)
+    assert 0 < start[0] < 800 and 0 < start[1] < 500  # the text is on screen
+    drag(canvas, start, (start[0] + 60, start[1] - 25))
+    after = text_anchor(canvas)
+    assert after == pytest.approx((start[0] + 60, start[1] - 25), abs=0.6)
+
+
+def test_option_slide_keeps_the_grabbed_ground_point_under_the_cursor_when_zoomed(qapp):
+    from PyQt6.QtCore import Qt
+
+    canvas = zoom_canvas(qapp)
+    canvas.vm.set("ground", "pitch", 12.0)
+    canvas.zoom_actual_size()
+    canvas.pan_by(0, -120)
+    start, end = (400.0, 330.0), (440.0, 300.0)
+    grabbed, target = canvas.ground_point_at(QPointF_(start)), canvas.ground_point_at(QPointF_(end))
+    assert grabbed is not None and target is not None
+    before = dataclasses.replace(canvas.vm.selected_object.transform)
+    drag(canvas, start, end, Qt.KeyboardModifier.AltModifier)
+    after = canvas.vm.selected_object.transform
+    assert (after.x - before.x, after.z - before.z) == pytest.approx(
+        (target[0] - grabbed[0], target[1] - grabbed[1]), abs=1e-9
+    )
+    assert canvas.ground_point_at(QPointF_(start)) == pytest.approx(grabbed)  # the zoomed mapping is unchanged
+
+
+def QPointF_(pos):
+    from PyQt6.QtCore import QPointF
+
+    return QPointF(*pos)
+
+
+def test_picking_selects_the_object_under_the_cursor_when_zoomed(qapp):
+    from PyQt6.QtCore import QEvent, Qt
+
+    canvas = zoom_canvas(qapp)
+    vm = canvas.vm
+    vm.add_object()
+    for index, x in ((0, -3.5), (1, 3.5)):
+        vm.select(index)
+        vm.set("text", "content", "HH")
+        vm.set("transform", "rot_y", 0.0)
+        vm.set("transform", "x", x)
+        vm.set("transform", "z", -12.0)
+        vm.set("transform", "size", 3.0)
+    vm.select(1)
+    canvas.zoom_in()
+    canvas.zoom_in()
+    canvas.pan_by(400, 0)  # bring the left object into view
+    hit = None
+    for x in range(0, 800, 4):
+        for y in range(0, 500, 4):
+            if canvas.object_at(QPointF_((x, y))) == 0:
+                hit = (x, y)
+                break
+        if hit:
+            break
+    assert hit is not None
+    mouse(canvas, QEvent.Type.MouseButtonPress, hit, Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, hit, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    assert vm.selected == 0
+
+
+def test_export_ignores_the_zoom(window, qapp):
+    photo(window, 160, 100)
+    window.show()
+    qapp.processEvents()
+    fitted = window.canvas.render_export()
+    window.zoom_in_action.trigger()
+    window.zoom_in_action.trigger()
+    window.canvas.pan_by(-30, 10)
+    qapp.processEvents()
+    assert not window.canvas.is_fitted
+    assert np.array_equal(window.canvas.render_export(), fitted)
+
+
+def test_view_menu_zoom_actions_and_shortcuts(window):
+    from PyQt6.QtGui import QKeySequence
+
+    actions = window.view_menu.actions()
+    expected = {
+        window.zoom_in_action: "Ctrl+=", window.zoom_out_action: "Ctrl+-",
+        window.zoom_fit_action: "Ctrl+0", window.zoom_actual_action: "Ctrl+1",
+    }
+    for action, shortcut in expected.items():
+        assert action in actions
+        assert action.shortcut() == QKeySequence(shortcut)
+
+
+def test_zoom_label_follows_the_zoom(window, qapp):
+    photo(window, 160, 100)
+    window.zoom_actual_action.trigger()
+    assert window.zoom_label.text() == "100%"
+    window.zoom_fit_action.trigger()
+    assert window.zoom_label.text().startswith("Fit (")
+
+
+def test_a_new_photo_starts_fitted(window):
+    photo(window, 160, 100)
+    window.canvas.zoom_actual_size()
+    photo(window, 320, 200)
+    assert window.canvas.is_fitted
+
+
+def test_a_panned_preview_shows_the_matching_part_of_the_photo(window, qapp):
+    from text3d_studio.image_io import qimage_to_rgba
+
+    rng = np.random.default_rng(3)
+    noise = rng.integers(0, 256, (1800, 2600, 4), dtype=np.uint8)  # bigger than the canvas at 100%
+    noise[..., 3] = 255
+    window.vm.set_background(noise, "/photos/noise.png")
+    window.vm.set("text", "content", "")
+    window.show()
+    qapp.processEvents()
+    canvas = window.canvas
+    canvas.zoom_actual_size()
+    canvas.pan_by(-150, -60)
+    qapp.processEvents()
+    grabbed = qimage_to_rgba(canvas.grabFramebuffer())
+    x, y, w, h = canvas._image_rect(canvas.devicePixelRatioF())
+    assert x < 0 and y < 0  # the image overflows the canvas on every side
+    fb_h, fb_w = grabbed.shape[:2]
+    visible = grabbed[max(0, y): min(fb_h, y + h), max(0, x): min(fb_w, x + w), :3]
+    expected = noise[max(0, -y): max(0, -y) + visible.shape[0], max(0, -x): max(0, -x) + visible.shape[1], :3]
+    assert visible.shape[0] > 100 and visible.shape[1] > 100
+    assert np.array_equal(visible, expected)
+
+
+def test_fit_handles_follow_the_zoom(qapp):
+    from text3d_studio.views.image_canvas import FIT_TOOL
+
+    canvas = zoom_canvas(qapp)
+    canvas.vm.set("ground", "pitch", 12.0)
+    canvas.set_tool(FIT_TOOL)
+    canvas.zoom_in()
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    corners = [(rect_x + u, rect_y + v) for u, v in canvas.fit_corners_px()]
+    on_screen = [i for i, (x, y) in enumerate(corners) if 0 < x < 800 and 0 < y < 500]
+    assert on_screen
+    index = on_screen[0]
+    assert canvas.fit_handle_at(QPointF_(corners[index])) == index
+    target = (corners[index][0] + 15, corners[index][1] - 10)
+    drag(canvas, corners[index], target)
+    fx, fy = canvas.fit_corners[index]
+    assert (rect_x + fx * rect_w, rect_y + fy * rect_h) == pytest.approx(target, abs=1e-6)

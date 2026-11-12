@@ -107,6 +107,22 @@ class MainWindow(QMainWindow):
         self.original_action.setStatusTip("Show the photo without the text (or hold \\ over the canvas)")
         self.original_action.toggled.connect(self.canvas.set_show_original)
         view_menu.addAction(self.original_action)
+        view_menu.addSeparator()
+        # Wrapped in lambdas: QAction.triggered passes a `checked` bool.
+        self.zoom_in_action = self._make_action("Zoom &In", QKeySequence("Ctrl+="), lambda: self.canvas.zoom_in())
+        self.zoom_in_action.setShortcuts([QKeySequence("Ctrl+="), QKeySequence(QKeySequence.StandardKey.ZoomIn)])
+        self.zoom_out_action = self._make_action("Zoom &Out", QKeySequence("Ctrl+-"), lambda: self.canvas.zoom_out())
+        self.zoom_fit_action = self._make_action("&Fit", QKeySequence("Ctrl+0"), lambda: self.canvas.zoom_to_fit())
+        self.zoom_actual_action = self._make_action(
+            "&Actual Size", QKeySequence("Ctrl+1"), lambda: self.canvas.zoom_actual_size()
+        )
+        self.zoom_actual_action.setStatusTip("One photo pixel per screen pixel · hold Space and drag to pan")
+        for action in (self.zoom_in_action, self.zoom_out_action, self.zoom_fit_action, self.zoom_actual_action):
+            view_menu.addAction(action)
+        self.zoom_label = QLabel()
+        self.statusBar().addPermanentWidget(self.zoom_label)
+        self.canvas.zoom_changed.connect(self._update_zoom_label)
+        self._update_zoom_label()
 
         self.tool_actions = {}
         tool_group = QActionGroup(self)
@@ -507,6 +523,10 @@ class MainWindow(QMainWindow):
         self.preferences.set_last_directory(folder)
         self.statusBar().showMessage(f"Exported {len(written)} files → {folder}", 8000)
         return written
+
+    def _update_zoom_label(self) -> None:
+        percent = f"{self.canvas.zoom_factor() * 100:.0f}%"
+        self.zoom_label.setText(f"Fit ({percent})" if self.canvas.is_fitted else percent)
 
     def _update_size_label(self) -> None:
         width, height = self.vm.document.native_size

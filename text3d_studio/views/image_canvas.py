@@ -40,6 +40,10 @@ MIN_ROLL_SPAN_PX = 20.0  # roll needs the cursor this far from the pivot to defi
 MIN_CELL, MAX_CELL = 0.1, 10.0
 GRID_ROTATE_DEG_PER_PX = 0.3
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
+ZOOM_LEVELS = (0.1, 0.125, 0.25, 1 / 3, 0.5, 2 / 3, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)  # device px per image px
+# The whole zoomed image is rendered every frame (its layers are sized to it), so zooming stops before the
+# image's longer side passes this many device pixels.
+MAX_ZOOMED_SIDE_PX = 6144
 
 
 def dropped_image_path(mime_data) -> str | None:
@@ -154,6 +158,7 @@ class ImageCanvas(QOpenGLWidget):
     file_dropped = pyqtSignal(str)
     tool_changed = pyqtSignal(str)
     fit_status = pyqtSignal(str)  # why the traced corners can't be fitted, or "" when they can
+    zoom_changed = pyqtSignal()
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -187,6 +192,12 @@ class ImageCanvas(QOpenGLWidget):
         # Before/after: the preview shows the photo alone while backslash is held or the View menu toggle is on.
         self._original_held = False
         self._original_toggled = False
+        # View state, not scene state: zoom in device pixels per image pixel (None fits the image to the canvas)
+        # and the zoomed image's offset from the centered position, in widget pixels.
+        self._zoom: float | None = None
+        self._pan = (0.0, 0.0)
+        self._space_held = False  # Space + drag pans
+        self._pan_origin: QPointF | None = None  # previous cursor position while panning
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
         self._text_timer.timeout.connect(self._mark_glyph_dirty)
@@ -195,6 +206,7 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.objects_changed.connect(self._mark_glyph_dirty)  # new objects show at once, without the debounce
         self.vm.selection_changed.connect(lambda *_: self.update())
         self.vm.background_changed.connect(self._mark_background_dirty)
+        self.vm.background_changed.connect(self.zoom_to_fit)  # a new photo (or project) starts fitted
 
         self.empty_state = EmptyStateOverlay(self)
         self.empty_state.open_requested.connect(self.open_requested)
@@ -225,7 +237,8 @@ class ImageCanvas(QOpenGLWidget):
         GL.glViewport(0, 0, int(self.width() * dpr), int(self.height() * dpr))
         GL.glClearColor(0.11, 0.11, 0.12, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-        rect = self._image_rect(dpr)
+        x, y, w, h = self._image_rect(dpr)
+        rect = (x, int(self.height() * dpr) - y - h, w, h)  # GL's origin is the bottom left
         if self.showing_original:
             photo_only = dataclasses.replace(self.vm.scene, objects=[])
             self.compositor.render(photo_only, self.defaultFramebufferObject(), rect)
@@ -304,6 +317,7 @@ class ImageCanvas(QOpenGLWidget):
         super().resizeEvent(event)
         self.fit_overlay.setGeometry(self.rect())
         self._center_empty_state()
+        self.zoom_changed.emit()  # fitting zooms with the canvas
 
     def _update_empty_state(self) -> None:
         self.empty_state.setVisible(self.vm.document.background is None)
@@ -316,12 +330,85 @@ class ImageCanvas(QOpenGLWidget):
         self.empty_state.move(max(0, x), max(0, y))
 
     def _image_rect(self, scale: float = 1.0) -> tuple[int, int, int, int]:
-        """Largest rect with the document's aspect ratio centered in the widget (GL coords)."""
+        """Where the image shows, in widget pixels times `scale` (origin top left): the largest rect with the
+        document's aspect ratio centered in the widget, or, when zoomed, the image at the zoom, panned.
+
+        Every mapping between the cursor and the image (picking, drags, the grid, the fit handles) goes through
+        here, so they all follow the zoom.
+        """
         img_w, img_h = self.vm.document.native_size
         avail_w, avail_h = self.width() * scale, self.height() * scale
-        fit = min(avail_w / img_w, avail_h / img_h)
-        w, h = max(1, int(img_w * fit)), max(1, int(img_h * fit))
-        return (int((avail_w - w) / 2), int((avail_h - h) / 2), w, h)
+        if self._zoom is None:
+            fit = min(avail_w / img_w, avail_h / img_h)
+            w, h = max(1, int(img_w * fit)), max(1, int(img_h * fit))
+            return (int((avail_w - w) / 2), int((avail_h - h) / 2), w, h)
+        factor = self._zoom / self.devicePixelRatioF() * scale
+        w, h = max(1, round(img_w * factor)), max(1, round(img_h * factor))
+        pan_x, pan_y = self._clamped_pan(self._pan)
+        return (int((avail_w - w) / 2 + pan_x * scale), int((avail_h - h) / 2 + pan_y * scale), w, h)
+
+    # ----- Zoom and pan -------------------------------------------------------------------------
+
+    def zoom_factor(self) -> float:
+        """Device pixels per image pixel, also when fitting."""
+        if self._zoom is not None:
+            return self._zoom
+        img_w, img_h = self.vm.document.native_size
+        return min(self.width() / img_w, self.height() / img_h) * self.devicePixelRatioF()
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._zoom is None
+
+    def max_zoom(self) -> float:
+        limit = MAX_ZOOMED_SIDE_PX
+        if self.compositor is not None:
+            limit = min(limit, self.compositor.max_texture_size)
+        return min(ZOOM_LEVELS[-1], limit / max(self.vm.document.native_size))
+
+    def zoom_in(self) -> None:
+        current = self.zoom_factor()
+        self.set_zoom(next((z for z in ZOOM_LEVELS if z > current * 1.001), ZOOM_LEVELS[-1]))
+
+    def zoom_out(self) -> None:
+        current = self.zoom_factor()
+        self.set_zoom(next((z for z in reversed(ZOOM_LEVELS) if z < current / 1.001), ZOOM_LEVELS[0]))
+
+    def zoom_actual_size(self) -> None:
+        self.set_zoom(1.0)
+
+    def zoom_to_fit(self) -> None:
+        self._zoom = None
+        self._pan = (0.0, 0.0)
+        self._view_changed()
+
+    def set_zoom(self, zoom: float) -> None:
+        """Zooms around the canvas's center: the image point there stays there."""
+        x, y, w, h = self._image_rect()
+        center = ((self.width() / 2 - x) / w, (self.height() / 2 - y) / h)  # as fractions of the image
+        self._zoom = float(np.clip(zoom, ZOOM_LEVELS[0], max(ZOOM_LEVELS[0], self.max_zoom())))
+        _, _, w, h = self._image_rect()
+        self._pan = self._clamped_pan((w * (0.5 - center[0]), h * (0.5 - center[1])))
+        self._view_changed()
+
+    def pan_by(self, dx: float, dy: float) -> None:
+        self._pan = self._clamped_pan((self._pan[0] + dx, self._pan[1] + dy))
+        self._view_changed()
+
+    def _clamped_pan(self, pan: tuple[float, float]) -> tuple[float, float]:
+        """Keeps a zoomed image covering the canvas: no pan along an axis where the image fits."""
+        if self._zoom is None:
+            return (0.0, 0.0)
+        img_w, img_h = self.vm.document.native_size
+        factor = self._zoom / self.devicePixelRatioF()
+        limit_x = max(0.0, (img_w * factor - self.width()) / 2)
+        limit_y = max(0.0, (img_h * factor - self.height()) / 2)
+        return (float(np.clip(pan[0], -limit_x, limit_x)), float(np.clip(pan[1], -limit_y, limit_y)))
+
+    def _view_changed(self) -> None:
+        self.fit_overlay.update()
+        self.update()
+        self.zoom_changed.emit()
 
     # ----- Before/after -------------------------------------------------------------------------
     # Preview only: exports always render the whole scene.
@@ -335,6 +422,12 @@ class ImageCanvas(QOpenGLWidget):
         self._update_original()
 
     def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            if not event.isAutoRepeat():
+                self._space_held = True
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Backslash:
             if not event.isAutoRepeat():
                 self._original_held = True
@@ -344,6 +437,13 @@ class ImageCanvas(QOpenGLWidget):
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            if not event.isAutoRepeat():
+                self._space_held = False
+                if self._pan_origin is None:
+                    self._restore_tool_cursor()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Backslash:
             if not event.isAutoRepeat():
                 self._original_held = False
@@ -355,6 +455,9 @@ class ImageCanvas(QOpenGLWidget):
     def focusOutEvent(self, event) -> None:
         self._original_held = False  # the release would go to whatever has focus now
         self._update_original()
+        if self._space_held and self._pan_origin is None:
+            self._restore_tool_cursor()
+        self._space_held = False
         super().focusOutEvent(event)
 
     def _update_original(self) -> None:
@@ -406,8 +509,11 @@ class ImageCanvas(QOpenGLWidget):
             self.fit_status.emit("")
         self.fit_overlay.setVisible(tool == FIT_TOOL)
         self.fit_overlay.update()
-        self.setCursor(Qt.CursorShape.OpenHandCursor if tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
+        self._restore_tool_cursor()
         self.tool_changed.emit(tool)
+
+    def _restore_tool_cursor(self) -> None:
+        self.setCursor(Qt.CursorShape.OpenHandCursor if self.tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
 
     # ----- Mouse interaction --------------------------------------------------------------------
     # Press: select the object under the cursor; every gesture acts on the selected object
@@ -416,6 +522,10 @@ class ImageCanvas(QOpenGLWidget):
     # Wheel or pinch: scale                                         Cmd/Ctrl+wheel: nearer/farther
 
     def mousePressEvent(self, event) -> None:
+        if self._space_held and event.button() == Qt.MouseButton.LeftButton and not self._editing:
+            self._pan_origin = event.position()  # panning changes the view, not the scene: no undo step
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
         if self.tool == GRID_TOOL:
             self._grid_press(event)
         elif self.tool == FIT_TOOL:
@@ -454,6 +564,13 @@ class ImageCanvas(QOpenGLWidget):
         return "move"
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._pan_origin is not None:
+            self._pan_origin = None
+            if self._space_held:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            else:
+                self._restore_tool_cursor()
+            return
         self._drag_origin = None
         self._drag_press = None
         self._drag_mode = None
@@ -468,6 +585,13 @@ class ImageCanvas(QOpenGLWidget):
             self.vm.end_edit()
 
     def mouseMoveEvent(self, event) -> None:
+        if self._pan_origin is not None:
+            delta = event.position() - self._pan_origin
+            self._pan_origin = event.position()
+            self.pan_by(delta.x(), delta.y())
+            return
+        if self._space_held:
+            return  # the hand cursor stays while Space is held
         if self.tool == FIT_TOOL:
             if self._fit_handle is None:
                 over_handle = self.fit_handle_at(event.position()) is not None
