@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import os
 
@@ -1490,3 +1491,184 @@ def test_picking_on_the_canvas_updates_the_list(window):
     click(canvas, on_face(canvas, 0, ink_point(canvas, 0)))
     assert vm.selected == 0 and panel.object_list.currentRow() == 0
     assert panel.findChild(SliderRow, "transform.x").spin.value() == -3.5
+
+
+# ----- Undo -------------------------------------------------------------------------------------------
+
+
+def undo_steps(vm):
+    count = 0
+    while vm.undo():
+        count += 1
+    return count
+
+
+def long_drag(canvas, start, end, button=Qt.MouseButton.LeftButton, steps=10):
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, button)
+    for k in range(1, steps + 1):
+        point = (start[0] + (end[0] - start[0]) * k / steps, start[1] + (end[1] - start[1]) * k / steps)
+        mouse(canvas, QEvent.Type.MouseMove, point, Qt.MouseButton.NoButton, button)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton)
+
+
+@pytest.mark.parametrize("button", [Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton])
+def test_one_text_drag_is_one_undo_step(vm, button):
+    vm.set("ground", "pitch", 15.0)
+    vm.clear_history()
+    canvas = sized_canvas(vm)
+    before = copy.deepcopy(vm.scene)
+    start = text_anchor_on_screen(canvas)
+    long_drag(canvas, start, (start[0] + 120, start[1] + 40), button)
+    assert vm.scene != before
+    assert undo_steps(vm) == 1
+    assert vm.scene == before
+
+
+@pytest.mark.parametrize("start, end", [((400, 300), (400, 340)), ((400, 300), (480, 300))], ids=["shift", "rotate"])
+def test_one_grid_drag_is_one_undo_step(vm, start, end):
+    canvas = grid_canvas(vm, pitch=10.0)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    button = Qt.MouseButton.LeftButton if end[1] != start[1] else Qt.MouseButton.RightButton
+    long_drag(canvas, start, end, button)
+    assert vm.scene != before
+    assert undo_steps(vm) == 1
+    assert vm.scene == before
+
+
+def test_one_horizon_drag_that_re_places_the_text_is_one_undo_step(vm):
+    canvas = grid_canvas(vm, pitch=10.0)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    line = canvas._horizon_line()
+    start = (400, canvas._image_rect()[1] - (line[0] * (400 - canvas._image_rect()[0]) + line[2]) / line[1])
+    assert canvas.horizon_handle_at(QPointF(*start)) == "tilt"
+    long_drag(canvas, start, (start[0], start[1] - 40))
+    assert vm.scene.ground.pitch != before.ground.pitch
+    assert vm.scene.objects[0].transform != before.objects[0].transform
+    assert undo_steps(vm) == 1
+    assert vm.scene == before
+
+
+def test_each_fit_corner_drag_is_one_undo_step(vm):
+    from text3d_studio.model import GroundParams
+
+    canvas = fit_canvas(vm)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    truth = GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8)
+    for index, target in enumerate(true_rectangle_px(canvas, truth)):
+        drag_fit_corner(canvas, index, target)
+    assert undo_steps(vm) == 4
+    assert vm.scene == before
+
+
+def test_a_click_without_motion_records_nothing(vm):
+    canvas = sized_canvas(vm)
+    click(canvas, text_anchor_on_screen(canvas))
+    assert not vm.can_undo
+
+
+def test_clicking_another_object_then_dragging_it_undoes_the_move_but_keeps_it_selected(vm):
+    canvas = two_objects(vm)
+    vm.clear_history()
+    before = transforms(vm)
+    start = on_face(canvas, 1, ink_point(canvas, 1))
+    long_drag(canvas, start, (start[0], start[1] + 30))
+    assert vm.selected == 1
+    vm.undo()
+    assert transforms(vm) == before
+    assert vm.selected == 1
+    assert not vm.can_undo
+
+
+def test_a_second_button_during_a_drag_stays_in_the_same_step(vm):
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    left, right = Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+    both = left | right
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, left)
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 30, start[1]), Qt.MouseButton.NoButton, left)
+    mouse(canvas, QEvent.Type.MouseButtonPress, (start[0] + 30, start[1]), right, both)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (start[0] + 30, start[1]), right, left)
+    assert not vm.can_undo  # the left button is still down
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 60, start[1]), Qt.MouseButton.NoButton, left)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (start[0] + 60, start[1]), left, Qt.MouseButton.NoButton)
+    assert undo_steps(vm) == 1
+
+
+def test_a_stray_release_without_a_press_does_not_break_undo(vm):
+    canvas = sized_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 300), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    vm.set("light", "azimuth", 10.0)
+    assert undo_steps(vm) == 1
+
+
+def test_wheel_scaling_burst_is_one_undo_step(qapp):
+    now = [0.0]
+    vm = SceneViewModel(Document(), clock=lambda: now[0])
+    canvas = sized_canvas(vm)
+    for _ in range(8):
+        wheel(canvas, 1)
+        now[0] += 0.05
+    assert vm.scene.objects[0].transform.size != 3.0
+    vm.undo()
+    assert vm.scene.objects[0].transform.size == 3.0
+    assert not vm.can_undo
+
+
+def slider_handle_center(slider):
+    from PyQt6.QtWidgets import QStyle, QStyleOptionSlider
+
+    option = QStyleOptionSlider()
+    slider.initStyleOption(option)
+    handle = slider.style().subControlRect(QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider)
+    return handle.center()
+
+
+def drag_slider(slider, dx, steps=10):
+    from PyQt6.QtWidgets import QApplication
+
+    start = QPointF(slider_handle_center(slider))
+    left = Qt.MouseButton.LeftButton
+
+    def send(kind, pos, button, buttons):
+        QApplication.sendEvent(slider, QMouseEvent(kind, pos, slider.mapToGlobal(pos), button, buttons,
+                                                   Qt.KeyboardModifier.NoModifier))
+
+    send(QEvent.Type.MouseButtonPress, start, left, left)
+    for k in range(1, steps + 1):
+        send(QEvent.Type.MouseMove, start + QPointF(dx * k / steps, 0), Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseButtonRelease, start + QPointF(dx, 0), left, Qt.MouseButton.NoButton)
+
+
+def test_one_slider_drag_is_one_undo_step(window, qapp):
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, "light.azimuth")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    values = []
+    window.vm.scene_changed.connect(lambda s, f: values.append(window.vm.scene.light.azimuth) if s == "light" else None)
+    drag_slider(row.slider, 80)
+    assert len(set(values)) > 2  # the drag passed through several values
+    assert undo_steps(window.vm) == 1
+    assert window.vm.scene.light.azimuth == 35.0
+    assert row.spin.value() == 35.0
+
+
+
+def test_a_slider_click_is_one_undo_step(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, "light.azimuth")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    QTest.mouseClick(row.slider, Qt.MouseButton.LeftButton, pos=QPoint(row.slider.width() - 4, row.slider.height() // 2))
+    assert window.vm.scene.light.azimuth != 35.0
+    assert undo_steps(window.vm) == 1
+    assert window.vm.scene.light.azimuth == 35.0
