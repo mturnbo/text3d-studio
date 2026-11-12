@@ -17,7 +17,7 @@ Without uv: `pip install "PyQt6>=6.6" "PyOpenGL>=3.1.7" "numpy>=1.26"`, then `py
 ## Architecture (MVVM)
 
 ```
-Model (model.py)            pure dataclasses: Scene{text, transform, ground, material, light, shadow, camera}, Document
+Model (model.py)            pure dataclasses: Scene{objects[TextObject{text, transform, material}], ground, light, shadow, camera}, Document
    ▲  mutated only via
 ViewModel (viewmodel.py)    SceneViewModel.set(section, field, value) → scene_changed / text_changed / background_changed
    ▲  signals                ▲ signals
@@ -60,10 +60,28 @@ the ground tilts the sun with it, but rotating the grid or the text doesn't move
 Any of these loads a PNG, JPG, BMP, WebP or TIFF as the background:
 - **Open Image…** on the toolbar, in the File menu, or on the canvas prompt (⌘O / Ctrl+O)
 - Drag a single image file onto the canvas
-- **File → Open Recent** (last 8 images). The Open dialog starts in the folder you last used.
+- **File → Open Recent** (last 8 images and projects). The Open dialog starts in the folder you last used.
 - Pass a path on the command line: `uv run text3d-studio photo.jpg`
 
 Exports render at the loaded image's size. The status bar shows it, and says so when a new image changes it.
+
+## Saving and opening projects
+
+A project (`.t3d`) saves the whole scene (every text object, the ground, grid, lighting, shadow and camera)
+with a link to the photo.
+- **File → Save Project** (⌘S / Ctrl+S) saves to the current project, or asks where the first time.
+  **Save Project As…** (⇧⌘S / Ctrl+Shift+S) saves a copy under a new name.
+- **File → Save Project With Photo…** stores a copy of the photo inside the project file, so it opens anywhere
+  on its own (the file gets bigger). Later saves of that project keep the photo inside.
+- Otherwise the photo is linked: keep the project and photo together (or move the folder that holds both)
+  and it is found again. If it can't be found, the scene still opens; the status bar says which photo is
+  missing and the canvas offers to open an image in its place. Photos on network shares aren't opened from
+  a project file.
+- **File → Open Project…** (⇧⌘O / Ctrl+Shift+O), dragging a `.t3d` onto the canvas, or **Open Recent** opens one.
+- The window title shows the project's name, with the unsaved-changes marker when there are edits. Closing
+  the window or opening a project with unsaved changes asks whether to save them first. Opening a new photo
+  keeps your text and just swaps the picture.
+  Opening a project starts a fresh undo history.
 
 ## Getting a natural look
 
@@ -76,6 +94,25 @@ Exports render at the loaded image's size. The status bar shows it, and says so 
 7. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. Use **Metallic** 1 for metals and 0 for everything else, and raise **Roughness** for matte or brushed surfaces. Leave **Reflect the photo** on so glossy text picks up the scene's colors.
 8. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
 
+## Several pieces of text
+
+The **Objects** list at the top of the panel holds every piece of text in the scene. **Add** puts a new
+default text in front of the selected one, **Duplicate** copies the selected one (text, placement and
+material) the same way, and **Delete** removes it (there is always at least one). Click a row, or click
+the text itself on the canvas, to select it. The Text, Text Placement and Material controls, every drag,
+scroll and pinch, and the grid's orange lanes then apply to that object. Clicking inside a letter's hole
+or on empty floor doesn't change the selection, so you can still drag the selected text from there. The
+ground, lighting, shadow and camera are shared, and adjusting the ground keeps every object in place.
+
+## Undo and redo
+
+**Edit → Undo** (⌘Z / Ctrl+Z) and **Edit → Redo** (⇧⌘Z / Ctrl+Shift+Z or Ctrl+Y) step through the last 100
+changes to the scene: any slider, colour or setting, adding, duplicating or deleting text, and every canvas
+drag. A whole drag (on the canvas or a slider) undoes in one step, and so does a quick burst on one setting:
+a scroll or pinch, holding a number field's arrows, or a run of typing in the Text field. Undo also brings
+back the object that was selected. Selecting alone isn't a step. ⌘Z works from the number fields too; inside
+the Text field it undoes your typing first. Opening a new photo starts a fresh history.
+
 ## Roadmap
 
 | Phase | Goal | Key work |
@@ -83,7 +120,7 @@ Exports render at the loaded image's size. The status bar shows it, and says so 
 | **1 – MVP (this repo)** | Credible composite + export | Layer-stack extrusion, system fonts, bevel, Blinn-Phong (physically based since v0.7), planar soft shadow, native-res MSAA export, 30+ FPS |
 | **2 – Integration quality** | Text "belongs" in the photo | Vanishing-point / horizon tool that solves Tilt+FOV from two drawn lines; light-direction picker from a shadow the user clicks; color grading (match black point, saturation, grain/noise, blur to the photo's depth of field); contact-hardening shadows (PCSS) |
 | **3 – Geometry fidelity** | Crisp at any size | MSDF glyph masks (sharp corners when magnified); true triangulated extrusion as an optional mode (`QPainterPath` → earcut), with the layer stack kept as the stylized mode; multi-line text, kerning and tracking controls |
-| **4 – Editing workflow** | Usable as a real editor | Multiple text objects, undo/redo (command pattern on the ViewModel), JSON project files, occlusion masks painted over the photo so the text can sit behind foreground objects |
+| **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (done), JSON project files (done), occlusion masks painted over the photo so the text can sit behind foreground objects |
 | **5 – Scale & ship** | Large photos, distribution | Tiled export beyond GPU limits (>16k px), 16-bit/HDR pipeline, PyInstaller / briefcase bundles with signing, CI on macOS/Windows/Linux |
 
 Known MVP limits:

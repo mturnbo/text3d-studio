@@ -1,4 +1,4 @@
-"""Text3DRenderer: draws the glyph mask as an instanced stack of duplicated layers."""
+"""Text3DRenderer: draws a text object's glyph mask as an instanced stack of duplicated layers."""
 
 import math
 
@@ -8,7 +8,7 @@ from OpenGL import GL
 from .. import ground as ground_model
 from .. import math3d
 from ..lighting import LightingState, srgb_to_linear
-from ..model import Scene
+from ..model import Scene, TextObject, TransformParams
 from ..text_raster import GlyphRaster
 from . import shaders
 from .gl_utils import ShaderProgram, Texture2D, TriangleBuffer, UnitQuad
@@ -26,7 +26,27 @@ LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on sc
 DEPTH_PREPASS = True
 
 
+class Glyph:
+    """One text object's glyph raster on the GPU: the mask texture and the traced side walls."""
+
+    def __init__(self, raster: GlyphRaster):
+        self.mask = Texture2D(mipmaps=True)
+        self.walls = TriangleBuffer()
+        self.upload(raster)
+
+    def upload(self, raster: GlyphRaster) -> None:
+        self.raster = raster
+        self.mask.upload(raster.rgba)
+        self.walls.upload(raster.walls)
+
+    def delete(self) -> None:
+        self.mask.delete()
+        self.walls.delete()
+
+
 class Text3DRenderer:
+    """Draws one text object at a time, with the glyph uploaded for it; holds no per-object state."""
+
     def __init__(self, quad: UnitQuad):
         self.quad = quad
         self.depth_prepass = DEPTH_PREPASS
@@ -34,42 +54,27 @@ class Text3DRenderer:
         self.depth = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_DEPTH_FS)
         self.cap_shadow = ShaderProgram(shaders.LAYER_STACK_VS, shaders.SHADOW_FS)
         self.wall_shadow = ShaderProgram(shaders.WALL_VS, shaders.SHADOW_FS)
-        self.mask = Texture2D(mipmaps=True)
-        self.walls = TriangleBuffer()
-        self.raster: GlyphRaster | None = None
-
-    def set_raster(self, raster: GlyphRaster | None) -> None:
-        self.raster = raster
-        if raster is not None:
-            self.mask.upload(raster.rgba)
-            self.walls.upload(raster.walls)
-
-    @property
-    def has_text(self) -> bool:
-        return self.raster is not None
 
     def draw_beauty(
-        self, scene: Scene, proj: np.ndarray, lighting: LightingState, viewport_height: int,
-        environment: Texture2D | None = None, backdrop: Texture2D | None = None,
+        self, scene: Scene, obj: TextObject, glyph: Glyph, proj: np.ndarray, lighting: LightingState,
+        viewport_height: int, environment: Texture2D | None = None, backdrop: Texture2D | None = None,
     ) -> None:
         """`environment`: the background photo to reflect, or None to reflect the ambient color instead.
         `backdrop`: what is behind the text in this viewport, for transmissive materials to show through."""
-        layers = self.effective_layers(scene, viewport_height)
+        layers = self.effective_layers(scene, obj.transform, viewport_height)
         if self.depth_prepass:
-            self._bind_common(self.depth, scene, proj, IDENTITY_GL, lighting)
+            self._bind_common(self.depth, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting)
             self.depth.set_int("u_layers", layers)
             GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
             self.quad.draw(layers)
             GL.glDepthFunc(GL.GL_EQUAL)
             GL.glDepthMask(GL.GL_FALSE)
 
-        # Coverage drives antialiasing but must not reach the stored alpha: Qt composites the canvas as
-        # premultiplied color, so alpha < 1 under bright pixels overflows into wrapped colors.
-        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         program = self.beauty
-        self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
+        self._bind_common(program, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
-        m = scene.material
+        m = obj.material
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
@@ -99,33 +104,37 @@ class Text3DRenderer:
             program.set_float("u_environment_lod", environment.max_lod)
             program.set_float("u_environment_strength", scene.light.reflection_strength)
         self.quad.draw(layers)
-        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         GL.glDepthFunc(GL.GL_LESS)
         GL.glDepthMask(GL.GL_TRUE)
 
-    def draw_shadow_caster(self, scene: Scene, proj: np.ndarray, lighting: LightingState) -> None:
-        """Front and back slices plus the traced side walls form a closed caster for any light angle."""
+    def draw_shadow_caster(
+        self, scene: Scene, obj: TextObject, glyph: Glyph, proj: np.ndarray, lighting: LightingState, darken,
+    ) -> None:
+        """Front and back slices plus the traced side walls form a closed caster for any light angle.
+
+        `darken`: how much this object's full-strength shadow darkens each color channel."""
         flatten = math3d.to_gl(lighting.shadow_matrix)
-        caps = min(2, self._layer_count(scene))
+        caps = min(2, self._layer_count(obj.transform))
 
         program = self.cap_shadow
-        self._bind_common(program, scene, proj, flatten, lighting)
+        self._bind_common(program, scene, obj.transform, glyph, proj, flatten, lighting)
         program.set_int("u_layers", caps)
         program.set_int("u_use_mask", 1)
         program.set_float("u_falloff", scene.shadow.falloff)
+        program.set_vec3("u_darken", darken)
         self.quad.draw(caps)
 
         if caps > 1:
             program = self.wall_shadow
-            self._bind_common(program, scene, proj, flatten, lighting)
+            self._bind_common(program, scene, obj.transform, glyph, proj, flatten, lighting)
             program.set_int("u_use_mask", 0)
             program.set_float("u_falloff", scene.shadow.falloff)
-            self.walls.draw()
+            program.set_vec3("u_darken", darken)
+            glyph.walls.draw()
 
     @staticmethod
-    def effective_layers(scene: Scene, viewport_height: int) -> int:
+    def effective_layers(scene: Scene, t: TransformParams, viewport_height: int) -> int:
         """The user's layer count, raised if needed so slices never separate into visible bands."""
-        t = scene.transform
         if t.depth <= 1e-4:
             return 1
         focal_px = (viewport_height / 2) / math.tan(math.radians(scene.camera.fov) / 2)
@@ -134,21 +143,19 @@ class Text3DRenderer:
         return min(MAX_LAYERS, max(int(t.layers), needed))
 
     @staticmethod
-    def _layer_count(scene: Scene) -> int:
-        t = scene.transform
+    def _layer_count(t: TransformParams) -> int:
         return max(1, int(t.layers)) if t.depth > 1e-4 else 1
 
-    def _bind_common(self, program, scene, proj, flatten_gl, lighting) -> None:
-        t = scene.transform
+    def _bind_common(self, program, scene, t, glyph, proj, flatten_gl, lighting) -> None:
         model = ground_model.text_model_matrix(scene.ground, t)
         program.use()
-        self.mask.bind(0)
+        glyph.mask.bind(0)
         program.set_int("u_mask", 0)
         program.set_mat4("u_model", math3d.to_gl(model))
         program.set_mat4("u_proj", math3d.to_gl(proj))
         program.set_mat4("u_flatten", flatten_gl)
-        program.set_vec2("u_origin", self.raster.origin)
-        program.set_vec2("u_size", self.raster.size)
+        program.set_vec2("u_origin", glyph.raster.origin)
+        program.set_vec2("u_size", glyph.raster.size)
         program.set_float("u_depth", t.depth)
         program.set_vec4("u_ground_plane", lighting.ground_plane)
         program.set_float("u_world_size", t.size)
@@ -158,5 +165,3 @@ class Text3DRenderer:
         self.depth.delete()
         self.cap_shadow.delete()
         self.wall_shadow.delete()
-        self.mask.delete()
-        self.walls.delete()

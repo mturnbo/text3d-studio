@@ -1,9 +1,11 @@
 """Compositor: owns all GL resources and renders a full frame into any framebuffer.
 
 It is independent of Qt widgets, so the on-screen canvas and the offscreen exporter
-share exactly the same pipeline:  background -> soft shadow (multiply) -> layer-stacked text.
-Transmissive text (glass) first copies the background and shadow into a mipmapped backdrop texture,
-which it samples, refracted and blurred, to show what is behind it.
+share exactly the same pipeline:  background -> soft shadow (multiply) -> text layer (composited over).
+Every text object is drawn, with depth testing, into one multisampled text layer, which is resolved and
+composited over the target, so later passes can work on the text alone. Transmissive text (glass) samples a
+mipmapped backdrop copied from the background and shadow before any text is drawn, refracted and blurred, to
+show what is behind it (so glass doesn't show the other text objects).
 """
 
 import numpy as np
@@ -12,14 +14,15 @@ from OpenGL import GL
 from .. import math3d
 from ..lighting import LightingEngine
 from ..materials import TRANSMISSION
-from ..model import Scene
+from ..model import Scene, TextObject
 from ..text_raster import GlyphRaster
 from . import shaders
-from .gl_utils import ColorTarget, ShaderProgram, Texture2D, UnitQuad
+from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
 from .shadow_renderer import ShadowRenderer
-from .text3d_renderer import Text3DRenderer
+from .text3d_renderer import Glyph, Text3DRenderer
 
 NEAR, FAR = 0.1, 1000.0
+MIN_LAYER_SAMPLES = 4  # the text layer antialiases even when the target isn't multisampled
 
 
 class Compositor:
@@ -30,7 +33,10 @@ class Compositor:
         self.background.upload(np.zeros((1, 1, 4), np.uint8))  # keeps the sampler complete before a photo loads
         self.has_background = False
         self.backdrop = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA, mipmaps=True)
+        self.text_layer = LayerTarget()
+        self.layer_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.LAYER_COMPOSITE_FS)
         self.text = Text3DRenderer(self.quad)
+        self.glyphs: dict[int, Glyph] = {}  # by TextObject.id; objects without one (no ink) aren't drawn
         self.shadows = ShadowRenderer(self.quad)
         self.lighting = LightingEngine()
         self.max_texture_size = int(GL.glGetIntegerv(GL.GL_MAX_TEXTURE_SIZE))
@@ -47,19 +53,39 @@ class Compositor:
         self.background.upload(pixels)
         self.has_background = True
 
-    def set_glyph(self, raster: GlyphRaster | None) -> None:
-        self.text.set_raster(raster)
+    def set_glyph(self, object_id: int, raster: GlyphRaster | None) -> None:
+        """Uploads a text object's glyph raster; None (text with no ink) removes it."""
+        glyph = self.glyphs.get(object_id)
+        if raster is None:
+            if glyph is not None:
+                self.glyphs.pop(object_id).delete()
+        elif glyph is None:
+            self.glyphs[object_id] = Glyph(raster)
+        else:
+            glyph.upload(raster)
+
+    def retain_glyphs(self, object_ids) -> None:
+        """Frees the glyphs of objects not in `object_ids` (deleted objects)."""
+        for object_id in [i for i in self.glyphs if i not in object_ids]:
+            self.glyphs.pop(object_id).delete()
+
+    def glyph_raster(self, object_id: int) -> GlyphRaster | None:
+        glyph = self.glyphs.get(object_id)
+        return glyph.raster if glyph is not None else None
 
     def render(self, scene: Scene, target_fbo: int, viewport: tuple[int, int, int, int]) -> None:
         x, y, width, height = viewport
         proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
         lighting = self.lighting.compute(scene.light, scene.ground)
+        drawn = [(obj, self.glyphs[obj.id]) for obj in scene.objects if obj.id in self.glyphs]
 
-        draw_shadow = scene.shadow.enabled and scene.shadow.opacity > 0 and self.text.has_text
+        draw_shadow = scene.shadow.enabled and scene.shadow.opacity > 0 and bool(drawn)
         if draw_shadow:
-            self.shadows.render_mask(self.text, scene, proj, lighting, viewport)
+            self.shadows.render_mask(self.text, scene, drawn, proj, lighting, viewport)
 
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+        target_samples = int(GL.glGetIntegerv(GL.GL_SAMPLES))
+        self.background_viewport = viewport
         GL.glViewport(x, y, width, height)
         GL.glEnable(GL.GL_SCISSOR_TEST)
         GL.glScissor(x, y, width, height)
@@ -70,22 +96,72 @@ class Compositor:
         if draw_shadow:
             self.shadows.composite_onto(scene)
 
-        if self.text.has_text:
+        if drawn:
             backdrop = None
-            if scene.material.kind in TRANSMISSION:
+            if any(obj.material.kind in TRANSMISSION for obj, _ in drawn):
                 self._capture_backdrop(target_fbo, viewport)
                 backdrop = self.backdrop.texture
-            GL.glEnable(GL.GL_DEPTH_TEST)
-            GL.glDepthFunc(GL.GL_LESS)
-            GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
-            reflect = self.has_background and scene.light.reflect_photo
-            self.text.draw_beauty(
-                scene, proj, lighting, height, self.background if reflect else None, backdrop
-            )
-            GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
-            GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glDisable(GL.GL_SCISSOR_TEST)
+            self._draw_text_layer(scene, drawn, proj, lighting, backdrop, max(MIN_LAYER_SAMPLES, target_samples))
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+            GL.glViewport(x, y, width, height)
+            GL.glEnable(GL.GL_SCISSOR_TEST)
+            self._composite_text_layer(viewport)
 
         GL.glDisable(GL.GL_SCISSOR_TEST)
+
+    def _draw_text_layer(
+        self, scene: Scene, drawn: list[tuple[TextObject, Glyph]], proj, lighting, backdrop, samples: int
+    ) -> None:
+        """Draws every text object, and nothing else, into self.text_layer and resolves it. The shared depth
+        buffer makes nearer objects hide farther ones, whatever their order."""
+        layer = self.text_layer
+        layer.resize(self.background_viewport[2], self.background_viewport[3], samples)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, layer.draw.fbo)
+        GL.glViewport(0, 0, layer.width, layer.height)
+        GL.glClearColor(0, 0, 0, 0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthFunc(GL.GL_LESS)
+        # Coverage picks the samples; each sample written is then fully opaque, so resolving averages the
+        # text over the transparent clear into premultiplied color and a coverage alpha.
+        GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
+        GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_ONE)
+        environment = self.background if self.has_background and scene.light.reflect_photo else None
+        for obj, glyph in drawn:
+            transmissive = obj.material.kind in TRANSMISSION
+            self.text.draw_beauty(
+                scene, obj, glyph, proj, lighting, layer.height, environment, backdrop if transmissive else None
+            )
+        GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_ONE)
+        GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        layer.resolve()
+
+    def _composite_text_layer(self, viewport) -> None:
+        """Puts the resolved layer over the bound target, writing its depth for the grid overlay.
+
+        Alpha writes stay off: Qt composites the canvas as premultiplied color, so stored alpha below 1
+        would let bright pixels overflow into wrapped colors.
+        """
+        x, y, _, _ = viewport
+        program = self.layer_program
+        program.use()
+        self.text_layer.color.bind(0)
+        self.text_layer.depth.bind(1)
+        program.set_int("u_color", 0)
+        program.set_int("u_depth", 1)
+        program.set_vec2("u_origin", (x, y))
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthFunc(GL.GL_ALWAYS)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        self.quad.draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDisable(GL.GL_BLEND)
 
     def _capture_backdrop(self, target_fbo: int, viewport) -> None:
         """Copies the viewport (resolving any multisampling) into self.backdrop and builds its mipmaps."""
@@ -112,9 +188,12 @@ class Compositor:
         self.quad.draw()
 
     def delete(self) -> None:
+        self.retain_glyphs(())
         self.text.delete()
         self.shadows.delete()
         self.backdrop.delete()
+        self.text_layer.delete()
+        self.layer_program.delete()
         self.background_program.delete()
         self.background.delete()
         self.quad.delete()

@@ -86,3 +86,18 @@ def test_walls_handle_glyph_touching_mask_border():
     alpha = np.ones((4, 4), dtype=np.float32)
     walls = extract_walls(alpha, origin=(0.0, 0.0), size=(4.0, 4.0), step=1).reshape(-1, 6, 3)
     assert len(walls) == 4
+
+
+def test_covers_follows_the_ink_and_its_holes(qapp):
+    raster = rasterize_text(TextParams(content="O"))
+    pad = -raster.origin[1]
+    top = raster.size[1] - 2 * pad  # the ink spans y = 0 to here and is centered on x = 0
+    ring_x = raster.origin[0] + pad + 0.04  # just inside the O's left edge
+    assert raster.covers(ring_x, top / 2)
+    assert not raster.covers(0.0, top / 2)  # the O's counter
+    assert not raster.covers(0.0, top + pad / 2)  # padding above the ink
+
+
+@pytest.mark.parametrize("point", [(-10.0, 0.3), (10.0, 0.3), (0.0, -5.0), (0.0, 5.0)])
+def test_covers_is_false_off_the_raster(qapp, point):
+    assert not rasterize_text(TextParams(content="H")).covers(*point)
