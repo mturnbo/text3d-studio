@@ -25,15 +25,16 @@ from PyQt6.QtWidgets import (
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
 from ..materials import KINDS
 from ..text_raster import ALIGNMENTS
+from ..text_raster import LAYOUT_RANGES
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
 SLIDERS = {
     "text": [
-        ("bevel_width", "Bevel width", 1, 20, 1),
-        ("letter_spacing", "Letter spacing", -0.1, 0.5, 2),
-        ("line_height", "Line height", 0.7, 2.0, 2),
-        ("arc", "Arc", -180, 180, 0),
+        ("bevel_width", "Bevel width", *LAYOUT_RANGES["bevel_width"], 1),
+        ("letter_spacing", "Letter spacing", *LAYOUT_RANGES["letter_spacing"], 2),
+        ("line_height", "Line height", *LAYOUT_RANGES["line_height"], 2),
+        ("arc", "Arc", *LAYOUT_RANGES["arc"], 0),
     ],
     "transform": [
         ("x", "Position X", -30, 30, 2),

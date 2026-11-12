@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -241,9 +243,37 @@ def test_left_and_right_alignment_mirror_the_short_lines(qapp):
     assert left.rgba.shape == right.rgba.shape
 
 
-def test_unknown_alignment_raises(qapp):
-    with pytest.raises(ValueError, match="alignment"):
-        rasterize_text(TextParams(content="HI", align="justify"))
+def test_unknown_alignment_falls_back_to_center(qapp):
+    # Text params can come from a project file; rasterizing runs inside the canvas paint, so it must not raise.
+    assert np.array_equal(rasterize_text(TextParams(content="HI\nHELLO", align="justify")).rgba,
+                          rasterize_text(TextParams(content="HI\nHELLO", align="center")).rgba)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("line_height", 1e9), ("line_height", -1e9), ("letter_spacing", 1e6), ("letter_spacing", -1e6),
+    ("arc", 1e9), ("bevel_width", 1e7), ("bevel_width", -5.0),
+    ("line_height", float("nan")), ("letter_spacing", float("inf")), ("arc", float("-inf")),
+])
+def test_extreme_layout_values_from_a_project_stay_within_the_texture_limit(qapp, field, value):
+    raster = rasterize_text(TextParams(content="AB\nCD", **{field: value}))
+    assert raster is not None
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+
+
+@pytest.mark.parametrize("field, value, clamped", [
+    ("line_height", 50.0, 2.0), ("letter_spacing", -3.0, -0.1), ("arc", 400.0, 180.0), ("bevel_width", 0.0, 1.0),
+])
+def test_out_of_range_layout_values_render_like_the_range_ends(qapp, field, value, clamped):
+    params = TextParams(content="AB\nCD")
+    out = rasterize_text(dataclasses.replace(params, **{field: value}))
+    end = rasterize_text(dataclasses.replace(params, **{field: clamped}))
+    assert np.array_equal(out.rgba, end.rgba)
+
+
+def test_text_too_long_for_the_limit_even_at_the_smallest_font_is_clipped(qapp):
+    raster = rasterize_text(TextParams(content="W" * 5000))
+    assert raster is not None
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
 
 
 # ----- Letter spacing and line height -------------------------------------------------------------------
