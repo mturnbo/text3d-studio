@@ -16,6 +16,7 @@ from .control_panel import ControlPanel
 from .image_canvas import FIT_TOOL, GRID_TOOL, TEXT_TOOL, ImageCanvas
 
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
+TRANSPARENT_FILTER = "PNG image (*.png)"  # JPEG has no transparency
 
 TOOL_HINTS = {
     TEXT_TOOL: "Drag: move · Shift: lock axis · Option/Alt: slide in perspective · Cmd/Ctrl or right-drag: yaw · "
@@ -71,12 +72,17 @@ class MainWindow(QMainWindow):
             "&Open Image…", QKeySequence.StandardKey.Open, lambda: self.open_image_dialog()
         )
         self.export_action = self._make_action("&Export…", QKeySequence("Ctrl+E"), self.export_image)
+        self.export_transparent_action = self._make_action(
+            "Export &Transparent PNG…", QKeySequence("Ctrl+Shift+E"), lambda: self.export_transparent_image()
+        )
+        self.export_transparent_action.setStatusTip("Export only the text and its shadow, over transparency")
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
         file_menu = self.file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
         self.recent_menu = file_menu.addMenu("Open &Recent")
         file_menu.addAction(self.export_action)
+        file_menu.addAction(self.export_transparent_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
         self._rebuild_recent_menu()
@@ -430,6 +436,31 @@ class MainWindow(QMainWindow):
             return
         width, height = self.vm.document.native_size
         self.statusBar().showMessage(f"Exported {width}×{height} → {path}", 8000)
+
+    def export_transparent_image(self) -> None:
+        """Exports the text and shadow alone as a straight-alpha PNG. Glass still shows the photo it refracts."""
+        source = self.vm.document.background_path
+        suggested = (os.path.splitext(source)[0] + "_3d_transparent.png") if source else "composition_transparent.png"
+        path, _ = QFileDialog.getSaveFileName(self, "Export transparent PNG", suggested, TRANSPARENT_FILTER)
+        if not path:
+            return
+        extension = os.path.splitext(path)[1].lower()
+        if not extension:
+            path += ".png"
+        elif extension != ".png":
+            QMessageBox.warning(
+                self, "PNG only", "A transparent export can only be saved as PNG: JPEG and other formats have no "
+                "transparency. Choose a name ending in .png."
+            )
+            return
+        self.statusBar().showMessage("Rendering at native resolution…")
+        try:
+            save_image(self.canvas.render_export(transparent=True), path)
+        except (ValueError, OSError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        width, height = self.vm.document.native_size
+        self.statusBar().showMessage(f"Exported transparent {width}×{height} → {path}", 8000)
 
     def _update_size_label(self) -> None:
         width, height = self.vm.document.native_size

@@ -110,6 +110,26 @@ class Compositor:
 
         GL.glDisable(GL.GL_SCISSOR_TEST)
 
+    def render_shadow_factor(
+        self, scene: Scene, target_fbo: int, viewport: tuple[int, int, int, int], strength_only: bool = False
+    ) -> bool:
+        """Clears the viewport to white and multiplies the shadow onto it, leaving 1 − opacity × mask per channel:
+        what the shadow multiplies the photo by. `strength_only` draws every shadow black, so all three channels
+        hold 1 − opacity × strength. Returns False, drawing nothing, when the scene casts no shadow."""
+        x, y, width, height = viewport
+        drawn = [(obj, self.glyphs[obj.id]) for obj in scene.objects if obj.id in self.glyphs]
+        if not (scene.shadow.enabled and scene.shadow.opacity > 0 and drawn):
+            return False
+        proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
+        lighting = self.lighting.compute(scene.light, scene.ground)
+        self.shadows.render_mask(self.text, scene, drawn, proj, lighting, viewport, strength_only)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+        GL.glViewport(x, y, width, height)
+        GL.glClearColor(1, 1, 1, 1)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        self.shadows.composite_onto(scene)
+        return True
+
     def _draw_text_layer(
         self, scene: Scene, drawn: list[tuple[TextObject, Glyph]], proj, lighting, backdrop, samples: int
     ) -> None:

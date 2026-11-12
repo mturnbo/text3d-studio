@@ -154,3 +154,52 @@ def test_a_bad_look_file_is_skipped_and_reported_in_the_status_bar(window, looks
     window.looks_menu.aboutToShow.emit()
     assert window.user_looks == []
     assert "broken.json" in window.statusBar().currentMessage()
+
+
+# ----- Transparent export -------------------------------------------------------------------------
+
+
+def save_dialog(monkeypatch, result):
+    calls = []
+    monkeypatch.setattr(f"{MAIN}.QFileDialog.getSaveFileName", lambda *args: calls.append(args) or (result, ""))
+    return calls
+
+
+def photo(window, width=160, height=100):
+    pixels = np.zeros((height, width, 4), np.uint8)
+    pixels[..., :3] = (200, 180, 150)
+    pixels[..., 3] = 255
+    window.vm.set_background(pixels, "/photos/street.jpg")
+
+
+def test_transparent_export_writes_a_png_with_alpha(window, monkeypatch, tmp_path, qapp):
+    from text3d_studio.image_io import load_image
+
+    photo(window)
+    window.show()
+    qapp.processEvents()
+    path = str(tmp_path / "out")
+    calls = save_dialog(monkeypatch, path)
+    window.export_transparent_action.trigger()
+    assert calls[0][2] == "/photos/street_3d_transparent.png"
+    assert calls[0][3] == "PNG image (*.png)"  # only PNG is offered
+    pixels = load_image(path + ".png")
+    assert pixels.shape == (100, 160, 4)
+    assert pixels[0, 0, 3] == 0 and pixels[..., 3].max() == 255
+    assert "transparent" in window.statusBar().currentMessage()
+
+
+@pytest.mark.parametrize("name", ["out.jpg", "out.JPEG", "out.bmp"])
+def test_transparent_export_refuses_formats_without_alpha(window, monkeypatch, tmp_path, name):
+    photo(window)
+    save_dialog(monkeypatch, str(tmp_path / name))
+    warnings = shown(monkeypatch)
+    window.export_transparent_image()
+    assert len(warnings) == 1 and "PNG" in warnings[0][1]
+    assert not (tmp_path / name).exists()
+
+
+def test_cancelled_transparent_export_writes_nothing(window, monkeypatch, tmp_path):
+    save_dialog(monkeypatch, "")
+    window.export_transparent_image()
+    assert not [name for name in os.listdir(tmp_path) if name.endswith(".png")]

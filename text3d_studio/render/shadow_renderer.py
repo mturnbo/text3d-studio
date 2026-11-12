@@ -24,9 +24,12 @@ class ShadowRenderer:
 
     def render_mask(
         self, text: Text3DRenderer, scene: Scene, casters: list[tuple[TextObject, Glyph]], proj,
-        lighting: LightingState, viewport,
+        lighting: LightingState, viewport, strength_only: bool = False,
     ) -> None:
-        """Renders every caster's shadow into one blurred mask at half the viewport resolution, in self.ping."""
+        """Renders every caster's shadow into one blurred mask at half the viewport resolution, in self.ping.
+
+        `strength_only` darkens every channel fully, so the mask holds each pixel's shadow strength alone (the
+        transparent export divides the colored mask by it to recover the shadow's color)."""
         _, _, width, height = viewport
         sw, sh = max(1, width // 2), max(1, height // 2)
         self.ping.resize(sw, sh)
@@ -40,7 +43,7 @@ class ShadowRenderer:
         GL.glBlendEquation(GL.GL_MAX)
         GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE)
         for obj, glyph in casters:
-            darken = tuple(1.0 - c for c in shadow_color(scene.shadow, obj.material))
+            darken = (1.0, 1.0, 1.0) if strength_only else tuple(1.0 - c for c in shadow_color(scene.shadow, obj.material))
             text.draw_shadow_caster(scene, obj, glyph, proj, lighting, darken)
         GL.glBlendEquation(GL.GL_FUNC_ADD)
         GL.glDisable(GL.GL_BLEND)
