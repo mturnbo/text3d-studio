@@ -95,6 +95,9 @@ COLORS = {
     "shadow": [("color", "Shadow color")],
 }
 
+# Colours that can be picked from the photo with an eyedropper button next to their colour button.
+EYEDROPPER_COLORS = {("light", "color"), ("light", "ambient_color")}
+
 # Material fields shown for each kind (the kind itself decides `metallic`, so that slider never shows).
 _SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength")
 MATERIAL_CONTROLS = {
@@ -267,6 +270,8 @@ class ColorButton(QPushButton):
 
 
 class ControlPanel(QScrollArea):
+    eyedropper_requested = pyqtSignal(str, str)  # (section, field): the next canvas click picks that colour
+
     def __init__(self, viewmodel: SceneViewModel):
         super().__init__()
         self.vm = viewmodel
@@ -448,8 +453,23 @@ class ControlPanel(QScrollArea):
         button = ColorButton()
         button.setObjectName(f"{section}.{field}")
         self._bind(section, field, button.set_color, button.color_changed)
-        form.addRow(label, button)
+        if (section, field) in EYEDROPPER_COLORS:
+            form.addRow(label, self._with_eyedropper(button, section, field))
+        else:
+            form.addRow(label, button)
         return button
+
+    def _with_eyedropper(self, button: ColorButton, section: str, field: str) -> QWidget:
+        pick = QPushButton("Pick")
+        pick.setObjectName(f"{section}.{field}.pick")
+        pick.setToolTip("Pick this colour from the photo: click here, then click the photo (Esc cancels)")
+        pick.clicked.connect(lambda: self.eyedropper_requested.emit(section, field))
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(button, 1)
+        layout.addWidget(pick)
+        return row
 
     def _remember_material_row(self, section, field, label, form, widget) -> None:
         if section == "material":

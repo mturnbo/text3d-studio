@@ -51,6 +51,7 @@ GRID_ROTATE_DEG_PER_PX = 0.3
 FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fresh measurement
 WALL_GRID_HALF_WIDTH = 40.0  # the wall preview's grid reaches this far along the wall each way, in world units
 WALL_GRID_HEIGHT = 12.0
+EYEDROPPER_RADIUS = 2  # the eyedropper averages a (2r + 1) x (2r + 1) block of photo pixels
 WALL_GRID_MIN_SPACING = 0.5  # coarser than the floor grid's smallest cells, so the preview stays light
 
 
@@ -245,6 +246,7 @@ class ImageCanvas(QOpenGLWidget):
         self._wall_start: tuple[float, float] | None = None  # ground point where a Set Wall drag began
         self.sun_points: list[tuple[float, float]] = []  # Match Sun clicks (top, base, tip), fractions of the image rect
         self.sun_valid = True
+        self.eyedropper: tuple[str, str] | None = None  # (section, field) the next click picks from the photo
         self.tool_overlay = ToolOverlay(self)
         self._frame_times: deque[float] = deque(maxlen=30)
 
@@ -426,14 +428,18 @@ class ImageCanvas(QOpenGLWidget):
             self.fit_status.emit("")
         self.fit_overlay.setVisible(tool == FIT_TOOL)
         self.fit_overlay.update()
+        self.eyedropper = None
         if tool == SUN_TOOL:
             self.sun_points = []
             self.sun_valid = True
             self.tool_status.emit(SUN_PROMPTS[0])
         self.tool_overlay.setVisible(tool in (WALL_TOOL, SUN_TOOL))
         self.tool_overlay.update()
-        self.setCursor(Qt.CursorShape.OpenHandCursor if tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
+        self._set_tool_cursor()
         self.tool_changed.emit(tool)
+
+    def _set_tool_cursor(self) -> None:
+        self.setCursor(Qt.CursorShape.OpenHandCursor if self.tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
 
     # ----- Mouse interaction --------------------------------------------------------------------
     # Press: select the object under the cursor; every gesture acts on the selected object
@@ -442,6 +448,9 @@ class ImageCanvas(QOpenGLWidget):
     # Wheel or pinch: scale                                         Cmd/Ctrl+wheel: nearer/farther
 
     def mousePressEvent(self, event) -> None:
+        if self.eyedropper is not None:
+            self._pick_color(event.position())
+            return
         if self.tool == GRID_TOOL:
             self._grid_press(event)
         elif self.tool == FIT_TOOL:
@@ -493,7 +502,7 @@ class ImageCanvas(QOpenGLWidget):
         self._grid_drag = None
         self._fit_handle = None
         self._wall_start = None
-        if self.tool == TEXT_TOOL:
+        if self.tool == TEXT_TOOL and self.eyedropper is None:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         # Ends with the last button up. A release with no press here (a dialog closed on the press) ends nothing.
         if self._editing and not event.buttons():
@@ -501,6 +510,8 @@ class ImageCanvas(QOpenGLWidget):
             self.vm.end_edit()
 
     def mouseMoveEvent(self, event) -> None:
+        if self.eyedropper is not None:
+            return  # keep the eyedropper's cursor
         if self.tool == FIT_TOOL:
             if self._fit_handle is None:
                 over_handle = self.fit_handle_at(event.position()) is not None
@@ -923,3 +934,40 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.set("light", "elevation", elevation)
         self.vm.end_edit()
         self.tool_status.emit(f"Sun matched: azimuth {azimuth:.0f}°, elevation {elevation:.0f}°. Click again to start over")
+
+    # ----- Eyedropper -----------------------------------------------------------------------------
+    # After a panel's Pick button, the next click on the photo sets that colour. Escape cancels.
+
+    def start_eyedropper(self, section: str, field: str) -> None:
+        self.eyedropper = (section, field)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setFocus()  # so Escape reaches the canvas
+        self.tool_status.emit("Click the photo to pick the colour · Esc cancels")
+
+    def cancel_eyedropper(self) -> None:
+        self.eyedropper = None
+        self._set_tool_cursor()
+        self.tool_status.emit("")
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape and self.eyedropper is not None:
+            self.cancel_eyedropper()
+            return
+        super().keyPressEvent(event)
+
+    def _pick_color(self, position: QPointF) -> None:
+        """Sets the eyedropper's colour to the photo's average around the clicked pixel."""
+        background = self.vm.document.background
+        u, v = self._image_pixel(position)
+        _, _, rect_w, rect_h = self._image_rect()
+        if background is None or not (0 <= u < rect_w and 0 <= v < rect_h):
+            self.tool_status.emit("Click on the photo to pick the colour · Esc cancels")
+            return
+        height, width = background.shape[:2]
+        column, row = min(int(u / rect_w * width), width - 1), min(int(v / rect_h * height), height - 1)
+        r = EYEDROPPER_RADIUS
+        block = background[max(row - r, 0):row + r + 1, max(column - r, 0):column + r + 1, :3]
+        color = tuple(float(c) for c in block.reshape(-1, 3).mean(axis=0) / 255.0)
+        section, field = self.eyedropper
+        self.vm.set(section, field, color)
+        self.cancel_eyedropper()

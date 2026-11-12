@@ -109,6 +109,7 @@ class MainWindow(QMainWindow):
         self.canvas.tool_changed.connect(self._on_tool_changed)
         self.canvas.fit_status.connect(self._show_fit_status)
         self.canvas.tool_status.connect(lambda message: self.statusBar().showMessage(message))
+        self.panel.eyedropper_requested.connect(self.canvas.start_eyedropper)
 
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setObjectName("mainToolbar")

@@ -453,3 +453,141 @@ def test_match_sun_is_in_the_tools_menu_with_shortcut_l_and_reports_in_the_statu
     action.trigger()
     assert window.canvas.tool == SUN_TOOL
     assert "top" in window.statusBar().currentMessage().lower()
+
+
+# ----- Eyedropper -------------------------------------------------------------------------------
+
+
+def photo(width=160, height=100):
+    """Left half red, right half blue, with a 5x5 patch of known, varied colours around pixel (row 40, col 60)."""
+    pixels = np.zeros((height, width, 4), np.uint8)
+    pixels[..., 3] = 255
+    pixels[:, : width // 2, :3] = (200, 30, 40)
+    pixels[:, width // 2:, :3] = (20, 60, 220)
+    rng = np.random.default_rng(3)
+    pixels[38:43, 58:63, :3] = rng.integers(0, 256, (5, 5, 3))
+    return pixels
+
+
+def picking_canvas(vm, pixels=None):
+    vm.set_background(photo() if pixels is None else pixels)
+    canvas = sized_canvas(vm)  # 800 x 500: the 160 x 100 photo fills it at 5 widget pixels per photo pixel
+    statuses = []
+    canvas.tool_status.connect(statuses.append)
+    return canvas, statuses
+
+
+def widget_position(canvas, row, column):
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    height, width = canvas.vm.document.background.shape[:2]
+    return (rect_x + (column + 0.5) * rect_w / width, rect_y + (row + 0.5) * rect_h / height)
+
+
+@pytest.mark.parametrize("field", ["color", "ambient_color"])
+def test_eyedropper_sets_the_light_colour_from_the_photo(vm, field):
+    canvas, _statuses = picking_canvas(vm)
+    canvas.start_eyedropper("light", field)
+    click(canvas, widget_position(canvas, 70, 20))
+    assert getattr(vm.scene.light, field) == pytest.approx((200 / 255, 30 / 255, 40 / 255))
+    assert canvas.eyedropper is None
+
+
+def test_eyedropper_averages_a_5x5_block(vm):
+    pixels = photo()
+    canvas, _statuses = picking_canvas(vm, pixels)
+    canvas.start_eyedropper("light", "color")
+    click(canvas, widget_position(canvas, 40, 60))
+    expected = pixels[38:43, 58:63, :3].reshape(-1, 3).mean(axis=0) / 255.0
+    assert vm.scene.light.color == pytest.approx(tuple(expected))
+    assert vm.scene.light.color != pytest.approx(tuple(pixels[40, 60, :3] / 255.0))
+
+
+def test_eyedropper_at_the_photos_corner_averages_what_is_there(vm):
+    pixels = photo()
+    pixels[0, 0, :3] = (255, 255, 255)
+    canvas, _statuses = picking_canvas(vm, pixels)
+    canvas.start_eyedropper("light", "color")
+    click(canvas, widget_position(canvas, 0, 0))
+    expected = pixels[0:3, 0:3, :3].reshape(-1, 3).mean(axis=0) / 255.0
+    assert vm.scene.light.color == pytest.approx(tuple(expected))
+
+
+def test_eyedropper_maps_through_the_letterboxed_image_rect(vm):
+    pixels = np.zeros((100, 400, 4), np.uint8)  # wider than the canvas: bars above and below
+    pixels[..., 3] = 255
+    pixels[:, :200, :3] = (10, 200, 10)
+    pixels[:, 200:, :3] = (250, 250, 0)
+    canvas, _statuses = picking_canvas(vm, pixels)
+    assert canvas._image_rect()[1] > 0
+    canvas.start_eyedropper("light", "color")
+    click(canvas, widget_position(canvas, 50, 300))
+    assert vm.scene.light.color == pytest.approx((250 / 255, 250 / 255, 0.0))
+
+
+def test_escape_cancels_the_eyedropper(vm):
+    from PyQt6.QtTest import QTest
+
+    canvas, statuses = picking_canvas(vm)
+    before = vm.scene.light.color
+    canvas.start_eyedropper("light", "color")
+    QTest.keyClick(canvas, Qt.Key.Key_Escape)
+    assert canvas.eyedropper is None and statuses[-1] == ""
+    click(canvas, widget_position(canvas, 70, 20))
+    assert vm.scene.light.color == before
+
+
+def test_a_click_off_the_photo_keeps_the_eyedropper_waiting(vm):
+    pixels = np.zeros((100, 400, 4), np.uint8)
+    pixels[..., 3] = 255
+    canvas, statuses = picking_canvas(vm, pixels)
+    before = vm.scene.light.color
+    canvas.start_eyedropper("light", "color")
+    click(canvas, (400, canvas._image_rect()[1] / 2))  # on the bar above the photo
+    assert vm.scene.light.color == before and canvas.eyedropper == ("light", "color")
+    assert "photo" in statuses[-1]
+
+
+def test_eyedropper_without_a_photo_picks_nothing(vm):
+    canvas = sized_canvas(vm)
+    before = vm.scene.light.color
+    canvas.start_eyedropper("light", "color")
+    click(canvas, (400, 250))
+    assert vm.scene.light.color == before
+
+
+def test_eyedropper_click_does_not_move_the_text_and_is_one_undo_step(vm):
+    canvas, _statuses = picking_canvas(vm)
+    vm.clear_history()
+    transform = dataclasses.replace(vm.selected_object.transform)
+    before = vm.scene.light.color
+    canvas.start_eyedropper("light", "color")
+    drag(canvas, widget_position(canvas, 70, 20), widget_position(canvas, 30, 120))
+    assert vm.selected_object.transform == transform
+    assert vm.undo() and vm.scene.light.color == before and not vm.can_undo
+
+
+def test_pick_buttons_sit_next_to_the_light_and_ambient_colours(window):
+    from PyQt6.QtWidgets import QPushButton
+
+    vm = window.vm
+    vm.set_background(photo())
+    for field in ("color", "ambient_color"):
+        button = window.panel.findChild(QPushButton, f"light.{field}.pick")
+        assert button is not None
+        button.click()
+        assert window.canvas.eyedropper == ("light", field)
+        assert "Esc" in window.statusBar().currentMessage()
+        window.canvas.cancel_eyedropper()
+    assert window.panel.findChild(QPushButton, "shadow.color.pick") is None
+
+
+def test_picked_colour_shows_on_the_panels_colour_button(window):
+    from text3d_studio.views.control_panel import ColorButton
+
+    window.vm.set_background(photo())
+    canvas = window.canvas
+    canvas.resize(800, 500)
+    canvas.start_eyedropper("light", "color")
+    click(canvas, widget_position(canvas, 70, 20))
+    button = window.panel.findChild(ColorButton, "light.color")
+    assert button._color == pytest.approx((200 / 255, 30 / 255, 40 / 255))
