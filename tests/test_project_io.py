@@ -1,0 +1,295 @@
+import dataclasses
+import json
+import os
+import shutil
+import typing
+
+import numpy as np
+import pytest
+
+from text3d_studio import model
+from text3d_studio.image_io import save_image
+from text3d_studio.model import Document, Scene, TextObject, TextParams, TransformParams
+from text3d_studio.project_io import COLOR_FIELDS, FORMAT_VERSION, load_project, save_project
+
+
+def photo_pixels(height=30, width=50):
+    rng = np.random.default_rng(7)
+    pixels = rng.integers(0, 256, (height, width, 4), dtype=np.uint8)
+    pixels[..., 3] = 255
+    return pixels
+
+
+def photo_file(folder, name="photo.png"):
+    path = str(folder / name)
+    save_image(photo_pixels(), path)
+    return path
+
+
+def busy_scene() -> Scene:
+    """Every section moved off its defaults, with a gap in the ids as a deletion leaves."""
+    scene = Scene(objects=[
+        TextObject(id=0, text=TextParams(content="ONE", italic=True), transform=TransformParams(x=1.5, z=-8.0)),
+        TextObject(id=3, text=TextParams(content="TWO", font_family="Courier"), transform=TransformParams(size=2.0)),
+    ])
+    scene.objects[1].material = dataclasses.replace(scene.objects[1].material, kind="glass", face_color=(0.1, 0.2, 0.3))
+    scene.ground = dataclasses.replace(scene.ground, pitch=12.5, roll=-3.0, height=2.0)
+    scene.grid = dataclasses.replace(scene.grid, visible=True, accent_color=(0.5, 0.25, 1.0))
+    scene.light = dataclasses.replace(scene.light, azimuth=80.0, color=(1.0, 0.5, 0.25), reflect_photo=False)
+    scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4))
+    scene.camera = dataclasses.replace(scene.camera, fov=55.0)
+    return scene
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data))
+    return str(path)
+
+
+def project_dict(**overrides):
+    return {"format": "text3d-studio-project", "version": 1, "scene": {}, "photo": None, **overrides}
+
+
+# ----- Round trips ------------------------------------------------------------------------------
+
+
+def test_multi_object_scene_round_trips_every_section(qapp, tmp_path):
+    document = Document(scene=busy_scene())
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, document)
+    loaded = load_project(path)
+    assert loaded.warnings == []
+    assert loaded.document.scene == document.scene
+    for section in ("ground", "grid", "light", "shadow", "camera"):
+        assert getattr(loaded.document.scene, section) == getattr(document.scene, section)
+    assert [o.id for o in loaded.document.scene.objects] == [0, 3]
+    assert loaded.document.background is None
+
+
+def test_colours_come_back_as_tuples(qapp, tmp_path):
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, Document(scene=busy_scene()))
+    scene = load_project(path).document.scene
+    assert scene.grid.accent_color == (0.5, 0.25, 1.0) and isinstance(scene.grid.accent_color, tuple)
+    assert isinstance(scene.objects[1].material.face_color, tuple)
+    assert isinstance(scene.shadow.color, tuple)
+
+
+def test_every_colour_field_is_restored_as_a_tuple():
+    for cls in (model.GridParams, model.MaterialParams, model.LightParams, model.ShadowParams, model.TextParams,
+                model.TransformParams, model.GroundParams, model.CameraParams):
+        hints = typing.get_type_hints(cls)
+        colours = {f.name for f in dataclasses.fields(cls) if hints[f.name] == model.Color}
+        assert colours == set(COLOR_FIELDS.get(cls, ())), cls.__name__
+
+
+def test_file_is_versioned_json(qapp, tmp_path):
+    path = tmp_path / "scene.t3d"
+    save_project(str(path), Document())
+    data = json.loads(path.read_text())
+    assert data["format"] == "text3d-studio-project"
+    assert data["version"] == FORMAT_VERSION == 1
+    assert data["photo"] is None
+    assert data["scene"]["objects"][0]["text"]["content"] == "HELLO"
+
+
+def test_saving_overwrites_an_existing_project(qapp, tmp_path):
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, Document())
+    save_project(path, Document(scene=busy_scene()))
+    assert load_project(path).document.scene == busy_scene()
+    assert os.listdir(tmp_path) == ["scene.t3d"]
+
+
+# ----- Photo ------------------------------------------------------------------------------------
+
+
+def test_linked_photo_is_stored_relative_and_absolute(qapp, tmp_path):
+    (tmp_path / "images").mkdir()
+    photo = photo_file(tmp_path / "images")
+    path = tmp_path / "scene.t3d"
+    save_project(str(path), Document(background=photo_pixels(), background_path=photo))
+    entry = json.loads(path.read_text())["photo"]
+    assert entry == {"relative_path": os.path.join("images", "photo.png"), "absolute_path": photo}
+
+
+def test_relative_photo_survives_moving_the_folder(qapp, tmp_path):
+    folder = tmp_path / "before"
+    folder.mkdir()
+    photo = photo_file(folder)
+    save_project(str(folder / "scene.t3d"), Document(background=photo_pixels(), background_path=photo))
+    moved = tmp_path / "after"
+    shutil.move(str(folder), str(moved))
+    loaded = load_project(str(moved / "scene.t3d"))
+    assert loaded.warnings == [] and loaded.missing_photo is None
+    assert loaded.document.background_path == str(moved / "photo.png")
+    assert np.array_equal(loaded.document.background, photo_pixels())
+    assert not loaded.photo_embedded
+
+
+def test_absolute_path_is_used_when_the_project_moves_alone(qapp, tmp_path):
+    photo = photo_file(tmp_path)
+    (tmp_path / "projects").mkdir()
+    save_project(str(tmp_path / "scene.t3d"), Document(background=photo_pixels(), background_path=photo))
+    shutil.move(str(tmp_path / "scene.t3d"), str(tmp_path / "projects" / "scene.t3d"))
+    loaded = load_project(str(tmp_path / "projects" / "scene.t3d"))
+    assert loaded.warnings == []
+    assert loaded.document.background_path == photo
+
+
+def test_embedded_photo_round_trips_pixel_exact(qapp, tmp_path):
+    pixels = photo_pixels()
+    pixels[0, :, 3] = np.arange(50, dtype=np.uint8) * 5  # translucent row: alpha must survive too
+    photo = photo_file(tmp_path)
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, Document(background=pixels, background_path=photo), embed_photo=True)
+    os.remove(photo)  # the project no longer needs it
+    loaded = load_project(path)
+    assert loaded.warnings == []
+    assert loaded.photo_embedded
+    assert loaded.document.background_path is None
+    assert np.array_equal(loaded.document.background, pixels)
+    assert "absolute_path" not in json.loads(open(path).read())["photo"]
+
+
+def test_background_without_a_path_is_embedded(qapp, tmp_path):
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, Document(background=photo_pixels()))
+    loaded = load_project(path)
+    assert loaded.photo_embedded
+    assert np.array_equal(loaded.document.background, photo_pixels())
+
+
+def test_missing_photo_is_a_warning_and_leaves_no_background(qapp, tmp_path):
+    photo = photo_file(tmp_path)
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, Document(scene=busy_scene(), background=photo_pixels(), background_path=photo))
+    os.remove(photo)
+    loaded = load_project(path)
+    assert loaded.document.background is None and loaded.document.background_path is None
+    assert loaded.missing_photo == photo
+    assert len(loaded.warnings) == 1 and photo in loaded.warnings[0]
+    assert loaded.document.scene == busy_scene()
+
+
+def test_unreadable_photo_is_a_warning(qapp, tmp_path):
+    photo = tmp_path / "photo.png"
+    photo.write_text("not an image")
+    path = write_json(tmp_path / "scene.t3d", project_dict(photo={"absolute_path": str(photo)}))
+    loaded = load_project(path)
+    assert loaded.document.background is None
+    assert loaded.missing_photo == str(photo)
+
+
+def test_damaged_embedded_photo_is_a_warning(qapp, tmp_path):
+    path = write_json(tmp_path / "scene.t3d", project_dict(photo={"embedded_png": "!!not base64!!"}))
+    loaded = load_project(path)
+    assert loaded.document.background is None
+    assert len(loaded.warnings) == 1
+
+
+# ----- Failures ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("content", ["", "{", '{"format": "text3d-studio-project", "version": 1, "sce'])
+def test_corrupt_or_truncated_json_raises(qapp, tmp_path, content):
+    path = tmp_path / "broken.t3d"
+    path.write_text(content)
+    with pytest.raises(ValueError, match="not a valid project"):
+        load_project(str(path))
+
+
+def test_binary_file_raises(qapp, tmp_path):
+    path = tmp_path / "photo.t3d"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe\x00")
+    with pytest.raises(ValueError):
+        load_project(str(path))
+
+
+@pytest.mark.parametrize("data", [[1, 2], {"scene": {}}, {"format": "something-else", "version": 1}])
+def test_wrong_format_raises(qapp, tmp_path, data):
+    with pytest.raises(ValueError, match="not a Text3D Studio project"):
+        load_project(write_json(tmp_path / "other.t3d", data))
+
+
+def test_newer_version_raises(qapp, tmp_path):
+    path = write_json(tmp_path / "future.t3d", project_dict(version=FORMAT_VERSION + 1))
+    with pytest.raises(ValueError, match="newer"):
+        load_project(path)
+
+
+@pytest.mark.parametrize("version", [None, 0, "1", 1.5])
+def test_invalid_version_raises(qapp, tmp_path, version):
+    with pytest.raises(ValueError, match="version"):
+        load_project(write_json(tmp_path / "odd.t3d", project_dict(version=version)))
+
+
+def test_damaged_scene_structure_raises(qapp, tmp_path):
+    path = write_json(tmp_path / "bad.t3d", project_dict(scene={"objects": [5], "light": "bright"}))
+    with pytest.raises(ValueError, match="damaged scene"):
+        load_project(path)
+
+
+def test_missing_project_file_raises_oserror(qapp, tmp_path):
+    with pytest.raises(OSError):
+        load_project(str(tmp_path / "nowhere.t3d"))
+
+
+def test_failed_save_leaves_the_old_file_intact(qapp, tmp_path):
+    path = tmp_path / "scene.t3d"
+    save_project(str(path), Document())
+    before = path.read_bytes()
+    broken = Document(scene=busy_scene())
+    broken.scene.objects[0].transform.x = object()  # not JSON-serializable: fails part-way through writing
+    with pytest.raises(TypeError):
+        save_project(str(path), broken)
+    assert path.read_bytes() == before
+    assert os.listdir(tmp_path) == ["scene.t3d"]  # no temp file left behind
+
+
+def test_saving_into_a_missing_folder_raises(qapp, tmp_path):
+    with pytest.raises(OSError):
+        save_project(str(tmp_path / "missing" / "scene.t3d"), Document())
+
+
+# ----- Tolerance --------------------------------------------------------------------------------
+
+
+def test_unknown_fields_are_ignored(qapp, tmp_path):
+    scene = {
+        "future_section": {"a": 1},
+        "camera": {"fov": 30.0, "lens_shift": 2.0},
+        "objects": [{"id": 4, "text": {"content": "X", "kerning": 3}, "sticker": True}],
+    }
+    path = write_json(tmp_path / "scene.t3d", project_dict(scene=scene, extra="ignored"))
+    loaded = load_project(path).document.scene
+    assert loaded.camera.fov == 30.0
+    assert loaded.objects[0].id == 4 and loaded.objects[0].text.content == "X"
+
+
+def test_missing_fields_take_defaults(qapp, tmp_path):
+    scene = {"light": {"azimuth": 10.0}, "objects": [{"id": 2, "transform": {"x": 4.0}}]}
+    loaded = load_project(write_json(tmp_path / "scene.t3d", project_dict(scene=scene))).document.scene
+    assert loaded.light == dataclasses.replace(model.LightParams(), azimuth=10.0)
+    assert loaded.objects[0].transform == TransformParams(x=4.0)
+    assert loaded.objects[0].text == TextParams()
+    assert loaded.ground == model.GroundParams() and loaded.shadow == model.ShadowParams()
+
+
+def test_missing_scene_and_photo_give_the_default_document(qapp, tmp_path):
+    path = write_json(tmp_path / "bare.t3d", {"format": "text3d-studio-project", "version": 1})
+    loaded = load_project(path)
+    assert loaded.document.scene == Scene()
+    assert loaded.document.background is None and loaded.warnings == []
+
+
+def test_empty_object_list_falls_back_to_one_default_object(qapp, tmp_path):
+    path = write_json(tmp_path / "scene.t3d", project_dict(scene={"objects": []}))
+    assert load_project(path).document.scene.objects == [TextObject()]
+
+
+def test_duplicate_or_missing_ids_are_renumbered(qapp, tmp_path):
+    objects = [{"text": {"content": "A"}}, {"text": {"content": "B"}}, {"id": 1, "text": {"content": "C"}}]
+    scene = load_project(write_json(tmp_path / "scene.t3d", project_dict(scene={"objects": objects}))).document.scene
+    assert [o.id for o in scene.objects] == [0, 1, 2]
+    assert [o.text.content for o in scene.objects] == ["A", "B", "C"]
