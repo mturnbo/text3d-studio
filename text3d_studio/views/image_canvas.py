@@ -318,12 +318,12 @@ class ImageCanvas(QOpenGLWidget):
 
     # ----- Export -------------------------------------------------------------------------------
 
-    def render_export(self, transparent: bool = False) -> np.ndarray:
-        """Renders the composition at the background's native resolution using this GL context."""
+    def render_export(self, transparent: bool = False, scale: float = 1.0) -> np.ndarray:
+        """Renders the composition at the background's native resolution (times `scale`) using this GL context."""
         self.makeCurrent()
         try:
             self._sync_resources()
-            return render_document(self.compositor, self.vm.document, transparent=transparent)
+            return render_document(self.compositor, self.vm.document, transparent=transparent, scale=scale)
         finally:
             self.doneCurrent()
 

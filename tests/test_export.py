@@ -1,4 +1,6 @@
-"""Export variants: transparent PNGs and scaled exports, rendered on the real GPU."""
+"""Export variants: transparent PNGs, scaled exports and batch naming, rendered on the real GPU."""
+
+import os
 
 import numpy as np
 import pytest
@@ -6,7 +8,13 @@ import pytest
 from text3d_studio.materials import PRESETS
 from text3d_studio.model import Document
 from text3d_studio.render.compositor import Compositor
-from text3d_studio.render.exporter import compose_transparent, render_document
+from text3d_studio.render.exporter import (
+    batch_jobs,
+    compose_transparent,
+    long_edge_scale,
+    render_document,
+    scaled_size,
+)
 from text3d_studio.render.shadow_renderer import shadow_color
 from text3d_studio.text_raster import rasterize_text
 
@@ -161,3 +169,92 @@ def test_compose_transparent_puts_text_over_its_shadow():
     assert pixels[0, 0, 3] == 128
     assert np.abs(pixels[0, 0, :3].astype(int) - np.array([51, 102, 153])).max() <= 1
     assert list(pixels[0, 1]) == [255, 0, 0, 255]  # opaque text hides the shadow
+
+
+# ----- Scaled export ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scale, size", [(1.0, (640, 400)), (0.5, (320, 200)), (0.3, (192, 120)), (1.5, (960, 600)),
+                                         (0.001, (1, 1))])
+def test_scaled_export_has_the_scaled_size(compositor, scale, size):
+    pixels = render(compositor, make_document(), scale=scale)
+    assert pixels.shape == (size[1], size[0], 4)
+
+
+def test_scaled_size_rounds_and_never_reaches_zero():
+    assert scaled_size((641, 401), 0.5) == (320, 200)  # round half to even, like Python
+    assert scaled_size((3000, 2000), 1920 / 3000) == (1920, 1280)
+    assert scaled_size((10, 10), 0.0) == (1, 1)
+
+
+def downscaled(pixels, factor=2):
+    height, width = pixels.shape[0] // factor, pixels.shape[1] // factor
+    blocks = pixels[: height * factor, : width * factor].astype(float).reshape(height, factor, width, factor, 4)
+    return blocks.mean(axis=(1, 3))
+
+
+@pytest.mark.parametrize("kind", ["metal", "glass"])
+def test_a_half_size_export_matches_the_native_export_scaled_down(compositor, kind):
+    doc = make_document(light=SHADOW_LIGHT, shadow={"softness": 0.2, "opacity": 0.7},
+                        material={**PRESETS[kind], "kind": kind})
+    native = render(compositor, doc)
+    half = render(compositor, doc, scale=0.5).astype(float)
+    difference = np.abs(half[..., :3] - downscaled(native)[..., :3])
+    assert difference.mean() < 1.5
+    assert np.percentile(difference, 99) < 30  # only antialiased edges and fine highlights differ
+    changed = lambda p: np.any(np.abs(p[..., :3] - BG_COLOR) > 8, axis=-1)
+    assert abs(changed(half).sum() - changed(downscaled(native)).sum()) < 0.03 * changed(half).sum()
+
+
+def test_a_half_size_transparent_export_matches_too(compositor):
+    doc = make_document(light=SHADOW_LIGHT, shadow={"softness": 0.2, "opacity": 0.7})
+    native = render(compositor, doc, transparent=True)
+    half = render(compositor, doc, transparent=True, scale=0.5)
+    assert half.shape == (200, 320, 4)
+    assert np.abs(half[..., 3] - downscaled(native)[..., 3]).mean() < 1.5
+
+
+def test_a_scale_beyond_the_gpu_limit_is_refused(compositor):
+    from OpenGL import GL
+
+    limit = int(GL.glGetIntegerv(GL.GL_MAX_RENDERBUFFER_SIZE))
+    with pytest.raises(ValueError, match="GPU limit"):
+        render(compositor, make_document(width=64, height=40), scale=(limit + 64) / 64)
+
+
+# ----- Batch planning -----------------------------------------------------------------------------
+
+
+def test_batch_jobs_name_every_size_and_format(tmp_path):
+    jobs = batch_jobs("street", (3000, 2000), [1.0, 0.5, long_edge_scale((3000, 2000), 1200)],
+                      ["png", "jpg", "transparent"], str(tmp_path))
+    names = [os.path.basename(job.path) for job in jobs]
+    assert names == [
+        "street_3d_3000x2000.png", "street_3d_3000x2000.jpg", "street_3d_3000x2000_transparent.png",
+        "street_3d_1500x1000.png", "street_3d_1500x1000.jpg", "street_3d_1500x1000_transparent.png",
+        "street_3d_1200x800.png", "street_3d_1200x800.jpg", "street_3d_1200x800_transparent.png",
+    ]
+    assert [job.size for job in jobs[::3]] == [(3000, 2000), (1500, 1000), (1200, 800)]
+    assert [job.transparent for job in jobs[:3]] == [False, False, True]
+
+
+def test_batch_jobs_export_a_repeated_size_once(tmp_path):
+    jobs = batch_jobs("p", (800, 600), [1.0, long_edge_scale((800, 600), 800)], ["png"], str(tmp_path))
+    assert [os.path.basename(job.path) for job in jobs] == ["p_3d_800x600.png"]
+
+
+def test_batch_jobs_never_replace_existing_files(tmp_path):
+    (tmp_path / "p_3d_800x600.png").write_bytes(b"old")
+    (tmp_path / "p_3d_800x600-2.png").write_bytes(b"old")
+    jobs = batch_jobs("p", (800, 600), [1.0], ["png", "jpg"], str(tmp_path))
+    assert [os.path.basename(job.path) for job in jobs] == ["p_3d_800x600-3.png", "p_3d_800x600.jpg"]
+
+
+def test_batch_jobs_reject_an_unknown_format(tmp_path):
+    with pytest.raises(ValueError):
+        batch_jobs("p", (800, 600), [1.0], ["gif"], str(tmp_path))
+
+
+def test_batch_jobs_with_nothing_chosen_are_empty(tmp_path):
+    assert batch_jobs("p", (800, 600), [], ["png"], str(tmp_path)) == []
+    assert batch_jobs("p", (800, 600), [1.0], [], str(tmp_path)) == []

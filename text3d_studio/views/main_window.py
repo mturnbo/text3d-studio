@@ -5,12 +5,14 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSplitter,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox, QSplitter, QVBoxLayout,
 )
 
 from .. import presets, project_io
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
+from ..render.exporter import batch_jobs, long_edge_scale, scaled_size
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
 from .image_canvas import FIT_TOOL, GRID_TOOL, TEXT_TOOL, ImageCanvas
@@ -76,6 +78,9 @@ class MainWindow(QMainWindow):
             "Export &Transparent PNG…", QKeySequence("Ctrl+Shift+E"), lambda: self.export_transparent_image()
         )
         self.export_transparent_action.setStatusTip("Export only the text and its shadow, over transparency")
+        self.batch_export_action = self._make_action(
+            "&Batch Export…", QKeySequence("Ctrl+Alt+E"), lambda: self.batch_export()
+        )
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
         file_menu = self.file_menu = self.menuBar().addMenu("&File")
@@ -83,6 +88,7 @@ class MainWindow(QMainWindow):
         self.recent_menu = file_menu.addMenu("Open &Recent")
         file_menu.addAction(self.export_action)
         file_menu.addAction(self.export_transparent_action)
+        file_menu.addAction(self.batch_export_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
         self._rebuild_recent_menu()
@@ -462,10 +468,134 @@ class MainWindow(QMainWindow):
         width, height = self.vm.document.native_size
         self.statusBar().showMessage(f"Exported transparent {width}×{height} → {path}", 8000)
 
+    def batch_export(self) -> None:
+        source = self.vm.document.background_path
+        folder = os.path.dirname(source) if source and os.path.isdir(os.path.dirname(source)) else ""
+        dialog = BatchExportDialog(self.vm.document.native_size, folder or self.preferences.last_directory(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.run_batch_export(dialog.folder(), dialog.scales(), dialog.formats())
+
+    def run_batch_export(self, folder: str, scales, formats) -> list[str]:
+        """Writes every size in every format into `folder`; returns the files written (stops at the first failure)."""
+        if not os.path.isdir(folder):
+            QMessageBox.warning(self, "Batch export", f"The folder {folder or '(none)'} doesn't exist.")
+            return []
+        source = self.vm.document.background_path
+        stem = os.path.splitext(os.path.basename(source))[0] if source else "composition"
+        jobs = batch_jobs(stem, self.vm.document.native_size, scales, formats, folder)
+        written, renders = [], {}
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for job in jobs:
+                self.statusBar().showMessage(f"Rendering {job.size[0]}×{job.size[1]}…")
+                key = (job.size, job.transparent)
+                if key not in renders:
+                    renders[key] = self.canvas.render_export(transparent=job.transparent, scale=job.scale)
+                save_image(renders[key], job.path)
+                written.append(job.path)
+        except (ValueError, OSError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Batch export failed", f"{exc}\n\n{len(written)} of {len(jobs)} files were written.")
+            return written
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.preferences.set_last_directory(folder)
+        self.statusBar().showMessage(f"Exported {len(written)} files → {folder}", 8000)
+        return written
+
     def _update_size_label(self) -> None:
         width, height = self.vm.document.native_size
         has_image = self.vm.document.background is not None
         self.size_label.setText(f"{width}×{height}" if has_image else f"No image · canvas {width}×{height}")
+
+
+class BatchExportDialog(QDialog):
+    """Sizes, formats and a folder for exporting several files in one go."""
+
+    def __init__(self, native_size: tuple[int, int], folder: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Export")
+        self.native_size = native_size
+        width, height = native_size
+        half = scaled_size(native_size, 0.5)
+        self.native_check = QCheckBox(f"Native ({width}×{height})")
+        self.native_check.setChecked(True)
+        self.half_check = QCheckBox(f"50% ({half[0]}×{half[1]})")
+        self.custom_check = QCheckBox("Long edge")
+        self.custom_spin = QSpinBox()
+        self.custom_spin.setRange(16, 16384)
+        self.custom_spin.setValue(min(1920, max(native_size)))
+        self.custom_spin.setSuffix(" px")
+        self.png_check = QCheckBox("PNG")
+        self.png_check.setChecked(True)
+        self.jpg_check = QCheckBox("JPG")
+        self.transparent_check = QCheckBox("Transparent PNG (text and shadow only)")
+        self.folder_edit = QLineEdit(folder)
+        browse = QPushButton("Choose…")
+        browse.clicked.connect(lambda: self._choose_folder())
+        note = QLabel(
+            "Files are named <photo>_3d_<width>x<height>.png or .jpg; transparent ones end in _transparent.png. "
+            "Existing files are never replaced: a number is added to the new file's name instead."
+        )
+        note.setWordWrap(True)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Export")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+
+        custom = QHBoxLayout()
+        custom.addWidget(self.custom_check)
+        custom.addWidget(self.custom_spin)
+        sizes = QVBoxLayout()
+        for widget in (self.native_check, self.half_check):
+            sizes.addWidget(widget)
+        sizes.addLayout(custom)
+        formats = QVBoxLayout()
+        for widget in (self.png_check, self.jpg_check, self.transparent_check):
+            formats.addWidget(widget)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(self.folder_edit)
+        folder_row.addWidget(browse)
+        form = QFormLayout()
+        form.addRow("Sizes", sizes)
+        form.addRow("Formats", formats)
+        form.addRow("Folder", folder_row)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(self.buttons)
+
+        for check in (self.native_check, self.half_check, self.custom_check, self.png_check, self.jpg_check,
+                      self.transparent_check):
+            check.toggled.connect(self._update_ok)
+        self.folder_edit.textChanged.connect(self._update_ok)
+        self._update_ok()
+
+    def scales(self) -> list[float]:
+        scales = []
+        if self.native_check.isChecked():
+            scales.append(1.0)
+        if self.half_check.isChecked():
+            scales.append(0.5)
+        if self.custom_check.isChecked():
+            scales.append(long_edge_scale(self.native_size, self.custom_spin.value()))
+        return scales
+
+    def formats(self) -> list[str]:
+        checks = (("png", self.png_check), ("jpg", self.jpg_check), ("transparent", self.transparent_check))
+        return [name for name, check in checks if check.isChecked()]
+
+    def folder(self) -> str:
+        return self.folder_edit.text().strip()
+
+    def _choose_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Export into", self.folder())
+        if folder:
+            self.folder_edit.setText(folder)
+
+    def _update_ok(self) -> None:
+        ok = bool(self.scales() and self.formats() and self.folder())
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(ok)
 
 
 def _load_with_busy_cursor(path: str):

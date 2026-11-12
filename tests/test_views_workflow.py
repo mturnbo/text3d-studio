@@ -203,3 +203,134 @@ def test_cancelled_transparent_export_writes_nothing(window, monkeypatch, tmp_pa
     save_dialog(monkeypatch, "")
     window.export_transparent_image()
     assert not [name for name in os.listdir(tmp_path) if name.endswith(".png")]
+
+
+# ----- Batch export -------------------------------------------------------------------------------
+
+
+def test_batch_export_writes_every_size_and_format(window, tmp_path, qapp):
+    from text3d_studio.image_io import load_image
+
+    photo(window, 160, 100)
+    window.show()
+    qapp.processEvents()
+    out = tmp_path / "out"
+    out.mkdir()
+    written = window.run_batch_export(str(out), [1.0, 0.5, 40 / 160], ["png", "jpg", "transparent"])
+    names = sorted(os.listdir(out))
+    assert names == sorted([
+        "street_3d_160x100.png", "street_3d_160x100.jpg", "street_3d_160x100_transparent.png",
+        "street_3d_80x50.png", "street_3d_80x50.jpg", "street_3d_80x50_transparent.png",
+        "street_3d_40x25.png", "street_3d_40x25.jpg", "street_3d_40x25_transparent.png",
+    ])
+    assert len(written) == 9
+    for name in names:
+        width, height = (int(n) for n in name.split("_")[2].split(".")[0].split("x"))
+        pixels = load_image(str(out / name))
+        assert pixels.shape[:2] == (height, width), name
+        assert (pixels[0, 0, 3] == 0) == ("transparent" in name), name
+    assert "9 files" in window.statusBar().currentMessage()
+
+
+def test_batch_export_keeps_existing_files(window, tmp_path, qapp):
+    photo(window, 160, 100)
+    window.show()
+    qapp.processEvents()
+    existing = tmp_path / "street_3d_160x100.png"
+    existing.write_bytes(b"keep me")
+    written = window.run_batch_export(str(tmp_path), [1.0], ["png"])
+    assert written == [str(tmp_path / "street_3d_160x100-2.png")]
+    assert existing.read_bytes() == b"keep me"
+
+
+def test_batch_export_into_a_missing_folder_is_refused(window, monkeypatch, tmp_path):
+    warnings = shown(monkeypatch)
+    assert window.run_batch_export(str(tmp_path / "missing"), [1.0], ["png"]) == []
+    assert len(warnings) == 1
+
+
+def test_batch_export_reports_a_failure_and_what_was_written(window, monkeypatch, tmp_path, qapp):
+    photo(window, 160, 100)
+    window.show()
+    qapp.processEvents()
+    errors = shown(monkeypatch, "critical")
+    written = window.run_batch_export(str(tmp_path), [1.0, 1000.0], ["png"])  # 160000 px wide is past the GPU's limit
+    assert written == [str(tmp_path / "street_3d_160x100.png")]
+    assert len(errors) == 1 and "1 of 2" in errors[0][2]
+    assert sorted(n for n in os.listdir(tmp_path) if n.endswith(".png")) == ["street_3d_160x100.png"]
+
+
+def batch_dialog(window):
+    from text3d_studio.views.main_window import BatchExportDialog
+
+    return BatchExportDialog((3000, 2000), "/photos", window)
+
+
+def test_batch_dialog_defaults_to_native_png_in_the_given_folder(window):
+    dialog = batch_dialog(window)
+    assert dialog.scales() == [1.0] and dialog.formats() == ["png"] and dialog.folder() == "/photos"
+    assert "1500×1000" in dialog.half_check.text()
+
+
+def test_batch_dialog_collects_sizes_and_formats(window):
+    dialog = batch_dialog(window)
+    dialog.half_check.setChecked(True)
+    dialog.custom_check.setChecked(True)
+    dialog.custom_spin.setValue(1200)
+    dialog.jpg_check.setChecked(True)
+    dialog.transparent_check.setChecked(True)
+    assert dialog.scales() == [1.0, 0.5, 0.4]
+    assert dialog.formats() == ["png", "jpg", "transparent"]
+
+
+def test_batch_dialog_needs_a_size_a_format_and_a_folder(window):
+    from PyQt6.QtWidgets import QDialogButtonBox
+
+    dialog = batch_dialog(window)
+    ok = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
+    assert ok.isEnabled()
+    dialog.png_check.setChecked(False)
+    assert not ok.isEnabled()
+    dialog.transparent_check.setChecked(True)
+    assert ok.isEnabled()
+    dialog.native_check.setChecked(False)
+    assert not ok.isEnabled()
+    dialog.half_check.setChecked(True)
+    dialog.folder_edit.setText("  ")
+    assert not ok.isEnabled()
+
+
+def test_batch_dialog_choose_button_picks_a_folder(window, monkeypatch, tmp_path):
+    from PyQt6.QtWidgets import QPushButton
+
+    monkeypatch.setattr(f"{MAIN}.QFileDialog.getExistingDirectory", lambda *args: str(tmp_path))
+    dialog = batch_dialog(window)
+    next(b for b in dialog.findChildren(QPushButton) if b.text() == "Choose…").click()
+    assert dialog.folder() == str(tmp_path)
+
+
+def test_batch_export_action_runs_what_the_dialog_chose(window, monkeypatch, tmp_path, qapp):
+    from PyQt6.QtWidgets import QDialog
+
+    photo(window, 160, 100)
+    window.show()
+    qapp.processEvents()
+
+    def accept(dialog):
+        dialog.folder_edit.setText(str(tmp_path))
+        dialog.half_check.setChecked(True)
+        dialog.native_check.setChecked(False)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(f"{MAIN}.BatchExportDialog.exec", accept)
+    window.batch_export_action.trigger()
+    assert "street_3d_80x50.png" in os.listdir(tmp_path)
+
+
+def test_cancelled_batch_dialog_exports_nothing(window, monkeypatch, tmp_path):
+    from PyQt6.QtWidgets import QDialog
+
+    photo(window, 160, 100)
+    monkeypatch.setattr(f"{MAIN}.BatchExportDialog.exec", lambda dialog: QDialog.DialogCode.Rejected)
+    window.batch_export()
+    assert not [name for name in os.listdir(tmp_path) if name.endswith((".png", ".jpg"))]
