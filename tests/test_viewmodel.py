@@ -101,6 +101,51 @@ def test_ground_edits_keep_the_text_on_the_same_camera_ray(vm):
     np.testing.assert_allclose(after / np.linalg.norm(after), before / np.linalg.norm(before), atol=1e-9)
 
 
+def test_ground_edits_keep_every_object_on_its_camera_ray(vm):
+    from text3d_studio import ground
+
+    vm.add_object()
+    vm.set("transform", "x", 3.0)
+    before = [ground.text_position(vm.scene.ground, o.transform) for o in vm.scene.objects]
+    vm.set("ground", "pitch", 8.0)
+    vm.set_ground_pose(roll=4.0, yaw=12.0, height=2.0)
+    for obj, old in zip(vm.scene.objects, before):
+        new = ground.text_position(vm.scene.ground, obj.transform)
+        np.testing.assert_allclose(new / np.linalg.norm(new), old / np.linalg.norm(old), atol=1e-9)
+
+
+def test_set_ground_pose_re_places_every_object_from_the_anchor(vm):
+    from text3d_studio import ground
+
+    vm.add_object()
+    anchor = vm.placement_snapshot()
+    vm.set_ground_pose(pitch=30.0)
+    vm.set_ground_pose(anchor=anchor, pitch=6.0)  # as if dragged straight from the anchor's pose
+    for obj, base in zip(vm.scene.objects, anchor[1]):
+        expected = ground.reanchor_text(anchor[0], vm.scene.ground, base)
+        t = obj.transform
+        np.testing.assert_allclose((t.x, t.z, t.rot_y, t.size), expected, atol=1e-12)
+
+
+def test_an_object_the_new_ground_cannot_hold_keeps_its_place_while_others_move(vm):
+    vm.set("transform", "z", -60.0)  # far away: a downward tilt puts it above the horizon
+    vm.add_object()
+    vm.set("transform", "z", -4.0)
+    far_before = dataclasses.replace(vm.scene.objects[0].transform)
+    near_before = dataclasses.replace(vm.scene.objects[1].transform)
+    vm.set("ground", "pitch", -10.0)
+    assert vm.scene.objects[0].transform == far_before
+    assert vm.scene.objects[1].transform != near_before
+
+
+def test_placement_snapshot_is_a_copy(vm):
+    vm.add_object()
+    ground, transforms = vm.placement_snapshot()
+    vm.set("ground", "pitch", 5.0)
+    assert ground.pitch == 0.0
+    assert all(t.z != o.transform.z for t, o in zip(transforms, vm.scene.objects))
+
+
 def test_ground_edits_report_the_moved_text_fields(vm):
     events = record(vm.scene_changed)
     vm.set("ground", "yaw", 15.0)

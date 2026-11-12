@@ -156,10 +156,10 @@ class ImageCanvas(QOpenGLWidget):
         self._roll_pivot: tuple[float, float] | None = None
         self._offset_start: tuple[float, float] | None = None
         self.fit_corners: list[tuple[float, float]] | None = None  # fractions of the image rect
-        self._pose_base = None  # (ground, transform) when a ground-changing drag began; text re-places from it
+        self._pose_base = None  # placement snapshot when a ground-changing drag began; the text re-places from it
         # Fit Rectangle re-places the text from the start of the whole tracing session, since corners are
         # dragged one at a time and the shape is only meaningful once all four are on the rectangle.
-        self._fit_settled = None  # (ground, transform) right after the last fit, to notice outside edits
+        self._fit_settled = None  # placement snapshot right after the last fit, to notice outside edits
         self.fit_overlay = FitHandlesOverlay(self)
         self.fit_valid = True
         self._fit_handle: int | None = None
@@ -455,8 +455,7 @@ class ImageCanvas(QOpenGLWidget):
         self._pose_base = self._pose_snapshot()
 
     def _pose_snapshot(self):
-        scene = self.vm.scene
-        return (dataclasses.replace(scene.ground), dataclasses.replace(self.vm.selected_object.transform))
+        return self.vm.placement_snapshot()
 
     def _grid_press(self, event) -> None:
         self._drag_origin = event.position()

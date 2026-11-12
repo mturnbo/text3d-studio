@@ -447,11 +447,13 @@ def apparent_size(vm):
     return vm.scene.objects[0].transform.size / np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.objects[0].transform))
 
 
-def text_anchor_on_screen(canvas):
+def text_anchor_on_screen(canvas, index=None):
+    """Where an object's anchor shows in widget pixels: the selected object's unless `index` names another."""
     rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
     scene = canvas.vm.scene
+    obj = canvas.vm.selected_object if index is None else scene.objects[index]
     pixel = math3d.project_to_image(
-        ground_model.text_position(scene.ground, scene.objects[0].transform), scene.camera.fov, (rect_w, rect_h)
+        ground_model.text_position(scene.ground, obj.transform), scene.camera.fov, (rect_w, rect_h)
     )
     return (pixel[0] + rect_x, pixel[1] + rect_y)
 
@@ -777,6 +779,19 @@ def test_horizon_drags_keep_the_text_in_place_on_screen(vm):
     drag(canvas, (760, 215), (760, 240))  # roll from the right end
     assert vm.scene.ground.pitch != 0 and vm.scene.ground.roll != 0
     np.testing.assert_allclose(text_anchor_on_screen(canvas), before, atol=1e-6)
+
+
+def test_horizon_drags_keep_every_object_in_place_on_screen(vm):
+    vm.add_object()
+    vm.set("transform", "x", -2.0)
+    canvas = grid_canvas(vm)
+    before = [text_anchor_on_screen(canvas, i) for i in range(2)]
+    drag(canvas, (400, 250), (400, 215))
+    drag(canvas, (760, 215), (760, 240))
+    drag(canvas, (400, 120), (460, 120), Qt.MouseButton.RightButton)  # grid yaw
+    assert vm.scene.ground.pitch != 0 and vm.scene.ground.roll != 0 and vm.scene.ground.yaw != 0
+    for i in range(2):
+        np.testing.assert_allclose(text_anchor_on_screen(canvas, i), before[i], atol=1e-6)
 
 
 def test_tilt_is_clamped_to_the_slider_range(vm):
