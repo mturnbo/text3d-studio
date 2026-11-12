@@ -4,16 +4,21 @@ import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
-from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSplitter
+from PyQt6.QtWidgets import (
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox, QSplitter, QVBoxLayout,
+)
 
-from .. import project_io
+from .. import presets, project_io
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
+from ..render.exporter import batch_jobs, long_edge_scale, scaled_size
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
 from .image_canvas import FIT_TOOL, GRID_TOOL, SUN_TOOL, TEXT_TOOL, WALL_TOOL, ImageCanvas
 
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
+TRANSPARENT_FILTER = "PNG image (*.png)"  # JPEG has no transparency
 
 TOOL_HINTS = {
     TEXT_TOOL: "Drag: move · Shift: lock axis · Option/Alt: slide in perspective · Cmd/Ctrl or right-drag: yaw · "
@@ -63,6 +68,7 @@ class MainWindow(QMainWindow):
         self.vm.dirty_changed.connect(self.setWindowModified)
         self._update_title()
         self._build_edit_menu()
+        self._build_looks_menu()
 
     def _build_actions(self) -> None:
         # Wrapped in a lambda: QAction.triggered passes a `checked` bool the handler must not receive.
@@ -70,12 +76,21 @@ class MainWindow(QMainWindow):
             "&Open Image…", QKeySequence.StandardKey.Open, lambda: self.open_image_dialog()
         )
         self.export_action = self._make_action("&Export…", QKeySequence("Ctrl+E"), self.export_image)
+        self.export_transparent_action = self._make_action(
+            "Export &Transparent PNG…", QKeySequence("Ctrl+Shift+E"), lambda: self.export_transparent_image()
+        )
+        self.export_transparent_action.setStatusTip("Export only the text and its shadow, over transparency")
+        self.batch_export_action = self._make_action(
+            "&Batch Export…", QKeySequence("Ctrl+Alt+E"), lambda: self.batch_export()
+        )
         quit_action = self._make_action("&Quit", QKeySequence.StandardKey.Quit, self.close)
 
         file_menu = self.file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
         self.recent_menu = file_menu.addMenu("Open &Recent")
         file_menu.addAction(self.export_action)
+        file_menu.addAction(self.export_transparent_action)
+        file_menu.addAction(self.batch_export_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
         self._rebuild_recent_menu()
@@ -87,8 +102,29 @@ class MainWindow(QMainWindow):
         self.grid_action.setChecked(self.vm.scene.grid.visible)
         self.grid_action.toggled.connect(lambda checked: self.vm.set("grid", "visible", checked))
         self.vm.scene_changed.connect(self._sync_grid_action)
-        view_menu = self.menuBar().addMenu("&View")
+        view_menu = self.view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.grid_action)
+        self.original_action = QAction("Show &Original Photo", self)
+        self.original_action.setCheckable(True)
+        self.original_action.setStatusTip("Show the photo without the text (or hold \\ over the canvas)")
+        self.original_action.toggled.connect(self.canvas.set_show_original)
+        view_menu.addAction(self.original_action)
+        view_menu.addSeparator()
+        # Wrapped in lambdas: QAction.triggered passes a `checked` bool.
+        self.zoom_in_action = self._make_action("Zoom &In", QKeySequence("Ctrl+="), lambda: self.canvas.zoom_in())
+        self.zoom_in_action.setShortcuts([QKeySequence("Ctrl+="), QKeySequence(QKeySequence.StandardKey.ZoomIn)])
+        self.zoom_out_action = self._make_action("Zoom &Out", QKeySequence("Ctrl+-"), lambda: self.canvas.zoom_out())
+        self.zoom_fit_action = self._make_action("&Fit", QKeySequence("Ctrl+0"), lambda: self.canvas.zoom_to_fit())
+        self.zoom_actual_action = self._make_action(
+            "&Actual Size", QKeySequence("Ctrl+1"), lambda: self.canvas.zoom_actual_size()
+        )
+        self.zoom_actual_action.setStatusTip("One photo pixel per screen pixel · hold Space and drag to pan")
+        for action in (self.zoom_in_action, self.zoom_out_action, self.zoom_fit_action, self.zoom_actual_action):
+            view_menu.addAction(action)
+        self.zoom_label = QLabel()
+        self.statusBar().addPermanentWidget(self.zoom_label)
+        self.canvas.zoom_changed.connect(self._update_zoom_label)
+        self._update_zoom_label()
 
         self.tool_actions = {}
         tool_group = QActionGroup(self)
@@ -254,6 +290,83 @@ class MainWindow(QMainWindow):
         self.undo_action.setEnabled(self.vm.can_undo)
         self.redo_action.setEnabled(self.vm.can_redo)
 
+    def _build_looks_menu(self) -> None:
+        # User looks are read from disk when the menu opens, so a startup never touches the looks folder.
+        self.looks_menu = self.menuBar().addMenu("&Looks")
+        self.looks_menu.aboutToShow.connect(self.refresh_looks_menu)
+        self.user_looks: list[presets.Look] = []
+        self._rebuild_looks_menu()
+
+    def refresh_looks_menu(self) -> None:
+        self.user_looks, warnings = presets.load_user_looks(self.preferences.looks_directory())
+        self._rebuild_looks_menu()
+        if warnings:
+            self.statusBar().showMessage(" · ".join(warnings))
+
+    def _rebuild_looks_menu(self) -> None:
+        menu = self.looks_menu
+        menu.clear()
+        for look in (*presets.BUILTIN_LOOKS, None, *self.user_looks):
+            if look is None:
+                menu.addSeparator()
+                continue
+            action = menu.addAction(look.name.replace("&", "&&"))
+            action.triggered.connect(lambda _checked=False, l=look: self.apply_look(l))
+        menu.addSeparator()
+        menu.addAction("&Save Look…").triggered.connect(lambda: self.save_look())
+        self.delete_look_menu = menu.addMenu("&Delete Look")
+        self.delete_look_menu.setEnabled(bool(self.user_looks))
+        for look in self.user_looks:
+            action = self.delete_look_menu.addAction(look.name.replace("&", "&&"))
+            action.triggered.connect(lambda _checked=False, l=look: self.delete_look(l))
+
+    def apply_look(self, look: presets.Look) -> None:
+        presets.apply_look(self.vm, look)
+        self.statusBar().showMessage(f"Applied the look “{look.name}”", 8000)
+
+    def save_look(self) -> bool:
+        """Asks for a name and saves the selected object's material with the light and shadow as a user look."""
+        name, ok = QInputDialog.getText(self, "Save Look", "Name of the look:")
+        if not ok:
+            return False
+        folder = self.preferences.looks_directory()
+        look = presets.capture_look(self.vm, name)
+        try:
+            try:
+                presets.save_user_look(folder, look)
+            except FileExistsError:
+                buttons = QMessageBox.StandardButton
+                answer = QMessageBox.question(
+                    self, "Replace look", f"A look called “{look.name}” already exists. Replace it?",
+                    buttons.Yes | buttons.No, buttons.No,
+                )
+                if answer != buttons.Yes:
+                    return False
+                presets.save_user_look(folder, look, replace=True)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Could not save look", str(exc))
+            return False
+        self.refresh_looks_menu()
+        self.statusBar().showMessage(f"Saved the look “{look.name}”", 8000)
+        return True
+
+    def delete_look(self, look: presets.Look) -> bool:
+        buttons = QMessageBox.StandardButton
+        answer = QMessageBox.question(
+            self, "Delete look", f"Delete the look “{look.name}”? This can't be undone.",
+            buttons.Yes | buttons.No, buttons.No,
+        )
+        if answer != buttons.Yes:
+            return False
+        try:
+            presets.delete_user_look(look)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Could not delete look", str(exc))
+            return False
+        self.refresh_looks_menu()
+        self.statusBar().showMessage(f"Deleted the look “{look.name}”", 8000)
+        return True
+
     def _on_tool_changed(self, tool: str) -> None:
         self.tool_actions[tool].setChecked(True)
         self.hint_label.setText(TOOL_HINTS[tool])
@@ -358,10 +471,163 @@ class MainWindow(QMainWindow):
         width, height = self.vm.document.native_size
         self.statusBar().showMessage(f"Exported {width}×{height} → {path}", 8000)
 
+    def export_transparent_image(self) -> None:
+        """Exports the text and shadow alone as a straight-alpha PNG. Glass still shows the photo it refracts."""
+        source = self.vm.document.background_path
+        suggested = (os.path.splitext(source)[0] + "_3d_transparent.png") if source else "composition_transparent.png"
+        path, _ = QFileDialog.getSaveFileName(self, "Export transparent PNG", suggested, TRANSPARENT_FILTER)
+        if not path:
+            return
+        extension = os.path.splitext(path)[1].lower()
+        if not extension:
+            path += ".png"
+        elif extension != ".png":
+            QMessageBox.warning(
+                self, "PNG only", "A transparent export can only be saved as PNG: JPEG and other formats have no "
+                "transparency. Choose a name ending in .png."
+            )
+            return
+        self.statusBar().showMessage("Rendering at native resolution…")
+        try:
+            save_image(self.canvas.render_export(transparent=True), path)
+        except (ValueError, OSError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        width, height = self.vm.document.native_size
+        self.statusBar().showMessage(f"Exported transparent {width}×{height} → {path}", 8000)
+
+    def batch_export(self) -> None:
+        source = self.vm.document.background_path
+        folder = os.path.dirname(source) if source and os.path.isdir(os.path.dirname(source)) else ""
+        dialog = BatchExportDialog(self.vm.document.native_size, folder or self.preferences.last_directory(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.run_batch_export(dialog.folder(), dialog.scales(), dialog.formats())
+
+    def run_batch_export(self, folder: str, scales, formats) -> list[str]:
+        """Writes every size in every format into `folder`; returns the files written (stops at the first failure)."""
+        if not os.path.isdir(folder):
+            QMessageBox.warning(self, "Batch export", f"The folder {folder or '(none)'} doesn't exist.")
+            return []
+        source = self.vm.document.background_path
+        stem = os.path.splitext(os.path.basename(source))[0] if source else "composition"
+        jobs = batch_jobs(stem, self.vm.document.native_size, scales, formats, folder)
+        written, renders = [], {}
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for job in jobs:
+                self.statusBar().showMessage(f"Rendering {job.size[0]}×{job.size[1]}…")
+                key = (job.size, job.transparent)
+                if key not in renders:
+                    renders[key] = self.canvas.render_export(transparent=job.transparent, scale=job.scale)
+                save_image(renders[key], job.path)
+                written.append(job.path)
+        except (ValueError, OSError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Batch export failed", f"{exc}\n\n{len(written)} of {len(jobs)} files were written.")
+            return written
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.preferences.set_last_directory(folder)
+        self.statusBar().showMessage(f"Exported {len(written)} files → {folder}", 8000)
+        return written
+
+    def _update_zoom_label(self) -> None:
+        percent = f"{self.canvas.zoom_factor() * 100:.0f}%"
+        self.zoom_label.setText(f"Fit ({percent})" if self.canvas.is_fitted else percent)
+
     def _update_size_label(self) -> None:
         width, height = self.vm.document.native_size
         has_image = self.vm.document.background is not None
         self.size_label.setText(f"{width}×{height}" if has_image else f"No image · canvas {width}×{height}")
+
+
+class BatchExportDialog(QDialog):
+    """Sizes, formats and a folder for exporting several files in one go."""
+
+    def __init__(self, native_size: tuple[int, int], folder: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Export")
+        self.native_size = native_size
+        width, height = native_size
+        half = scaled_size(native_size, 0.5)
+        self.native_check = QCheckBox(f"Native ({width}×{height})")
+        self.native_check.setChecked(True)
+        self.half_check = QCheckBox(f"50% ({half[0]}×{half[1]})")
+        self.custom_check = QCheckBox("Long edge")
+        self.custom_spin = QSpinBox()
+        self.custom_spin.setRange(16, 16384)
+        self.custom_spin.setValue(min(1920, max(native_size)))
+        self.custom_spin.setSuffix(" px")
+        self.png_check = QCheckBox("PNG")
+        self.png_check.setChecked(True)
+        self.jpg_check = QCheckBox("JPG")
+        self.transparent_check = QCheckBox("Transparent PNG (text and shadow only)")
+        self.folder_edit = QLineEdit(folder)
+        browse = QPushButton("Choose…")
+        browse.clicked.connect(lambda: self._choose_folder())
+        note = QLabel(
+            "Files are named <photo>_3d_<width>x<height>.png or .jpg; transparent ones end in _transparent.png. "
+            "Existing files are never replaced: a number is added to the new file's name instead."
+        )
+        note.setWordWrap(True)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Export")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+
+        custom = QHBoxLayout()
+        custom.addWidget(self.custom_check)
+        custom.addWidget(self.custom_spin)
+        sizes = QVBoxLayout()
+        for widget in (self.native_check, self.half_check):
+            sizes.addWidget(widget)
+        sizes.addLayout(custom)
+        formats = QVBoxLayout()
+        for widget in (self.png_check, self.jpg_check, self.transparent_check):
+            formats.addWidget(widget)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(self.folder_edit)
+        folder_row.addWidget(browse)
+        form = QFormLayout()
+        form.addRow("Sizes", sizes)
+        form.addRow("Formats", formats)
+        form.addRow("Folder", folder_row)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(self.buttons)
+
+        for check in (self.native_check, self.half_check, self.custom_check, self.png_check, self.jpg_check,
+                      self.transparent_check):
+            check.toggled.connect(self._update_ok)
+        self.folder_edit.textChanged.connect(self._update_ok)
+        self._update_ok()
+
+    def scales(self) -> list[float]:
+        scales = []
+        if self.native_check.isChecked():
+            scales.append(1.0)
+        if self.half_check.isChecked():
+            scales.append(0.5)
+        if self.custom_check.isChecked():
+            scales.append(long_edge_scale(self.native_size, self.custom_spin.value()))
+        return scales
+
+    def formats(self) -> list[str]:
+        checks = (("png", self.png_check), ("jpg", self.jpg_check), ("transparent", self.transparent_check))
+        return [name for name, check in checks if check.isChecked()]
+
+    def folder(self) -> str:
+        return self.folder_edit.text().strip()
+
+    def _choose_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Export into", self.folder())
+        if folder:
+            self.folder_edit.setText(folder)
+
+    def _update_ok(self) -> None:
+        ok = bool(self.scales() and self.formats() and self.folder())
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(ok)
 
 
 def _load_with_busy_cursor(path: str):

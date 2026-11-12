@@ -1,15 +1,23 @@
-"""Preferences: persistent per-user state (last folder, recent files) backed by QSettings."""
+"""Preferences: persistent per-user state (last folder, recent files) backed by QSettings, and where looks live."""
 
 import os
 
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QSettings, QStandardPaths
 
 MAX_RECENT_FILES = 8
 
 
 class Preferences:
-    def __init__(self, settings: QSettings):
+    def __init__(self, settings: QSettings, looks_directory: str | None = None):
         self.settings = settings
+        self._looks_directory = looks_directory
+
+    def looks_directory(self) -> str:
+        """The folder of the user's saved looks: the one given, else "looks" in the app's data folder."""
+        if self._looks_directory is not None:
+            return self._looks_directory
+        data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        return os.path.join(data, "looks")
 
     def last_directory(self) -> str:
         """The folder of the last opened image, or "" if unset or since deleted."""
