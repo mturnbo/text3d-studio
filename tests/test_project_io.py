@@ -38,6 +38,8 @@ def busy_scene() -> Scene:
     scene.light = dataclasses.replace(scene.light, azimuth=80.0, color=(1.0, 0.5, 0.25), reflect_photo=False)
     scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4))
     scene.camera = dataclasses.replace(scene.camera, fov=55.0)
+    scene.objects[1].transform = dataclasses.replace(scene.objects[1].transform, mount="wall", wall_x=-2.5, wall_y=1.25)
+    scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5)
     return scene
 
 
@@ -60,7 +62,7 @@ def test_multi_object_scene_round_trips_every_section(qapp, tmp_path):
     loaded = load_project(path)
     assert loaded.warnings == []
     assert loaded.document.scene == document.scene
-    for section in ("ground", "grid", "light", "shadow", "camera"):
+    for section in ("ground", "grid", "light", "shadow", "camera", "wall"):
         assert getattr(loaded.document.scene, section) == getattr(document.scene, section)
     assert [o.id for o in loaded.document.scene.objects] == [0, 3]
     assert loaded.document.background is None
@@ -85,7 +87,7 @@ def test_colours_come_back_as_tuples(qapp, tmp_path):
 
 def test_every_colour_field_is_restored_as_a_tuple():
     for cls in (model.GridParams, model.MaterialParams, model.LightParams, model.ShadowParams, model.TextParams,
-                model.TransformParams, model.GroundParams, model.CameraParams):
+                model.TransformParams, model.GroundParams, model.CameraParams, model.WallParams):
         hints = typing.get_type_hints(cls)
         colours = {f.name for f in dataclasses.fields(cls) if hints[f.name] == model.Color}
         assert colours == set(COLOR_FIELDS.get(cls, ())), cls.__name__
@@ -385,3 +387,15 @@ def test_relative_photo_outside_the_project_folder_loads(qapp, tmp_path):
     loaded = load_project(write_json(tmp_path / "projects" / "scene.t3d", project_dict(photo=entry)))
     assert loaded.warnings == []
     assert loaded.document.background_path == str(tmp_path / "photos" / "p.png")
+
+
+def test_wall_and_mounts_round_trip_and_default_when_missing(qapp, tmp_path):
+    path = str(tmp_path / "scene.t3d")
+    save_project(path, Document(scene=busy_scene()))
+    scene = load_project(path).document.scene
+    assert (scene.wall.angle, scene.wall.offset) == (-35.0, 7.5)
+    assert [o.transform.mount for o in scene.objects] == ["floor", "wall"]
+    assert (scene.objects[1].transform.wall_x, scene.objects[1].transform.wall_y) == (-2.5, 1.25)
+    older = load_project(write_json(tmp_path / "old.t3d", project_dict(scene={"objects": [{"transform": {"x": 1.0}}]})))
+    assert older.document.scene.wall == model.WallParams()
+    assert older.document.scene.objects[0].transform.mount == "floor"

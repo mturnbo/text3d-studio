@@ -325,3 +325,20 @@ def test_horizon_line_distance_is_in_pixels():
 
 def test_looking_straight_down_has_no_horizon():
     assert math3d.horizon_line(np.array([0.0, 0.0, 1.0]), 40.0, IMAGE) is None
+
+
+def test_closest_line_parameter_finds_the_nearest_point_to_a_skew_ray():
+    # The vertical line through x = 2 and a ray along x at height 3, z = -1: closest at y = 3.
+    t = math3d.closest_line_parameter((2.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 3.0, -1.0), (1.0, 0.0, 0.0))
+    assert t == pytest.approx(3.0)
+
+
+def test_closest_line_parameter_scales_with_the_direction_and_meets_crossing_lines():
+    ray = np.array([1.0, 2.0, -4.0]) / np.linalg.norm([1.0, 2.0, -4.0])
+    point = 5.0 * ray + np.array([0.0, -2.0, 0.0])  # the line passes 2 below the ray's point at distance 5
+    t = math3d.closest_line_parameter(point, (0.0, 0.5, 0.0), (0.0, 0.0, 0.0), ray)
+    np.testing.assert_allclose(point + t * np.array([0.0, 0.5, 0.0]), 5.0 * ray, atol=1e-12)
+
+
+def test_closest_line_parameter_is_undefined_for_parallel_lines():
+    assert math3d.closest_line_parameter((1, 0, 0), (0, 1, 0), (0, 0, 0), (0, -2, 0)) is None
