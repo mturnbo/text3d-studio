@@ -17,7 +17,7 @@ Without uv: `pip install "PyQt6>=6.6" "PyOpenGL>=3.1.7" "numpy>=1.26"`, then `py
 ## Architecture (MVVM)
 
 ```
-Model (model.py)            pure dataclasses: Scene{text, transform, ground, material, light, shadow, camera}, Document
+Model (model.py)            pure dataclasses: Scene{objects[TextObject{text, transform, material}], ground, light, shadow, camera}, Document
    ▲  mutated only via
 ViewModel (viewmodel.py)    SceneViewModel.set(section, field, value) → scene_changed / text_changed / background_changed
    ▲  signals                ▲ signals
@@ -76,6 +76,16 @@ Exports render at the loaded image's size. The status bar shows it, and says so 
 7. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. Use **Metallic** 1 for metals and 0 for everything else, and raise **Roughness** for matte or brushed surfaces. Leave **Reflect the photo** on so glossy text picks up the scene's colors.
 8. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
 
+## Several pieces of text
+
+The **Objects** list at the top of the panel holds every piece of text in the scene. **Add** puts a new
+default text in front of the selected one, **Duplicate** copies the selected one (text, placement and
+material) the same way, and **Delete** removes it (there is always at least one). Click a row, or click
+the text itself on the canvas, to select it. The Text, Text Placement and Material controls, every drag,
+scroll and pinch, and the grid's orange lanes then apply to that object. Clicking inside a letter's hole
+or on empty floor doesn't change the selection, so you can still drag the selected text from there. The
+ground, lighting, shadow and camera are shared, and adjusting the ground keeps every object in place.
+
 ## Roadmap
 
 | Phase | Goal | Key work |
@@ -83,7 +93,7 @@ Exports render at the loaded image's size. The status bar shows it, and says so 
 | **1 – MVP (this repo)** | Credible composite + export | Layer-stack extrusion, system fonts, bevel, Blinn-Phong (physically based since v0.7), planar soft shadow, native-res MSAA export, 30+ FPS |
 | **2 – Integration quality** | Text "belongs" in the photo | Vanishing-point / horizon tool that solves Tilt+FOV from two drawn lines; light-direction picker from a shadow the user clicks; color grading (match black point, saturation, grain/noise, blur to the photo's depth of field); contact-hardening shadows (PCSS) |
 | **3 – Geometry fidelity** | Crisp at any size | MSDF glyph masks (sharp corners when magnified); true triangulated extrusion as an optional mode (`QPainterPath` → earcut), with the layer stack kept as the stylized mode; multi-line text, kerning and tracking controls |
-| **4 – Editing workflow** | Usable as a real editor | Multiple text objects, undo/redo (command pattern on the ViewModel), JSON project files, occlusion masks painted over the photo so the text can sit behind foreground objects |
+| **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (command pattern on the ViewModel), JSON project files, occlusion masks painted over the photo so the text can sit behind foreground objects |
 | **5 – Scale & ship** | Large photos, distribution | Tiled export beyond GPU limits (>16k px), 16-bit/HDR pipeline, PyInstaller / briefcase bundles with signing, CI on macOS/Windows/Linux |
 
 Known MVP limits:
