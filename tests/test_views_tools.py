@@ -591,3 +591,22 @@ def test_picked_colour_shows_on_the_panels_colour_button(window):
     click(canvas, widget_position(canvas, 70, 20))
     button = window.panel.findChild(ColorButton, "light.color")
     assert button._color == pytest.approx((200 / 255, 30 / 255, 40 / 255))
+
+
+def test_wall_preview_is_clipped_to_the_photo(vm):
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QImage, QRegion
+    from PyQt6.QtWidgets import QWidget
+
+    vm.set_background(np.full((100, 400, 4), 255, np.uint8))  # wide: bars above and below the photo
+    canvas = wall_canvas(vm)
+    canvas.tool_overlay.setGeometry(canvas.rect())
+    image = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    image.fill(0)
+    canvas.tool_overlay.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)  # no background
+    alpha = np.array([[image.pixelColor(x, y).alpha() for x in range(0, 800, 4)] for y in range(0, 500, 4)])
+    _, rect_y, _, rect_h = canvas._image_rect()
+    rows = np.arange(0, 500, 4)
+    inside = (rows >= rect_y) & (rows < rect_y + rect_h)
+    assert alpha[inside].any()
+    assert not alpha[~inside].any()

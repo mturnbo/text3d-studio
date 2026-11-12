@@ -7,7 +7,7 @@ from collections import deque
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -160,6 +160,7 @@ class ToolOverlay(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRect(QRectF(*self.canvas._image_rect()))  # never over the bars beside the photo
         if self.canvas.tool == WALL_TOOL:
             self._paint_wall(painter)
         if self.canvas.tool == SUN_TOOL:
