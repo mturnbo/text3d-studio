@@ -1672,3 +1672,138 @@ def test_a_slider_click_is_one_undo_step(window, qapp):
     assert window.vm.scene.light.azimuth != 35.0
     assert undo_steps(window.vm) == 1
     assert window.vm.scene.light.azimuth == 35.0
+
+
+def edit_menu(window):
+    return next(a.menu() for a in window.menuBar().actions() if a.text() == "&Edit")
+
+
+def test_edit_menu_sits_after_file_and_holds_undo_and_redo(window):
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert titles[:3] == ["&File", "&Edit", "&View"]
+    assert edit_menu(window).actions() == [window.undo_action, window.redo_action]
+    assert window.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
+    assert window.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
+
+
+def test_undo_and_redo_actions_follow_the_history(window):
+    vm = window.vm
+    assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+    vm.set("light", "azimuth", 10.0)
+    assert window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+    window.undo_action.trigger()
+    assert vm.scene.light.azimuth == 35.0
+    assert not window.undo_action.isEnabled() and window.redo_action.isEnabled()
+    window.redo_action.trigger()
+    assert vm.scene.light.azimuth == 10.0
+    vm.set_background(background(), "photo.png")
+    assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+
+
+def test_undo_refreshes_the_panel_list_and_grid_action(window):
+    from PyQt6.QtWidgets import QLineEdit
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    vm, panel = window.vm, window.panel
+    vm.set("grid", "visible", True)
+    vm.add_object()
+    vm.set("text", "content", "SIGN")
+    vm.set("transform", "size", 7.0)
+    vm.apply_material("glass")
+    for _ in range(5):
+        vm.undo()
+    assert object_rows(panel) == ["HELLO"]
+    assert panel.findChild(SliderRow, "transform.size").spin.value() == 3.0
+    assert panel.findChild(QLineEdit, "text.content").text() == "HELLO"
+    assert material_combo(panel).currentData() == "metal"
+    assert not window.grid_action.isChecked()
+    for _ in range(5):
+        vm.redo()
+    assert object_rows(panel) == ["HELLO", "SIGN"]
+    assert panel.object_list.currentRow() == 1
+    assert panel.findChild(SliderRow, "transform.size").spin.value() == 7.0
+    assert material_combo(panel).currentData() == "glass"
+    assert material_row_visible(panel, "absorption")
+
+
+def test_undo_re_rasterizes_the_text_it_restores(vm):
+    canvas = sized_canvas(vm)
+    canvas._update_rasters()
+    vm.set("text", "content", "WORLD")
+    canvas._update_rasters()
+    vm.undo()
+    canvas._update_rasters()
+    assert canvas._rasters[vm.scene.objects[0].id][0].content == "HELLO"
+
+
+def press_undo(widget, redo=False):
+    from PyQt6.QtTest import QTest
+
+    modifiers = Qt.KeyboardModifier.ControlModifier  # Qt's name for macOS's Command key
+    if redo:
+        modifiers |= Qt.KeyboardModifier.ShiftModifier
+    QTest.keyClick(widget, Qt.Key.Key_Z, modifiers)
+
+
+def test_cmd_z_on_the_canvas_undoes_and_shift_cmd_z_redoes(window, qapp):
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    window.canvas.setFocus()
+    qapp.processEvents()
+    press_undo(window.canvas)
+    assert window.vm.scene.light.azimuth == 35.0
+    press_undo(window.canvas, redo=True)
+    assert window.vm.scene.light.azimuth == 10.0
+
+
+@pytest.mark.parametrize("field", ["transform.size", "ground.pitch"])
+def test_cmd_z_in_a_number_field_undoes_the_scene(window, qapp, field):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    spin = window.panel.findChild(SliderRow, field).spin
+    spin.setFocus()
+    spin.selectAll()
+    qapp.processEvents()
+    before = copy.deepcopy(window.vm.scene)
+    QTest.keyClicks(spin, "5")
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert window.vm.scene != before
+    press_undo(spin)
+    assert window.vm.scene == before
+    assert spin.value() == window.vm.get(*field.split("."))
+    press_undo(spin, redo=True)
+    assert window.vm.scene != before
+
+
+def test_cmd_z_in_the_font_field_undoes_the_scene(window, qapp):
+    from PyQt6.QtWidgets import QFontComboBox
+
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    fonts = window.panel.findChild(QFontComboBox)
+    fonts.setFocus()
+    qapp.processEvents()
+    press_undo(fonts)
+    assert window.vm.scene.light.azimuth == 35.0
+
+
+def test_cmd_z_in_the_text_field_undoes_typing_not_the_scene(window, qapp):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit
+
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    edit = window.panel.findChild(QLineEdit, "text.content")
+    edit.setFocus()
+    edit.end(False)
+    qapp.processEvents()
+    QTest.keyClicks(edit, "XY")
+    assert window.vm.scene.objects[0].text.content == "HELLOXY"
+    press_undo(edit)
+    assert edit.text() == "HELLO"  # QLineEdit's own undo took the whole typed run back
+    assert window.vm.scene.objects[0].text.content == "HELLO"
+    assert window.vm.scene.light.azimuth == 10.0  # the scene's undo didn't run

@@ -1,7 +1,7 @@
 """ControlPanel: declarative slider/picker layout bound two-way to the SceneViewModel."""
 
 from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -157,6 +157,20 @@ class LetterShortcuts(QObject):
         return False
 
 
+class UndoShortcuts(QObject):
+    """Lets Undo/Redo (Cmd+Z, Shift+Cmd+Z) reach the Edit menu while a number or font field has focus.
+
+    Those fields claim the keys for their own text undo, which would leave the scene's undo unreachable from
+    them. Leaving the claim unaccepted lets the shortcut through. The Text field keeps its native text undo.
+    """
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.ShortcutOverride:
+            if event.matches(QKeySequence.StandardKey.Undo) or event.matches(QKeySequence.StandardKey.Redo):
+                return True
+        return False
+
+
 class SliderUndoGroups(QObject):
     """Makes each slider press→release one undo step.
 
@@ -279,6 +293,9 @@ class ControlPanel(QScrollArea):
         self.letter_shortcuts = LetterShortcuts(self)
         for spin in content.findChildren(QAbstractSpinBox):
             spin.installEventFilter(self.letter_shortcuts)
+        self.undo_shortcuts = UndoShortcuts(self)
+        for field in content.findChildren((QAbstractSpinBox, QComboBox)):
+            field.installEventFilter(self.undo_shortcuts)
         self.slider_undo_groups = SliderUndoGroups(self, self.vm)
         for slider in content.findChildren(QSlider):
             slider.installEventFilter(self.slider_undo_groups)
