@@ -10,7 +10,7 @@ import pytest
 from text3d_studio import model
 from text3d_studio.image_io import save_image
 from text3d_studio.model import Document, Scene, TextObject, TextParams, TransformParams
-from text3d_studio.project_io import COLOR_FIELDS, FORMAT_VERSION, load_project, save_project
+from text3d_studio.project_io import COLOR_FIELDS, FORMAT_VERSION, is_allowed_photo_path, load_project, save_project
 
 
 def photo_pixels(height=30, width=50):
@@ -298,7 +298,40 @@ def test_duplicate_or_missing_ids_are_renumbered(qapp, tmp_path):
 # ----- Photo path hardening ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("network", ["\\\\host\\share\\p.png", "//host/share/p.png"])
+@pytest.mark.parametrize("path, windows, allowed", [
+    # Windows: drive-letter paths only
+    ("C:\\Users\\me\\p.png", True, True),
+    ("d:/photos/p.png", True, True),
+    ("\\\\host\\share\\p.png", True, False),
+    ("//host/share/p.png", True, False),
+    ("/\\host\\share\\p.png", True, False),
+    ("\\\\?\\UNC\\host\\share\\p.png", True, False),
+    ("\\\\?\\C:\\photos\\p.png", True, False),
+    ("\\\\.\\C:\\photos\\p.png", True, False),
+    ("\\??\\C:\\photos\\p.png", True, False),
+    ("\\photos\\p.png", True, False),
+    ("C:p.png", True, False),
+    ("photos\\p.png", True, False),
+    # POSIX: absolute local paths
+    ("/Users/me/p.png", False, True),
+    ("/Volumes/Backup/p.png", False, True),
+    ("/network-photos/p.png", False, True),
+    ("//host/share/p.png", False, False),
+    ("/net/host/p.png", False, False),
+    ("/NET/host/p.png", False, False),
+    ("/Network/Servers/host/p.png", False, False),
+    ("/network/servers/p.png", False, False),
+    ("\\\\host\\share\\p.png", False, False),
+    ("photos/p.png", False, False),
+])
+def test_photo_path_allowlist(path, windows, allowed):
+    assert is_allowed_photo_path(path, windows=windows) is allowed
+
+
+@pytest.mark.parametrize("network", [
+    "\\\\host\\share\\p.png", "//host/share/p.png", "\\\\?\\UNC\\host\\share\\p.png",
+    "/net/host/p.png", "/Network/Servers/host/p.png", "C:\\photos\\p.png",
+])
 @pytest.mark.parametrize("field", ["relative_path", "absolute_path"])
 def test_network_photo_paths_are_rejected_without_touching_them(qapp, tmp_path, monkeypatch, network, field):
     from text3d_studio import project_io
@@ -311,7 +344,7 @@ def test_network_photo_paths_are_rejected_without_touching_them(qapp, tmp_path, 
     loaded = load_project(path)
     assert touched == []
     assert loaded.document.background is None and loaded.missing_photo == network
-    assert "network path not allowed" in loaded.warnings[0]
+    assert "not a local path" in loaded.warnings[0]
 
 
 def test_non_image_photo_path_is_rejected(qapp, tmp_path):

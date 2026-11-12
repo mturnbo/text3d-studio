@@ -4,6 +4,7 @@ import base64
 import dataclasses
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 
@@ -173,19 +174,25 @@ def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
         loaded.photo_embedded = True
         return
     project_dir = os.path.dirname(os.path.abspath(path))
-    candidates = []
-    if photo.get("relative_path"):
-        candidates.append((photo["relative_path"], os.path.join(project_dir, photo["relative_path"])))
-    if photo.get("absolute_path"):
-        candidates.append((photo["absolute_path"], photo["absolute_path"]))
+    candidates = []  # (as stored, resolved), each checked before any filesystem call
+    relative = photo.get("relative_path")
+    if relative:
+        if _is_rooted(relative):
+            candidates.append((relative, None))
+        else:
+            candidates.append((relative, os.path.normpath(os.path.join(project_dir, relative))))
+    absolute = photo.get("absolute_path")
+    if absolute:
+        candidates.append((absolute, os.path.normpath(absolute) if is_allowed_photo_path(absolute) else None))
     reasons = []
     for stored, candidate in candidates:
         # A shared project can name any path: never open network shares or non-image files it points at.
-        reason = _rejected_photo_path(stored, os.path.normpath(candidate))
-        if reason:
-            reasons.append(reason)
+        if candidate is None or not is_allowed_photo_path(candidate):
+            reasons.append(f"not a local path: {stored}")
             continue
-        candidate = os.path.normpath(candidate)
+        if not candidate.lower().endswith(SUPPORTED_EXTENSIONS):
+            reasons.append(f"not a supported image type: {stored}")
+            continue
         if os.path.isfile(candidate):
             try:
                 loaded.document.background = load_image(candidate)
@@ -193,16 +200,25 @@ def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
                 continue
             loaded.document.background_path = candidate
             return
-    loaded.missing_photo = photo.get("absolute_path") or photo.get("relative_path") or "(unknown)"
+    loaded.missing_photo = absolute or relative or "(unknown)"
     detail = f" ({'; '.join(reasons)})" if reasons else ""
     loaded.warnings.append(f"Photo not found: {loaded.missing_photo}{detail}")
 
 
-def _rejected_photo_path(stored: str, candidate: str) -> str | None:
-    """Why a photo path from a project file must not be opened, or None when it may be."""
-    for value in (stored, candidate):
-        if value.startswith(("\\\\", "//")) or os.path.splitdrive(value)[0].startswith(("\\\\", "//")):
-            return f"network path not allowed: {stored}"
-    if not candidate.lower().endswith(SUPPORTED_EXTENSIONS):
-        return f"not a supported image type: {stored}"
-    return None
+def is_allowed_photo_path(path: str, windows: bool = os.name == "nt") -> bool:
+    """Allowlist for an absolute photo path read from a project: local drives only, never network locations.
+
+    Windows: only drive-letter paths (C:\\...); this excludes UNC shares and device or extended-length prefixes.
+    POSIX: absolute paths, except "//" roots and the /net and /Network automount roots.
+    """
+    if windows:
+        return re.match(r"^[A-Za-z]:\\", path.replace("/", "\\")) is not None
+    lowered = path.lower()  # macOS file names are case-insensitive
+    if not path.startswith("/") or path.startswith("//"):
+        return False
+    return not any(lowered == root or lowered.startswith(root + "/") for root in ("/net", "/network"))
+
+
+def _is_rooted(path: str) -> bool:
+    """A relative_path that names a root or a drive isn't relative: treat it as untrusted."""
+    return path.replace("\\", "/").startswith("/") or re.match(r"^[A-Za-z]:", path) is not None
