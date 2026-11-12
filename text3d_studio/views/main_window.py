@@ -4,7 +4,7 @@ import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
-from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSplitter
 
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
         self._build_actions()
+        self._build_edit_menu()
 
     def _build_actions(self) -> None:
         # Wrapped in a lambda: QAction.triggered passes a `checked` bool the handler must not receive.
@@ -109,6 +110,22 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         for action in self.tool_actions.values():
             self.toolbar.addAction(action)
+
+    def _build_edit_menu(self) -> None:
+        # Wrapped in lambdas: QAction.triggered passes a `checked` bool.
+        self.undo_action = self._make_action("&Undo", QKeySequence.StandardKey.Undo, lambda: self.vm.undo())
+        self.redo_action = self._make_action("&Redo", QKeySequence.StandardKey.Redo, lambda: self.vm.redo())
+        edit_menu = QMenu("&Edit", self)
+        edit_menu.addAction(self.undo_action)
+        edit_menu.addAction(self.redo_action)
+        view_menu = next(a for a in self.menuBar().actions() if a.text() == "&View")
+        self.menuBar().insertMenu(view_menu, edit_menu)  # File, Edit, View, Tools
+        self.vm.history_changed.connect(self._update_undo_actions)
+        self._update_undo_actions()
+
+    def _update_undo_actions(self) -> None:
+        self.undo_action.setEnabled(self.vm.can_undo)
+        self.redo_action.setEnabled(self.vm.can_redo)
 
     def _on_tool_changed(self, tool: str) -> None:
         self.tool_actions[tool].setChecked(True)

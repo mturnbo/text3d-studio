@@ -1,7 +1,7 @@
 """ControlPanel: declarative slider/picker layout bound two-way to the SceneViewModel."""
 
 from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -157,6 +157,43 @@ class LetterShortcuts(QObject):
         return False
 
 
+class UndoShortcuts(QObject):
+    """Lets Undo/Redo (Cmd+Z, Shift+Cmd+Z) reach the Edit menu while a number or font field has focus.
+
+    Those fields claim the keys for their own text undo, which would leave the scene's undo unreachable from
+    them. Leaving the claim unaccepted lets the shortcut through. The Text field keeps its native text undo.
+    """
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.ShortcutOverride:
+            if event.matches(QKeySequence.StandardKey.Undo) or event.matches(QKeySequence.StandardKey.Redo):
+                return True
+        return False
+
+
+class SliderUndoGroups(QObject):
+    """Makes each slider press→release one undo step.
+
+    It watches the mouse rather than sliderPressed/sliderReleased: a click away from the handle jumps the value
+    there (macOS) before sliderPressed fires, and that jump belongs to the same step as the drag.
+    """
+
+    def __init__(self, panel: QWidget, viewmodel: SceneViewModel):
+        super().__init__(panel)
+        self.vm = viewmodel
+        self._pressed = None  # the slider whose press began the open edit
+
+    def eventFilter(self, watched, event) -> bool:
+        kind = event.type()
+        if kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick) and self._pressed is None:
+            self._pressed = watched
+            self.vm.begin_edit()
+        elif kind == QEvent.Type.MouseButtonRelease and watched is self._pressed and not event.buttons():
+            self._pressed = None
+            self.vm.end_edit()
+        return False
+
+
 class SliderRow(QWidget):
     """A slider paired with a spin box, emitting floats (ints when decimals == 0)."""
 
@@ -256,6 +293,12 @@ class ControlPanel(QScrollArea):
         self.letter_shortcuts = LetterShortcuts(self)
         for spin in content.findChildren(QAbstractSpinBox):
             spin.installEventFilter(self.letter_shortcuts)
+        self.undo_shortcuts = UndoShortcuts(self)
+        for field in content.findChildren((QAbstractSpinBox, QComboBox)):
+            field.installEventFilter(self.undo_shortcuts)
+        self.slider_undo_groups = SliderUndoGroups(self, self.vm)
+        for slider in content.findChildren(QSlider):
+            slider.installEventFilter(self.slider_undo_groups)
         self._show_material_controls(self.vm.get("material", "kind"))
 
         self.vm.scene_changed.connect(self._refresh)
