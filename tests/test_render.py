@@ -150,23 +150,24 @@ def test_layer_count_auto_increases_when_extrusion_spans_many_pixels():
 # ----- Grid overlay (preview only) ----------------------------------------------------------------
 
 
-def render_preview(compositor, doc, with_grid):
-    """Composite plus (optionally) the grid overlay into an offscreen target, like the canvas does."""
+def render_preview(compositor, doc, with_grid, selected=0):
+    """Composite plus (optionally) the grid overlay for the selected object into an offscreen target, like the
+    canvas does."""
     from OpenGL import GL
 
     from text3d_studio.render.gl_utils import RenderTarget
     from text3d_studio.render.grid_renderer import GridRenderer
 
     height, width = doc.background.shape[:2]
-    raster = rasterize_text(doc.scene.objects[0].text)
     compositor.set_background(doc.background)
-    compositor.set_glyph(doc.scene.objects[0].id, raster)
+    upload_glyphs(compositor, doc)
+    obj = doc.scene.objects[selected]
     target = RenderTarget(width, height, 0)
     grid = GridRenderer(compositor.quad)
     try:
         compositor.render(doc.scene, target.fbo, (0, 0, width, height))
         if with_grid:
-            grid.render(doc.scene, raster, target.fbo, (0, 0, width, height))
+            grid.render(doc.scene, obj, compositor.glyph_raster(obj.id), target.fbo, (0, 0, width, height))
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         data = GL.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
@@ -250,7 +251,7 @@ def test_preview_with_grid_still_exceeds_30_fps(compositor):
         for i in range(30):
             doc.scene.objects[0].transform.rot_y = -40 + i
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
-            grid.render(doc.scene, raster, target.fbo, (0, 0, 1600, 1000))
+            grid.render(doc.scene, doc.scene.objects[0], raster, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         fps = 30 / (time.perf_counter() - start)
     finally:
@@ -796,6 +797,23 @@ def test_set_glyph_replaces_and_removes_an_objects_glyph(compositor):
     assert 5 not in compositor.glyphs and compositor.glyph_raster(5) is None
     compositor.set_glyph(6, None)  # removing what isn't there is fine
     assert compositor.glyphs == {}
+
+
+def test_grid_lanes_follow_the_selected_object(compositor):
+    doc = scene_of(text_object(0, x=-5.0), text_object(1, x=5.0, rot_y=35.0),
+                   grid={"visible": True, "opacity": 1.0, "color": (0.0, 0.0, 1.0), "accent_color": (1.0, 0.0, 0.0)},
+                   ground={"pitch": 10.0})
+    plain = render_preview(compositor, doc, False).astype(int)
+
+    def lane_columns(selected):
+        moved = render_preview(compositor, doc, True, selected).astype(int) - plain
+        accent = (moved[..., 0] > 20) & (moved[..., 2] < 0)  # redder: the accent, not the blue grid lines
+        assert accent.sum() > 300
+        return np.nonzero(accent)[1]
+
+    left, right = lane_columns(0), lane_columns(1)
+    width = plain.shape[1]
+    assert np.median(left) < width / 2 < np.median(right)
 
 
 def test_two_objects_stay_above_30_fps(compositor):

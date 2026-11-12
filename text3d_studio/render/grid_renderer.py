@@ -1,4 +1,4 @@
-"""GridRenderer: editor-only overlay of the ground grid, the text's lanes and the horizon.
+"""GridRenderer: editor-only overlay of the ground grid, the selected text object's lanes and the horizon.
 
 The canvas draws it after Compositor.render, reusing that frame's depth buffer so the text hides the
 grid behind it. The exporter never calls it, so the grid can't leak into exported images.
@@ -11,7 +11,7 @@ from OpenGL import GL
 
 from .. import ground as ground_model
 from .. import math3d
-from ..model import Scene
+from ..model import Scene, TextObject
 from ..text_raster import GlyphRaster
 from . import shaders
 from .compositor import FAR, NEAR
@@ -27,8 +27,11 @@ class GridRenderer:
         self.horizon = ShaderProgram(shaders.HORIZON_VS, shaders.HORIZON_FS)
 
     def render(
-        self, scene: Scene, raster: GlyphRaster | None, target_fbo: int, viewport, pixel_ratio: float = 1.0
+        self, scene: Scene, obj: TextObject, raster: GlyphRaster | None, target_fbo: int, viewport,
+        pixel_ratio: float = 1.0,
     ) -> None:
+        """Draws the grid with the footprint, lanes and vanishing points of `obj` (the selected object), whose
+        glyph raster is `raster`."""
         x, y, width, height = viewport
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
         GL.glViewport(x, y, width, height)
@@ -40,16 +43,18 @@ class GridRenderer:
         GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)  # keep the canvas opaque (see Compositor)
 
         proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
-        self._draw_grid(scene, raster, proj, pixel_ratio)
-        self._draw_horizon(scene, viewport, pixel_ratio)
+        self._draw_grid(scene, obj, raster, proj, pixel_ratio)
+        self._draw_horizon(scene, obj, viewport, pixel_ratio)
 
         GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         GL.glDepthMask(GL.GL_TRUE)
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDisable(GL.GL_BLEND)
 
-    def _draw_grid(self, scene: Scene, raster: GlyphRaster | None, proj: np.ndarray, pixel_ratio: float) -> None:
-        g, t, grid = scene.ground, scene.objects[0].transform, scene.grid
+    def _draw_grid(
+        self, scene: Scene, obj: TextObject, raster: GlyphRaster | None, proj: np.ndarray, pixel_ratio: float
+    ) -> None:
+        g, t, grid = scene.ground, obj.transform, scene.grid
         ground_to_camera = math3d.translation(*ground_model.ground_origin(g)) @ ground_model.ground_rotation(g)
         program = self.grid
         program.use()
@@ -68,9 +73,9 @@ class GridRenderer:
         program.set_vec4("u_footprint", footprint(raster, t.size, t.depth))
         self.quad.draw()
 
-    def _draw_horizon(self, scene: Scene, viewport, pixel_ratio: float) -> None:
+    def _draw_horizon(self, scene: Scene, obj: TextObject, viewport, pixel_ratio: float) -> None:
         x, y, width, height = viewport
-        g, t = scene.ground, scene.objects[0].transform
+        g, t = scene.ground, obj.transform
         text_axes = ground_model.ground_rotation(g)[:3, :3] @ math3d.rotation_y(t.rot_y)[:3, :3]
         program = self.horizon
         program.use()

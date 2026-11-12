@@ -210,9 +210,9 @@ class ImageCanvas(QOpenGLWidget):
         self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), rect)
         if self.vm.scene.grid.visible:
             # Editor overlay: drawn here, after the composite, so exports never contain it.
-            obj = self.vm.scene.objects[0]
+            obj = self.vm.selected_object
             self.grid_renderer.render(
-                self.vm.scene, self.compositor.glyph_raster(obj.id), self.defaultFramebufferObject(), rect, dpr
+                self.vm.scene, obj, self.compositor.glyph_raster(obj.id), self.defaultFramebufferObject(), rect, dpr
             )
         self._track_fps()
 
