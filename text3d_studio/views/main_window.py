@@ -4,9 +4,11 @@ import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
-from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSplitter
+from PyQt6.QtWidgets import (
+    QApplication, QFileDialog, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSplitter,
+)
 
-from .. import project_io
+from .. import presets, project_io
 from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
@@ -61,6 +63,7 @@ class MainWindow(QMainWindow):
         self.vm.dirty_changed.connect(self.setWindowModified)
         self._update_title()
         self._build_edit_menu()
+        self._build_looks_menu()
 
     def _build_actions(self) -> None:
         # Wrapped in a lambda: QAction.triggered passes a `checked` bool the handler must not receive.
@@ -246,6 +249,83 @@ class MainWindow(QMainWindow):
     def _update_undo_actions(self) -> None:
         self.undo_action.setEnabled(self.vm.can_undo)
         self.redo_action.setEnabled(self.vm.can_redo)
+
+    def _build_looks_menu(self) -> None:
+        # User looks are read from disk when the menu opens, so a startup never touches the looks folder.
+        self.looks_menu = self.menuBar().addMenu("&Looks")
+        self.looks_menu.aboutToShow.connect(self.refresh_looks_menu)
+        self.user_looks: list[presets.Look] = []
+        self._rebuild_looks_menu()
+
+    def refresh_looks_menu(self) -> None:
+        self.user_looks, warnings = presets.load_user_looks(self.preferences.looks_directory())
+        self._rebuild_looks_menu()
+        if warnings:
+            self.statusBar().showMessage(" · ".join(warnings))
+
+    def _rebuild_looks_menu(self) -> None:
+        menu = self.looks_menu
+        menu.clear()
+        for look in (*presets.BUILTIN_LOOKS, None, *self.user_looks):
+            if look is None:
+                menu.addSeparator()
+                continue
+            action = menu.addAction(look.name.replace("&", "&&"))
+            action.triggered.connect(lambda _checked=False, l=look: self.apply_look(l))
+        menu.addSeparator()
+        menu.addAction("&Save Look…").triggered.connect(lambda: self.save_look())
+        self.delete_look_menu = menu.addMenu("&Delete Look")
+        self.delete_look_menu.setEnabled(bool(self.user_looks))
+        for look in self.user_looks:
+            action = self.delete_look_menu.addAction(look.name.replace("&", "&&"))
+            action.triggered.connect(lambda _checked=False, l=look: self.delete_look(l))
+
+    def apply_look(self, look: presets.Look) -> None:
+        presets.apply_look(self.vm, look)
+        self.statusBar().showMessage(f"Applied the look “{look.name}”", 8000)
+
+    def save_look(self) -> bool:
+        """Asks for a name and saves the selected object's material with the light and shadow as a user look."""
+        name, ok = QInputDialog.getText(self, "Save Look", "Name of the look:")
+        if not ok:
+            return False
+        folder = self.preferences.looks_directory()
+        look = presets.capture_look(self.vm, name)
+        try:
+            try:
+                presets.save_user_look(folder, look)
+            except FileExistsError:
+                buttons = QMessageBox.StandardButton
+                answer = QMessageBox.question(
+                    self, "Replace look", f"A look called “{look.name}” already exists. Replace it?",
+                    buttons.Yes | buttons.No, buttons.No,
+                )
+                if answer != buttons.Yes:
+                    return False
+                presets.save_user_look(folder, look, replace=True)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Could not save look", str(exc))
+            return False
+        self.refresh_looks_menu()
+        self.statusBar().showMessage(f"Saved the look “{look.name}”", 8000)
+        return True
+
+    def delete_look(self, look: presets.Look) -> bool:
+        buttons = QMessageBox.StandardButton
+        answer = QMessageBox.question(
+            self, "Delete look", f"Delete the look “{look.name}”? This can't be undone.",
+            buttons.Yes | buttons.No, buttons.No,
+        )
+        if answer != buttons.Yes:
+            return False
+        try:
+            presets.delete_user_look(look)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Could not delete look", str(exc))
+            return False
+        self.refresh_looks_menu()
+        self.statusBar().showMessage(f"Deleted the look “{look.name}”", 8000)
+        return True
 
     def _on_tool_changed(self, tool: str) -> None:
         self.tool_actions[tool].setChecked(True)
