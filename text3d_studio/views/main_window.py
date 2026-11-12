@@ -100,8 +100,13 @@ class MainWindow(QMainWindow):
         self.grid_action.setChecked(self.vm.scene.grid.visible)
         self.grid_action.toggled.connect(lambda checked: self.vm.set("grid", "visible", checked))
         self.vm.scene_changed.connect(self._sync_grid_action)
-        view_menu = self.menuBar().addMenu("&View")
+        view_menu = self.view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.grid_action)
+        self.original_action = QAction("Show &Original Photo", self)
+        self.original_action.setCheckable(True)
+        self.original_action.setStatusTip("Show the photo without the text (or hold \\ over the canvas)")
+        self.original_action.toggled.connect(self.canvas.set_show_original)
+        view_menu.addAction(self.original_action)
 
         self.tool_actions = {}
         tool_group = QActionGroup(self)

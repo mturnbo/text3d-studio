@@ -184,6 +184,9 @@ class ImageCanvas(QOpenGLWidget):
         self.fit_valid = True
         self._fit_handle: int | None = None
         self._frame_times: deque[float] = deque(maxlen=30)
+        # Before/after: the preview shows the photo alone while backslash is held or the View menu toggle is on.
+        self._original_held = False
+        self._original_toggled = False
 
         self._text_timer = QTimer(self, singleShot=True, interval=TEXT_DEBOUNCE_MS)
         self._text_timer.timeout.connect(self._mark_glyph_dirty)
@@ -223,8 +226,12 @@ class ImageCanvas(QOpenGLWidget):
         GL.glClearColor(0.11, 0.11, 0.12, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         rect = self._image_rect(dpr)
-        self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), rect)
-        if self.vm.scene.grid.visible:
+        if self.showing_original:
+            photo_only = dataclasses.replace(self.vm.scene, objects=[])
+            self.compositor.render(photo_only, self.defaultFramebufferObject(), rect)
+        else:
+            self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), rect)
+        if self.vm.scene.grid.visible and not self.showing_original:
             # Editor overlay: drawn here, after the composite, so exports never contain it.
             obj = self.vm.selected_object
             self.grid_renderer.render(
@@ -315,6 +322,44 @@ class ImageCanvas(QOpenGLWidget):
         fit = min(avail_w / img_w, avail_h / img_h)
         w, h = max(1, int(img_w * fit)), max(1, int(img_h * fit))
         return (int((avail_w - w) / 2), int((avail_h - h) / 2), w, h)
+
+    # ----- Before/after -------------------------------------------------------------------------
+    # Preview only: exports always render the whole scene.
+
+    @property
+    def showing_original(self) -> bool:
+        return self._original_held or self._original_toggled
+
+    def set_show_original(self, show: bool) -> None:
+        self._original_toggled = show
+        self._update_original()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Backslash:
+            if not event.isAutoRepeat():
+                self._original_held = True
+                self._update_original()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Backslash:
+            if not event.isAutoRepeat():
+                self._original_held = False
+                self._update_original()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        self._original_held = False  # the release would go to whatever has focus now
+        self._update_original()
+        super().focusOutEvent(event)
+
+    def _update_original(self) -> None:
+        self.fit_overlay.setVisible(self.tool == FIT_TOOL and not self.showing_original)
+        self.update()
 
     # ----- Export -------------------------------------------------------------------------------
 

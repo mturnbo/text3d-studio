@@ -334,3 +334,129 @@ def test_cancelled_batch_dialog_exports_nothing(window, monkeypatch, tmp_path):
     monkeypatch.setattr(f"{MAIN}.BatchExportDialog.exec", lambda dialog: QDialog.DialogCode.Rejected)
     window.batch_export()
     assert not [name for name in os.listdir(tmp_path) if name.endswith((".png", ".jpg"))]
+
+
+# ----- Before/after -------------------------------------------------------------------------------
+
+
+def activate(window, qapp):
+    """Shows the window and makes it Qt's active window (see AGENTS.md, Focus in tests)."""
+    from PyQt6.QtWidgets import QApplication
+
+    window.show()
+    qapp.processEvents()
+    QApplication.setActiveWindow(window)
+    qapp.processEvents()
+
+
+def focused_canvas(window, qapp):
+    activate(window, qapp)
+    window.canvas.setFocus()
+    qapp.processEvents()
+    return window.canvas
+
+
+def preview(window, qapp):
+    """The canvas's framebuffer as an (H, W, 4) array in device pixels."""
+    from text3d_studio.image_io import qimage_to_rgba
+
+    qapp.processEvents()
+    return qimage_to_rgba(window.canvas.grabFramebuffer())
+
+
+def changed_from_photo(pixels):
+    return np.any(np.abs(pixels[..., :3].astype(int) - (200, 180, 150)) > 3, axis=-1)
+
+
+def test_holding_backslash_shows_the_photo_alone(window, qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+
+    photo(window, 320, 200)
+    window.vm.set("shadow", "enabled", False)
+    canvas = focused_canvas(window, qapp)
+    with_text = preview(window, qapp)
+    QTest.keyPress(canvas, Qt.Key.Key_Backslash)
+    assert canvas.showing_original
+    photo_only = preview(window, qapp)
+    QTest.keyRelease(canvas, Qt.Key.Key_Backslash)
+    assert not canvas.showing_original
+    after = preview(window, qapp)
+    x, y, w, h = canvas._image_rect(canvas.devicePixelRatioF())
+    image = lambda p: p[y + 2: y + h - 2, x + 2: x + w - 2]
+    assert changed_from_photo(image(with_text)).sum() > 500
+    assert not changed_from_photo(image(photo_only)).any()
+    assert np.array_equal(after, with_text)
+
+
+def test_auto_repeat_keeps_showing_the_photo_until_the_real_release(window, qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+
+    canvas = focused_canvas(window, qapp)
+    QTest.keyPress(canvas, Qt.Key.Key_Backslash)
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+
+    repeat_release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Backslash, Qt.KeyboardModifier.NoModifier, "\\", True)
+    repeat_press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backslash, Qt.KeyboardModifier.NoModifier, "\\", True)
+    qapp.sendEvent(canvas, repeat_release)
+    qapp.sendEvent(canvas, repeat_press)
+    assert canvas.showing_original
+    QTest.keyRelease(canvas, Qt.Key.Key_Backslash)
+    assert not canvas.showing_original
+
+
+def test_losing_focus_while_holding_backslash_stops_showing_the_photo(window, qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit
+
+    canvas = focused_canvas(window, qapp)
+    QTest.keyPress(canvas, Qt.Key.Key_Backslash)
+    window.panel.findChild(QLineEdit).setFocus()
+    qapp.processEvents()
+    assert not canvas.showing_original
+
+
+def test_view_menu_toggle_shows_the_photo_and_holding_does_not_end_it(window, qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+
+    canvas = focused_canvas(window, qapp)
+    assert window.original_action in window.view_menu.actions()
+    window.original_action.setChecked(True)
+    assert canvas.showing_original
+    QTest.keyPress(canvas, Qt.Key.Key_Backslash)
+    QTest.keyRelease(canvas, Qt.Key.Key_Backslash)
+    assert canvas.showing_original
+    window.original_action.setChecked(False)
+    assert not canvas.showing_original
+
+
+def test_showing_the_photo_hides_the_grid_and_fit_handles(window, qapp):
+    from text3d_studio.views.image_canvas import FIT_TOOL
+
+    photo(window, 320, 200)
+    window.vm.set("text", "content", "")
+    activate(window, qapp)
+    window.canvas.set_tool(FIT_TOOL)
+    assert window.vm.scene.grid.visible
+    grid = preview(window, qapp)
+    window.original_action.setChecked(True)
+    photo_only = preview(window, qapp)
+    x, y, w, h = window.canvas._image_rect(window.canvas.devicePixelRatioF())
+    assert changed_from_photo(grid[y: y + h, x: x + w]).sum() > 500
+    assert not changed_from_photo(photo_only[y + 2: y + h - 2, x + 2: x + w - 2]).any()
+    assert not window.canvas.fit_overlay.isVisibleTo(window.canvas)
+    window.original_action.setChecked(False)
+    assert window.canvas.fit_overlay.isVisibleTo(window.canvas)
+
+
+def test_exports_ignore_the_before_after_view(window, qapp):
+    photo(window, 160, 100)
+    activate(window, qapp)
+    normal = window.canvas.render_export()
+    window.original_action.setChecked(True)
+    assert np.array_equal(window.canvas.render_export(), normal)
+    assert window.canvas.render_export(transparent=True)[..., 3].max() == 255
