@@ -94,6 +94,19 @@ with a link to the photo.
 7. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. The **Pick** button next to either colour samples it straight from the photo: click it, then click the photo (**Esc** cancels). Use **Metallic** 1 for metals and 0 for everything else, and raise **Roughness** for matte or brushed surfaces. Leave **Reflect the photo** on so glossy text picks up the scene's colors.
 8. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
 
+## Text layout
+
+The **Text** field takes several lines: press Return for a new line (Tab moves on to the next control). The
+**Text** group also sets:
+- **Align**: Left, Center or Right, lining each line up against the widest one.
+- **Letter spacing**: extra room between letters, as a fraction of the letter height (negative squeezes them together).
+- **Line height**: the distance between lines, as a multiple of the font's normal spacing. Blank lines keep their height.
+- **Arc**: bends the text along a circle, from −180° to 180°. Positive arcs bend the middle up like a rainbow,
+  negative ones down like a smile; at ±180° the widest line forms a half circle. Several lines bend along
+  circles that share a center, and each letter turns to follow its curve.
+
+The objects list names each object by its first line.
+
 ## Several pieces of text
 
 The **Objects** list at the top of the panel holds every piece of text in the scene. **Add** puts a new
@@ -137,11 +150,10 @@ the Text field it undoes your typing first. Opening a new photo starts a fresh h
 |---|---|---|
 | **1 – MVP (this repo)** | Credible composite + export | Layer-stack extrusion, system fonts, bevel, Blinn-Phong (physically based since v0.7), planar soft shadow, native-res MSAA export, 30+ FPS |
 | **2 – Integration quality** | Text "belongs" in the photo | Vanishing-point / horizon tool that solves Tilt+FOV from two drawn lines; light-direction picker from a shadow the user clicks; color grading (match black point, saturation, grain/noise, blur to the photo's depth of field); contact-hardening shadows (PCSS) |
-| **3 – Geometry fidelity** | Crisp at any size | MSDF glyph masks (sharp corners when magnified); true triangulated extrusion as an optional mode (`QPainterPath` → earcut), with the layer stack kept as the stylized mode; multi-line text, kerning and tracking controls |
+| **3 – Geometry fidelity** | Crisp at any size | MSDF glyph masks (sharp corners when magnified); true triangulated extrusion as an optional mode (`QPainterPath` → earcut), with the layer stack kept as the stylized mode; multi-line text, alignment, tracking and arcs (done) |
 | **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (done), JSON project files (done), occlusion masks painted over the photo so the text can sit behind foreground objects |
 | **5 – Scale & ship** | Large photos, distribution | Tiled export beyond GPU limits (>16k px), 16-bit/HDR pipeline, PyInstaller / briefcase bundles with signing, CI on macOS/Windows/Linux |
 
 Known MVP limits:
-- Single line of text.
 - The background must fit the GPU's maximum texture size.
 - When the camera is almost edge-on to the extrusion, the stacked slices can still show faint banding (see Phase 3).

@@ -71,7 +71,8 @@ ground.py           Ground model B: ground pose (GroundParams) → plane, origin
                     reanchor_wall, reanchor_wall_text, mount_on_wall, mount_on_floor, wall_grid_lines)
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix;
                     solve_sun: azimuth and elevation from a vertical object's top, base and shadow tip
-text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
+text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles. Lays out
+                    multi-line text (align, letter spacing, line height) and bends it along arcs
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
 preferences.py      QSettings-backed last folder + recent files (images and projects, max 8). MainWindow requires one.
 project_io.py       .t3d project files: save_project(path, document, embed_photo) / load_project(path) -> LoadedProject
@@ -186,8 +187,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   `MIN_SHADOW_ELEVATION` (3°).
 - **Keep samplers complete.** Upload a 1×1 placeholder before real data. An incomplete bound texture
   triggers macOS "unloadable texture" warnings.
-- **Rasterizing is CPU work (~0.2 s).** Only `text.{content, font_family, bold, italic, bevel_width}`
-  (`viewmodel.RASTER_FIELDS`) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`). The canvas
+- **Rasterizing is CPU work (~0.2 s; arced text ~0.4 s).** Only `text.*` fields (`viewmodel.RASTER_FIELDS`,
+  which a test keeps equal to every `TextParams` field) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`). The canvas
   compares each object's `TextParams` with the one its raster came from, so only changed objects
   re-rasterize; added objects skip the debounce (`objects_changed`). Everything else is a uniform and must
   stay cheap. Never re-rasterize per frame.
@@ -218,6 +219,32 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
     path.
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
+
+### Text layout (text_raster.py)
+
+- **Lines.** `content` is split on `\n`; line *k*'s baseline sits `k × lineSpacing × line_height` below the
+  first. Blank lines keep their height, but the mask is cropped to the ink, so leading and trailing blank lines
+  (and a trailing newline) change nothing, and the last line's ink bottom stays at local y=0. Text of only
+  blank lines rasterizes to `None`.
+- **Alignment** (`align`: `ALIGNMENTS` left/center/right; anything else raises `ValueError`) lines up each
+  line's *ink* (`QFontMetricsF.tightBoundingRect`), not its advance, within the widest line's ink. So leading
+  and trailing spaces don't indent a line.
+- **Letter spacing** is `QFont.setLetterSpacing(AbsoluteSpacing, letter_spacing × font px)`: em fractions,
+  negative overlaps letters (walls stay closed because they're traced from the union mask).
+- **Arc** (`arc`, degrees). 0 takes the straight path (whole lines drawn with `drawText`, so arc 0 is exactly
+  straight text). Otherwise every glyph comes from a `QTextLayout` glyph run (keeps kerning, spacing and font
+  fallback) and is drawn alone with `drawGlyphRun`, translated onto its arc and rotated to the tangent. The
+  widest line's ink spans `arc` degrees on a circle through its baseline (center below the text for positive
+  arcs, so the middle bends up; above for negative). Other lines sit on concentric circles one pitch nearer or
+  farther and keep their arc length (letter spacing), so alignment is measured along the arc. A line whose
+  radius would reach the center is clamped to a 1 px radius (its glyphs bunch up; only extreme line heights).
+- The mask encoding (edge direction, bevel) and the walls are derived from the final composited alpha, so
+  rotated and overlapping glyphs need nothing special, and picking (`GlyphRaster.covers`) follows the bent ink.
+- **Texture limit.** `MAX_TEXTURE_WIDTH` bounds *both* sides of the mask. The layout's bounds (rotated glyph
+  boxes for arcs, plus italic slack) are measured first, and the font size shrinks (`MIN_FONT_PIXEL_SIZE`
+  floor) until they fit; em units don't change, so the text's world size stays the same.
+- Tests check masks directly: `ink_bands`/`ink_columns` for lines and alignment, `assert_walls_closed` (every
+  wall vertex has even degree) for the shadow walls.
 
 ### Editor overlays (the perspective grid)
 
@@ -267,7 +294,8 @@ aren't pickable. With a single object no picking runs (nothing to choose, and no
 overlay's footprint, lanes and vanishing points follow the selected object.
 
 **Control panel input:** `WheelGuard` sends the wheel to the panel's scroll bar unless the control under the
-pointer has focus (sliders, spin boxes and combos are click/Tab focus only). `LetterShortcuts` keeps a
+pointer has focus (sliders, spin boxes and combos are click/Tab focus only; the Text field's viewport is
+guarded too). `LetterShortcuts` keeps a
 focused spin box from swallowing G/V/P/R.
 
 **Focus in tests:** use `activate(window, qapp)` (`QApplication.setActiveWindow`) and `setFocus()`, not
@@ -326,7 +354,9 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 - `set_background` isn't undoable and clears the history; so does `load_document` (opening a project).
 - **Shortcuts.** Spin boxes and combo boxes claim Cmd+Z for their own text undo; `control_panel.UndoShortcuts`
   leaves that claim unaccepted so the Edit menu's shortcut runs (like `LetterShortcuts`). The Text field
-  keeps its native undo.
+  (a `QPlainTextEdit`, object name `text.content`, no wrapping, Tab moves focus) keeps its native undo, which
+  steps back a typed line and its line break separately. The objects list shows each object's first non-blank
+  line.
 
 ## Adding things
 
@@ -433,7 +463,7 @@ v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save a
 
 ## Known limitations / next work
 
-- Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
+- The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
 - Multiple text objects (wave 0.2): glass doesn't refract other text objects. New and
   duplicated objects are placed in front of the selected one (`ground.placement_in_front`), assuming a

@@ -40,6 +40,21 @@ def test_raster_fields_emit_text_changed_but_transform_does_not(vm):
     assert len(text_events) == 2
 
 
+def test_every_text_field_re_rasterizes(vm):
+    import dataclasses
+
+    from text3d_studio.model import TextParams
+    from text3d_studio.viewmodel import RASTER_FIELDS
+
+    assert RASTER_FIELDS == {f.name for f in dataclasses.fields(TextParams)}  # each one shapes the glyph mask
+    text_events = record(vm.text_changed)
+    vm.set("text", "align", "left")
+    vm.set("text", "letter_spacing", 0.2)
+    vm.set("text", "line_height", 1.5)
+    vm.set("text", "arc", 45.0)
+    assert len(text_events) == 4
+
+
 def test_nudge_adds_delta(vm):
     vm.set("transform", "rot_y", 10.0)
     vm.nudge("transform", "rot_y", -2.5)

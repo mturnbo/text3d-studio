@@ -899,3 +899,42 @@ def test_wall_text_casts_its_shadow_on_the_floor(compositor):
         assert hit is not None  # below the horizon: on the floor
         wall_plane = ground.wall_plane(scene.ground, scene.wall)
         assert wall_plane[:3] @ hit + wall_plane[3] > -0.05  # on the camera's side of the wall
+
+
+# ----- Text layout ------------------------------------------------------------------------------------
+
+
+def rendered_rows(pixels):
+    """Mean image row of the text in the middle third of its columns, and in its outer thirds."""
+    rows, cols = np.nonzero(changed_mask(pixels))
+    left, right = cols.min(), cols.max()
+    third = (right - left) / 3
+    middle = (cols > left + third) & (cols < right - third)
+    return rows[middle].mean(), rows[~middle].mean()
+
+
+@pytest.mark.parametrize("arc", [100, -100])
+def test_arced_text_renders_bent(compositor, arc):
+    base = {"transform": {"rot_y": 0, "z": -16}, "shadow": {"enabled": False}}
+    middle, ends = rendered_rows(render(compositor, make_document(text={"content": "HELLO WORLD", "arc": arc}, **base)))
+    straight = rendered_rows(render(compositor, make_document(text={"content": "HELLO WORLD"}, **base)))
+    bend = (middle - ends) - (straight[0] - straight[1])  # image rows grow downward
+    assert (bend < -5) if arc > 0 else (bend > 5)
+
+
+def test_multi_line_text_renders_taller(compositor):
+    base = {"transform": {"rot_y": 0}, "shadow": {"enabled": False}}
+    one = changed_mask(render(compositor, make_document(text={"content": "HELLO"}, **base)))
+    two = changed_mask(render(compositor, make_document(text={"content": "HELLO\nHELLO"}, **base)))
+    one_rows, two_rows = np.flatnonzero(one.any(axis=1)), np.flatnonzero(two.any(axis=1))
+    assert two_rows[-1] - two_rows[0] > 1.7 * (one_rows[-1] - one_rows[0])
+    assert two_rows[-1] == pytest.approx(one_rows[-1], abs=2)  # the last line stands on the ground
+
+
+def test_arced_text_casts_a_shadow_at_grazing_light(compositor):
+    text = {"content": "ARC\nTEXT", "arc": 90}
+    light = {"azimuth": 90, "elevation": 20}
+    lit = make_document(text=text, transform={"rot_y": 0}, light=light, shadow={"softness": 0.05})
+    unlit = make_document(text=text, transform={"rot_y": 0}, light=light, shadow={"enabled": False})
+    darker = render(compositor, unlit)[..., :3].astype(int).sum(-1) - render(compositor, lit)[..., :3].astype(int).sum(-1)
+    assert (darker > 30).sum() > 500

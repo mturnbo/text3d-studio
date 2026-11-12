@@ -14,6 +14,10 @@ class TextParams:
     bold: bool = True
     italic: bool = False
     bevel_width: float = 6.0  # in raster pixels; controls how wide the beveled rim is
+    align: str = "center"  # "left", "center" or "right": how the lines line up, relative to the widest one
+    letter_spacing: float = 0.0  # extra space after each letter, as a fraction of the em; negative tightens
+    line_height: float = 1.0  # distance between baselines, as a multiple of the font's line spacing
+    arc: float = 0.0  # degrees the widest line bends through (-180..180); positive bends the middle up
 
 
 @dataclass
