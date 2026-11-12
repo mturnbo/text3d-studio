@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .. import ground as ground_model
 from .. import math3d
+from ..lighting import solve_sun
 from ..image_io import SUPPORTED_EXTENSIONS
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
@@ -31,6 +32,13 @@ TEXT_TOOL = "text"
 GRID_TOOL = "grid"
 FIT_TOOL = "fit"
 WALL_TOOL = "wall"
+SUN_TOOL = "sun"
+SUN_POINT_LABELS = ("Top", "Base", "Shadow tip")
+SUN_PROMPTS = (
+    "Match Sun: click the top of a vertical object (a post, a person, a bottle)",
+    "Match Sun: click its base on the floor",
+    "Match Sun: click the tip of its shadow",
+)
 HANDLE_GRAB_PX = 12.0  # how close to a fit corner a press must land to grab it
 FIT_START_WIDTH = 0.3  # the traced rectangle starts about this fraction of the image wide
 FIT_VALID_COLOR = QColor(255, 179, 51)
@@ -153,7 +161,23 @@ class ToolOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.canvas.tool == WALL_TOOL:
             self._paint_wall(painter)
+        if self.canvas.tool == SUN_TOOL:
+            self._paint_sun_points(painter)
         painter.end()
+
+    def _paint_sun_points(self, painter: QPainter) -> None:
+        points = [QPointF(*p) for p in self.canvas.sun_points_px()]
+        color = FIT_VALID_COLOR if self.canvas.sun_valid else FIT_INVALID_COLOR
+        painter.setPen(QPen(color, 2))
+        for a, b in zip(points, points[1:]):  # the object, then its shadow
+            painter.drawLine(a, b)
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        for point, label in zip(points, SUN_POINT_LABELS):
+            painter.setBrush(QColor(255, 255, 255, 230))
+            painter.drawEllipse(point, 6, 6)
+            painter.drawText(point + QPointF(10, -8), label)
 
     def _paint_wall(self, painter: QPainter) -> None:
         grid_lines, base_line = self.canvas.wall_preview_px()
@@ -187,6 +211,7 @@ class ImageCanvas(QOpenGLWidget):
     file_dropped = pyqtSignal(str)
     tool_changed = pyqtSignal(str)
     fit_status = pyqtSignal(str)  # why the traced corners can't be fitted, or "" when they can
+    tool_status = pyqtSignal(str)  # what the Match Sun tool wants next, its result, or why it failed
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)
@@ -218,6 +243,8 @@ class ImageCanvas(QOpenGLWidget):
         self.fit_valid = True
         self._fit_handle: int | None = None
         self._wall_start: tuple[float, float] | None = None  # ground point where a Set Wall drag began
+        self.sun_points: list[tuple[float, float]] = []  # Match Sun clicks (top, base, tip), fractions of the image rect
+        self.sun_valid = True
         self.tool_overlay = ToolOverlay(self)
         self._frame_times: deque[float] = deque(maxlen=30)
 
@@ -399,7 +426,11 @@ class ImageCanvas(QOpenGLWidget):
             self.fit_status.emit("")
         self.fit_overlay.setVisible(tool == FIT_TOOL)
         self.fit_overlay.update()
-        self.tool_overlay.setVisible(tool == WALL_TOOL)
+        if tool == SUN_TOOL:
+            self.sun_points = []
+            self.sun_valid = True
+            self.tool_status.emit(SUN_PROMPTS[0])
+        self.tool_overlay.setVisible(tool in (WALL_TOOL, SUN_TOOL))
         self.tool_overlay.update()
         self.setCursor(Qt.CursorShape.OpenHandCursor if tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
         self.tool_changed.emit(tool)
@@ -419,6 +450,8 @@ class ImageCanvas(QOpenGLWidget):
                 self._capture_pose_base()  # something else moved the ground or text since the last fit
         elif self.tool == WALL_TOOL:
             self._wall_start = self.ground_point_at(event.position())
+        elif self.tool == SUN_TOOL:
+            self._add_sun_point(event.position())
         else:
             self._text_press(event)
         # The whole press→release drag is one undo step. It begins after the press's selection, which isn't one,
@@ -478,6 +511,8 @@ class ImageCanvas(QOpenGLWidget):
         if self.tool == WALL_TOOL:
             if self._wall_start is not None:
                 self._drag_wall_to(event.position())
+            return
+        if self.tool == SUN_TOOL:
             return
         if self.tool == GRID_TOOL:
             if self._grid_drag is None:
@@ -853,3 +888,38 @@ class ImageCanvas(QOpenGLWidget):
                 segment = tuple((p[0] + rect_x, p[1] + rect_y) for p in segment)
             projected.append(segment)
         return [p for p in projected[1:] if p is not None], projected[0]
+
+    # ----- Match Sun tool -------------------------------------------------------------------------
+    # Click the top of a vertical object, its base on the floor and the tip of its shadow; the light is solved.
+
+    def sun_points_px(self) -> list[tuple[float, float]]:
+        """The Match Sun clicks in widget pixels."""
+        rect_x, rect_y, rect_w, rect_h = self._image_rect()
+        return [(rect_x + fx * rect_w, rect_y + fy * rect_h) for fx, fy in self.sun_points]
+
+    def _add_sun_point(self, position: QPointF) -> None:
+        _, _, rect_w, rect_h = self._image_rect()
+        u, v = self._image_pixel(position)
+        if not (0 <= u <= rect_w and 0 <= v <= rect_h):
+            return
+        if len(self.sun_points) == len(SUN_PROMPTS):
+            self.sun_points = []  # a fourth click starts over
+            self.sun_valid = True
+        self.sun_points.append((u / rect_w, v / rect_h))
+        self.tool_overlay.update()
+        if len(self.sun_points) < len(SUN_PROMPTS):
+            self.tool_status.emit(SUN_PROMPTS[len(self.sun_points)])
+            return
+        top, base, tip = [(fx * rect_w, fy * rect_h) for fx, fy in self.sun_points]
+        scene = self.vm.scene
+        try:
+            azimuth, elevation = solve_sun(scene.ground, scene.camera.fov, (rect_w, rect_h), top, base, tip)
+        except ValueError as exc:
+            self.sun_valid = False
+            self.tool_status.emit(f"Can't match the sun: {exc}. Click again to start over")
+            return
+        self.vm.begin_edit()  # azimuth and elevation together are one undo step
+        self.vm.set("light", "azimuth", azimuth)
+        self.vm.set("light", "elevation", elevation)
+        self.vm.end_edit()
+        self.tool_status.emit(f"Sun matched: azimuth {azimuth:.0f}°, elevation {elevation:.0f}°. Click again to start over")

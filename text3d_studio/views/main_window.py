@@ -11,7 +11,7 @@ from ..image_io import SUPPORTED_LOAD, load_image, save_image
 from ..preferences import Preferences
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
-from .image_canvas import FIT_TOOL, GRID_TOOL, TEXT_TOOL, WALL_TOOL, ImageCanvas
+from .image_canvas import FIT_TOOL, GRID_TOOL, SUN_TOOL, TEXT_TOOL, WALL_TOOL, ImageCanvas
 
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
 
@@ -23,6 +23,7 @@ TOOL_HINTS = {
     FIT_TOOL: "Drag the four corners onto a rectangle in the photo (a tile, rug, table top) · "
     "Its real size (Grid › Fit width/depth) sets the scale",
     WALL_TOOL: "Drag along the line where the wall meets the floor",
+    SUN_TOOL: "Click the top of a vertical object, its base, then the tip of its shadow",
 }
 
 
@@ -94,7 +95,7 @@ class MainWindow(QMainWindow):
         tools_menu = self.menuBar().addMenu("&Tools")
         tools = (
             (TEXT_TOOL, "Move &Text", "V"), (GRID_TOOL, "Adjust &Grid", "P"), (FIT_TOOL, "Fit &Rectangle", "R"),
-            (WALL_TOOL, "Set &Wall", "W"),
+            (WALL_TOOL, "Set &Wall", "W"), (SUN_TOOL, "Match &Sun", "L"),
         )
         for tool, text, key in tools:
             action = QAction(text, self)
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self.tool_actions[self.canvas.tool].setChecked(True)
         self.canvas.tool_changed.connect(self._on_tool_changed)
         self.canvas.fit_status.connect(self._show_fit_status)
+        self.canvas.tool_status.connect(lambda message: self.statusBar().showMessage(message))
 
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setObjectName("mainToolbar")

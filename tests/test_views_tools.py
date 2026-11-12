@@ -339,3 +339,117 @@ def test_wall_sliders_are_bound(vm):
     panel.findChild(SliderRow, "wall.angle").spin.setValue(30.0)
     panel.findChild(SliderRow, "transform.wall_y").spin.setValue(2.5)
     assert vm.scene.wall.angle == 30.0 and vm.selected_object.transform.wall_y == 2.5
+
+
+# ----- Match Sun --------------------------------------------------------------------------------
+
+
+def sun_canvas(vm):
+    from text3d_studio.views.image_canvas import SUN_TOOL
+
+    vm.set("ground", "pitch", 12.0)
+    canvas = sized_canvas(vm)
+    statuses = []
+    canvas.tool_status.connect(statuses.append)
+    canvas.set_tool(SUN_TOOL)
+    return canvas, statuses
+
+
+def post_clicks(canvas, azimuth, elevation, base_xz=(1.0, -8.0), height=1.0):
+    """Widget positions of a vertical post's top and base and its shadow's tip under that sun."""
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    g, fov = canvas.vm.scene.ground, canvas.vm.scene.camera.fov
+    base = ground_model.ground_to_world(g, *base_xz)
+    top = base + height * ground_model.ground_up(g)
+    toward_light = ground_model.light_frame(g) @ math3d.direction_from_angles(azimuth, 0.0)
+    tip = base - toward_light * height / np.tan(np.radians(elevation))
+    return [tuple(math3d.project_to_image(p, fov, (rect_w, rect_h)) + (rect_x, rect_y)) for p in (top, base, tip)]
+
+
+def click(canvas, position):
+    drag(canvas, position, position)
+
+
+def test_three_clicks_match_the_sun_in_one_undo_step(vm):
+    canvas, statuses = sun_canvas(vm)
+    vm.clear_history()
+    before = dataclasses.replace(vm.scene.light)
+    for position in post_clicks(canvas, -70.0, 32.0):
+        click(canvas, position)
+    assert (vm.scene.light.azimuth, vm.scene.light.elevation) == pytest.approx((-70.0, 32.0), abs=1e-6)
+    assert "matched" in statuses[-1].lower()
+    assert vm.undo() and vm.scene.light == before and not vm.can_undo
+
+
+def test_match_sun_prompts_for_each_click_and_shows_the_points(vm):
+    canvas, statuses = sun_canvas(vm)
+    assert canvas.tool_overlay.isVisibleTo(canvas)
+    assert "top" in statuses[-1].lower()
+    clicks = post_clicks(canvas, 40.0, 45.0)
+    click(canvas, clicks[0])
+    assert "base" in statuses[-1].lower()
+    click(canvas, clicks[1])
+    assert "shadow" in statuses[-1].lower()
+    np.testing.assert_allclose(canvas.sun_points_px(), clicks[:2], atol=1e-6)
+    click(canvas, clicks[2])
+    np.testing.assert_allclose(canvas.sun_points_px(), clicks, atol=1e-6)  # all three stay shown
+
+
+def test_a_fourth_click_starts_a_new_measurement(vm):
+    canvas, _statuses = sun_canvas(vm)
+    for position in post_clicks(canvas, 40.0, 45.0):
+        click(canvas, position)
+    click(canvas, (100, 100))
+    assert canvas.sun_points_px() == [pytest.approx((100, 100))]
+    assert canvas.sun_valid
+
+
+@pytest.mark.parametrize("case, message", [("no_shadow", "no length"), ("top_below_base", "above the base")])
+def test_impossible_clicks_leave_the_light_and_say_why(vm, case, message):
+    canvas, statuses = sun_canvas(vm)
+    before = dataclasses.replace(vm.scene.light)
+    top, base, tip = post_clicks(canvas, 40.0, 45.0)
+    clicks = {"no_shadow": (top, base, base), "top_below_base": ((base[0], base[1] + 30), base, tip)}[case]
+    for position in clicks:
+        click(canvas, position)
+    assert vm.scene.light == before
+    assert message in statuses[-1] and "Can't match the sun" in statuses[-1]
+    assert not canvas.sun_valid
+
+
+def test_clicks_off_the_image_are_ignored(vm):
+    vm.set_background(np.full((200, 600, 4), 255, np.uint8))  # a wide photo letterboxed in the canvas
+    canvas, _statuses = sun_canvas(vm)
+    rect_x, rect_y, _, _ = canvas._image_rect()
+    assert rect_y > 0
+    click(canvas, (400, rect_y / 2))
+    assert canvas.sun_points == []
+
+
+def test_match_sun_clicks_move_nothing_else(vm):
+    canvas, _statuses = sun_canvas(vm)
+    before = dataclasses.replace(vm.selected_object.transform)
+    top, base, _tip = post_clicks(canvas, 40.0, 45.0)
+    drag(canvas, top, base)
+    assert vm.selected_object.transform == before
+
+
+def test_switching_to_match_sun_clears_old_points(vm):
+    canvas, _statuses = sun_canvas(vm)
+    click(canvas, post_clicks(canvas, 40.0, 45.0)[0])
+    canvas.set_tool(TEXT_TOOL)
+    assert not canvas.tool_overlay.isVisibleTo(canvas)
+    from text3d_studio.views.image_canvas import SUN_TOOL
+
+    canvas.set_tool(SUN_TOOL)
+    assert canvas.sun_points == []
+
+
+def test_match_sun_is_in_the_tools_menu_with_shortcut_l_and_reports_in_the_status_bar(window):
+    from text3d_studio.views.image_canvas import SUN_TOOL
+
+    action = window.tool_actions[SUN_TOOL]
+    assert action.shortcut() == QKeySequence("L")
+    action.trigger()
+    assert window.canvas.tool == SUN_TOOL
+    assert "top" in window.statusBar().currentMessage().lower()
