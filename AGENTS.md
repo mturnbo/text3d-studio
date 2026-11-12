@@ -30,10 +30,12 @@ viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       "text", "transform" and "material" (OBJECT_SECTIONS) address the SELECTED object
                       (vm.selected, vm.selected_object: editor state); other sections are shared by the scene
                       add_object() / duplicate_object() / delete_object() / select(index)
+                      undo() / redo() / can_undo / can_redo / begin_edit() / end_edit() / clear_history()
                       signals: scene_changed(section, field), text_changed(), background_changed(),
-                               objects_changed(), selection_changed(index)
+                               objects_changed(), selection_changed(index), history_changed()
+history.py          History: bounded (100) undo/redo stacks of opaque states, with burst merging. No Qt.
 views/              Qt widgets only. Never touch GL state or numpy image math here.
-  main_window.py      menus, status bar, file dialogs
+  main_window.py      menus (Edit › Undo/Redo in _build_edit_menu), status bar, file dialogs
   control_panel.py    Objects list (Add / Duplicate / Delete) + declarative slider/colour/checkbox layout,
                       two-way bound to the ViewModel; a selection change refreshes every per-object control
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
@@ -261,13 +263,44 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 `tilt_for_horizon_through`. Drag tests drive real `QMouseEvent`s on a sized, unshown canvas; see
 `tests/test_views.py` (`drag`, `grid_canvas`).
 
+### Undo history
+
+- **State = snapshot.** An undo state is `(copy.deepcopy(scene), vm.selected)`, not a command. `History`
+  keeps up to `HISTORY_LIMIT` (100) states to undo plus the undone ones to redo; any new step clears redo.
+- **Every scene-changing entry point records a step.** `set`, `nudge`, `set_ground_pose`, `apply_material`,
+  `add_object`, `duplicate_object` and `delete_object` each wrap their work in `begin_edit()` / `end_edit()`.
+  A new one must do the same, or its change can't be undone and gets folded into the next step. Selection
+  (`select`) isn't a step, but each state carries the selection, so undo restores it.
+- **Edits nest.** `begin_edit` snapshots only at depth 0; the outermost `end_edit` records the snapshot, and
+  only if the scene changed (`!=` on the dataclasses). So a ground edit that re-places every object, or a
+  material preset that sets ten fields, is one step. Undo/redo are refused while an edit is open.
+- **Gestures are one step.** `ImageCanvas` opens an edit on the first button press and closes it when the last
+  button is released (all tools; it begins after the press's selection). `control_panel.SliderUndoGroups`
+  does the same per slider, watching mouse press/release rather than `sliderPressed`, because a click away from
+  the handle moves the value before `sliderPressed` fires.
+- **Bursts merge.** Outside a gesture, `set` passes `end_edit(merge_key=(section, field[, object id]))`.
+  `History.record` merges a step into the previous one when the key matches and less than `MERGE_WINDOW_S`
+  (0.6 s) passed since the last change: wheel and pinch scaling, spin-box arrow repeats, typing in the Text
+  field. Undo/redo or a keyless step ends a burst. The clock is injectable: `SceneViewModel(clock=…)`; tests
+  use a fake one instead of sleeping.
+- **Restoring** swaps the Scene's fields in place (`vm.scene` stays the same object), records nothing, and
+  emits `objects_changed`, `selection_changed`, `scene_changed` for every shared-section field that differs,
+  and `text_changed` if any text did, so every view refreshes (the canvas re-rasterizes changed text).
+- `set_background` isn't undoable and clears the history; so will project loading (`vm.clear_history()`).
+- **Shortcuts.** Spin boxes and combo boxes claim Cmd+Z for their own text undo; `control_panel.UndoShortcuts`
+  leaves that claim unaccepted so the Edit menu's shortcut runs (like `LetterShortcuts`). The Text field
+  keeps its native undo.
+
 ## Adding things
 
 - **A new scene parameter:**
   1. Add a field with a default to the relevant dataclass in `model.py`.
   2. If it changes the glyph mask, add it to `RASTER_FIELDS`.
   3. Pass it as a uniform in `render/`.
-  4. Expose it by adding one tuple to `SLIDERS` or `COLORS` in `control_panel.py`. Binding and refresh are automatic.
+  4. Expose it by adding one tuple to `SLIDERS` or `COLORS` in `control_panel.py`. Binding, refresh and undo
+     are automatic.
+- **A new scene-changing ViewModel method:** wrap it in `begin_edit()` / `end_edit()` so it records an undo
+  step (see *Undo history*).
 - **A new render pass:** add it to `Compositor.render` so preview and export both get it. Restore GL
   state you change (blend, depth, scissor, alpha-to-coverage, blend equation).
 - **A new file:** only when it's a real module boundary. Prefer extending an existing module.
@@ -329,7 +362,7 @@ fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel s
 
 - Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
-- Multiple text objects (wave 0.2): no undo yet, and glass doesn't refract other text objects. New and
+- Multiple text objects (wave 0.2): glass doesn't refract other text objects. New and
   duplicated objects are placed in front of the selected one (`ground.placement_in_front`), assuming a
   cap-height ink; very tall or descending text can still overlap a little, and near the image's bottom edge
   the new object may be partly cut off.
@@ -337,4 +370,4 @@ fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel s
   `load_image_path(path)` is the single load path used by the menu, toolbar, prompt, drops, Open Recent and the CLI.
   Image decoding is synchronous (busy cursor only). Moving it to a worker thread is a possible follow-up.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
-  undo, tiled export, packaging.
+  tiled export, packaging.
