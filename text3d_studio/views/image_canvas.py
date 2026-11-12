@@ -19,6 +19,7 @@ from ..render.compositor import Compositor
 from ..render.exporter import render_document
 from ..render.grid_renderer import GridRenderer
 from ..model import TextObject, TextParams
+from ..project_io import PROJECT_EXTENSION
 from ..text_raster import GlyphRaster, rasterize_text
 from ..viewmodel import SceneViewModel
 
@@ -42,12 +43,12 @@ FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fr
 
 
 def dropped_image_path(mime_data) -> str | None:
-    """Returns the path when the drag holds exactly one local file with a supported image extension."""
+    """Returns the path when the drag holds exactly one local file that is a supported image or a project."""
     urls = mime_data.urls() if mime_data.hasUrls() else []
     if len(urls) != 1 or not urls[0].isLocalFile():
         return None
     path = urls[0].toLocalFile()
-    if not os.path.isfile(path) or not path.lower().endswith(SUPPORTED_EXTENSIONS):
+    if not os.path.isfile(path) or not path.lower().endswith((*SUPPORTED_EXTENSIONS, PROJECT_EXTENSION)):
         return None
     return path
 
@@ -66,17 +67,31 @@ class EmptyStateOverlay(QFrame):
             "QLabel { color: #e8e8e8; }"
         )
         shortcut = QKeySequence(QKeySequence.StandardKey.Open).toString(QKeySequence.SequenceFormat.NativeText)
-        title = QLabel("No image loaded")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        self.message = QLabel(f"Open a photo ({shortcut}) or drop one here to place 3D text on it")
+        self._shortcut = shortcut
+        self.title = QLabel()
+        self.title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        self.message = QLabel()
+        self.show_missing_photo(None)
         self.button = QPushButton("Open Image…")
         self.button.clicked.connect(lambda: self.open_requested.emit())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
         layout.setSpacing(10)
-        for widget in (title, self.message, self.button):
+        for widget in (self.title, self.message, self.button):
             layout.addWidget(widget, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+    def show_missing_photo(self, path: str | None) -> None:
+        """Names the photo an opened project refers to but couldn't find; None restores the usual prompt."""
+        if path is None:
+            self.title.setText("No image loaded")
+            self.message.setText(f"Open a photo ({self._shortcut}) or drop one here to place 3D text on it")
+        else:
+            self.title.setText("Photo not found")
+            self.message.setText(
+                f"{os.path.basename(path)} couldn't be found. Open an image ({self._shortcut}) or drop one here"
+            )
+        self.adjustSize()
 
 
 class FitHandlesOverlay(QWidget):

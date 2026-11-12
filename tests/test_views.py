@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent
+from PyQt6.QtWidgets import QMessageBox
 
 from text3d_studio import ground as ground_model
 from text3d_studio import math3d
@@ -28,7 +29,11 @@ def preferences(tmp_path):
 
 
 @pytest.fixture
-def window(vm, preferences):
+def window(vm, preferences, monkeypatch):
+    # Opening an image over unsaved changes, and closing, ask first; these tests continue without saving.
+    monkeypatch.setattr(
+        "text3d_studio.views.main_window.QMessageBox.question", lambda *args: QMessageBox.StandardButton.Discard
+    )
     win = MainWindow(vm, preferences)
     yield win
     win.close()
@@ -248,7 +253,7 @@ def test_failed_load_is_not_added_to_recent(window, preferences, tmp_path, monke
 
 def test_empty_recent_menu_shows_disabled_placeholder_and_clear(window):
     texts = {a.text(): a.isEnabled() for a in window.recent_menu.actions() if not a.isSeparator()}
-    assert texts == {"No Recent Images": False, "Clear Menu": False}
+    assert texts == {"No Recent Files": False, "Clear Menu": False}
 
 
 def test_recent_menu_lists_newest_first(window, tmp_path):

@@ -362,6 +362,136 @@ def test_select_emits_only_on_change_and_rejects_missing_indices(vm):
     assert vm.selected == 0
 
 
+# ----- Loading a document and unsaved changes -----------------------------------------------------
+
+
+def loaded_document():
+    from text3d_studio.model import Scene, TextObject, TextParams
+
+    scene = Scene(objects=[TextObject(id=5, text=TextParams(content="A")), TextObject(id=9)])
+    scene.light.azimuth = 100.0
+    scene.grid.visible = True
+    pixels = np.zeros((20, 30, 4), np.uint8)
+    return Document(scene=scene, background=pixels, background_path="photo.png")
+
+
+def test_load_document_replaces_document_and_scene(vm):
+    document = loaded_document()
+    vm.add_object()
+    vm.load_document(document)
+    assert vm.document is document
+    assert vm.scene is document.scene
+    assert vm.selected == 0 and vm.selected_object.id == 5
+
+
+def test_load_document_emits_what_views_need(vm):
+    vm.add_object()  # selection is on index 1
+    backgrounds, objects = record(vm.background_changed), record(vm.objects_changed)
+    selections, scenes, loads = record(vm.selection_changed), record(vm.scene_changed), record(vm.document_loaded)
+    vm.load_document(loaded_document())
+    assert len(backgrounds) == 1 and len(objects) == 1 and len(loads) == 1
+    assert selections == [(0,)]  # even when it was already 0, every per-object control must refresh
+    assert ("light", "azimuth") in scenes and ("grid", "visible") in scenes and ("camera", "fov") in scenes
+    assert not any(section in ("text", "transform", "material") for section, _ in scenes)
+
+
+def test_load_document_resets_selection_even_from_zero(vm):
+    selections = record(vm.selection_changed)
+    vm.load_document(loaded_document())
+    assert selections == [(0,)]
+
+
+def test_ids_continue_after_the_loaded_document(vm):
+    vm.load_document(loaded_document())
+    vm.add_object()
+    assert vm.selected_object.id == 10
+
+
+def test_new_viewmodel_is_clean(vm):
+    assert vm.dirty is False
+
+
+@pytest.mark.parametrize("edit", [
+    lambda vm: vm.set("light", "azimuth", 1.0),
+    lambda vm: vm.set("text", "content", "Changed"),
+    lambda vm: vm.add_object(),
+    lambda vm: vm.duplicate_object(),
+    lambda vm: vm.apply_material("wood"),
+    lambda vm: vm.set_ground_pose(pitch=5.0),
+    lambda vm: vm.set_background(np.zeros((4, 4, 4), np.uint8), "p.png"),
+])
+def test_edits_set_dirty_once(vm, edit):
+    events = record(vm.dirty_changed)
+    edit(vm)
+    assert vm.dirty is True
+    assert events == [(True,)]
+
+
+def test_deleting_an_object_sets_dirty(vm):
+    vm.add_object()
+    vm.mark_saved()
+    vm.delete_object()
+    assert vm.dirty
+
+
+def test_no_op_edits_selection_and_refused_deletes_keep_it_clean(vm):
+    vm.add_object()
+    vm.delete_object()
+    vm.mark_saved()
+    events = record(vm.dirty_changed)
+    vm.set("light", "azimuth", vm.scene.light.azimuth)
+    vm.select(0)
+    assert not vm.delete_object()  # refused: the last object stays
+    assert vm.dirty is False
+    assert events == []
+
+
+def test_mark_saved_clears_dirty(vm):
+    vm.set("light", "azimuth", 1.0)
+    events = record(vm.dirty_changed)
+    vm.mark_saved()
+    vm.mark_saved()
+    assert vm.dirty is False
+    assert events == [(False,)]
+
+
+def test_load_document_leaves_it_clean(vm):
+    vm.set("light", "azimuth", 1.0)
+    events = record(vm.dirty_changed)
+    vm.load_document(loaded_document())
+    assert vm.dirty is False
+    assert events == [(False,)]
+    vm.set("camera", "fov", 20.0)
+    assert vm.dirty is True
+
+
+def test_load_document_clears_dirty_before_document_loaded(vm):
+    vm.set("light", "azimuth", 1.0)
+    seen = []
+    vm.document_loaded.connect(lambda: seen.append(vm.dirty))
+    vm.load_document(loaded_document())
+    assert seen == [False]
+
+
+def test_loading_a_document_cannot_be_undone(qapp):
+    vm = SceneViewModel(Document())
+    vm.set("light", "azimuth", 1.0)
+    assert vm.can_undo
+    history = record(vm.history_changed)
+    vm.load_document(loaded_document())
+    assert not vm.can_undo and not vm.can_redo
+    assert history
+    assert vm.undo() is False
+    assert vm.scene.light.azimuth == 100.0
+
+
+def test_undo_after_saving_marks_the_document_dirty_again(vm):
+    vm.set("light", "azimuth", 1.0)
+    vm.mark_saved()
+    vm.undo()
+    assert vm.dirty  # dirty isn't tied to the history: undoing back to the saved state still counts as a change
+
+
 # ----- Undo / redo ------------------------------------------------------------------------------
 
 

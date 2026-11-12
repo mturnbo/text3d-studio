@@ -31,11 +31,14 @@ viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       (vm.selected, vm.selected_object: editor state); other sections are shared by the scene
                       add_object() / duplicate_object() / delete_object() / select(index)
                       undo() / redo() / can_undo / can_redo / begin_edit() / end_edit() / clear_history()
+                      load_document(document) / dirty / mark_saved()
                       signals: scene_changed(section, field), text_changed(), background_changed(),
-                               objects_changed(), selection_changed(index), history_changed()
+                               objects_changed(), selection_changed(index), history_changed(),
+                               dirty_changed(bool), document_loaded()
 history.py          History: bounded (100) undo/redo stacks of opaque states, with burst merging. No Qt.
 views/              Qt widgets only. Never touch GL state or numpy image math here.
-  main_window.py      menus (Edit › Undo/Redo in _build_edit_menu), status bar, file dialogs
+  main_window.py      menus (Edit › Undo/Redo in _build_edit_menu, File › project actions in
+                      _build_project_actions), status bar, file dialogs, unsaved-changes prompt
   control_panel.py    Objects list (Add / Duplicate / Delete) + declarative slider/colour/checkbox layout,
                       two-way bound to the ViewModel; a selection change refreshes every per-object control
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
@@ -65,7 +68,8 @@ ground.py           Ground model B: ground pose (GroundParams) → plane, origin
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
-preferences.py      QSettings-backed last folder + recent files (max 8). MainWindow requires one.
+preferences.py      QSettings-backed last folder + recent files (images and projects, max 8). MainWindow requires one.
+project_io.py       .t3d project files: save_project(path, document, embed_photo) / load_project(path) -> LoadedProject
 app.py              configure_opengl() + main()
 ```
 
@@ -286,7 +290,7 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 - **Restoring** swaps the Scene's fields in place (`vm.scene` stays the same object), records nothing, and
   emits `objects_changed`, `selection_changed`, `scene_changed` for every shared-section field that differs,
   and `text_changed` if any text did, so every view refreshes (the canvas re-rasterizes changed text).
-- `set_background` isn't undoable and clears the history; so will project loading (`vm.clear_history()`).
+- `set_background` isn't undoable and clears the history; so does `load_document` (opening a project).
 - **Shortcuts.** Spin boxes and combo boxes claim Cmd+Z for their own text undo; `control_panel.UndoShortcuts`
   leaves that claim unaccepted so the Edit menu's shortcut runs (like `LetterShortcuts`). The Text field
   keeps its native undo.
@@ -358,6 +362,41 @@ UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs · v0.5.0 image o
 (PBR shading, metal / plastic / stone / wood / glass, procedural textures, glass refraction) · v0.7.1 input
 fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel scrolling, G from number fields).
 
+### Project files (.t3d)
+
+- **Format.** UTF-8 JSON: `{"format": "text3d-studio-project", "version": 1, "scene": dataclasses.asdict(scene),
+  "photo": …}`. `photo` is `null`, `{"relative_path", "absolute_path"}` (relative to the project's folder,
+  tried first) or `{"embedded_png": base64}` (**Save Project With Photo…**, or a photo that has no path because
+  it came embedded). Save Project reuses the mode the project was last saved or opened with.
+- **Versioning rule.** `project_io.FORMAT_VERSION` is the schema version. Adding a field with a default needs
+  nothing (loading fills defaults and ignores unknown fields). For an *incompatible* change (rename, move,
+  new meaning), bump `FORMAT_VERSION` and add a migration in `load_project` that upgrades older dicts before
+  they're read. Files newer than `FORMAT_VERSION` are refused with a `ValueError`.
+- **Loading is explicit per dataclass** (`_scene_from_dict`, `_object_from_dict`, `_params_from_dict`).
+  Colour fields are listed in `COLOR_FIELDS` and turned back into tuples; a test fails if a new `Color` field
+  isn't listed. Object ids are kept (renumbered only if missing or duplicated). Corrupt JSON, a non-project
+  file or a damaged scene raise `ValueError`; a missing photo is only a warning (`LoadedProject.warnings`,
+  `missing_photo`), shown in the status bar and on the empty-state overlay.
+- **Photo path hardening.** A shared project can name any path, so `is_allowed_photo_path(path, windows=…)`
+  allowlists the stored and resolved paths before any filesystem call: on Windows only drive-letter paths
+  (`C:\…`; no UNC, `\\?\`, `\\.\` or `\??\` prefixes, no driveless rooted paths); on POSIX absolute paths
+  except `//…` and the `/net` and `/Network` automount roots (case-insensitive). `relative_path` must be
+  relative (no root or drive), but may lead outside the project folder (`../photos/x.jpg`). Only
+  `image_io.SUPPORTED_EXTENSIONS` are opened. A rejected path is treated like a missing photo.
+- **Saving is atomic**: JSON is streamed into a temp file in the same folder, fsynced, then `os.replace`d; on
+  any failure the temp file is removed and the old project is untouched.
+- **Dirty tracking.** `vm.dirty` is set by `scene_changed`, `objects_changed` and `background_changed`, and
+  cleared by `mark_saved()` and `load_document()`. It isn't tied to the undo history: undoing back to the
+  saved state still leaves the window marked modified. `MainWindow.maybe_save_changes()` (Save / Discard /
+  Cancel) runs before closing and opening a project. Opening an image doesn't ask: it replaces only the
+  photo, keeps the scene, and marks the document dirty. Tests monkeypatch
+  `main_window.QMessageBox.question` (the `window` fixtures answer Discard).
+- `MainWindow.open_path(path)` dispatches drops and Open Recent by extension to `open_project_path` or
+  `load_image_path`.
+- Window tests that build a `MainWindow` must sort after `tests/test_render.py` (hence
+  `tests/test_views_projects.py`): a window destroyed earlier in the session leaves no current GL context for
+  the render fixtures.
+
 ## Known limitations / next work
 
 - Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
@@ -367,7 +406,8 @@ fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel s
   cap-height ink; very tall or descending text can still overlap a little, and near the image's bottom edge
   the new object may be partly cut off.
 - Image opening is done (v0.5.0). `MainWindow.open_image_dialog()` asks for a file, and
-  `load_image_path(path)` is the single load path used by the menu, toolbar, prompt, drops, Open Recent and the CLI.
+  `load_image_path(path)` is the single image load path used by the menu, toolbar, prompt, drops and Open Recent
+  (both via `open_path`) and the CLI.
   Image decoding is synchronous (busy cursor only). Moving it to a worker thread is a possible follow-up.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
   tiled export, packaging.
