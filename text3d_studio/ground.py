@@ -249,3 +249,16 @@ def fit_ground_to_rectangle(
         pitch=pitch, yaw=yaw, roll=roll, height=ground.height, fov=fov,
         offset_x=corner_x % cell_size, offset_z=corner_z % cell_size,
     )
+
+
+def wall_grid_lines(ground: GroundParams, wall: WallParams, spacing: float, half_width: float, height: float):
+    """Camera-space segments of a grid on the wall: verticals every `spacing` within `half_width` of the point
+    nearest the camera, and horizontals up to `height`. The base line (height 0) isn't included."""
+    count = int(half_width / spacing)
+    lines = []
+    for i in range(-count, count + 1):
+        along = i * spacing
+        lines.append((wall_to_world(ground, wall, along, 0.0), wall_to_world(ground, wall, along, height)))
+    for j in range(1, int(height / spacing) + 1):
+        lines.append((wall_to_world(ground, wall, -half_width, j * spacing), wall_to_world(ground, wall, half_width, j * spacing)))
+    return lines
