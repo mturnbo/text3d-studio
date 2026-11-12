@@ -270,3 +270,106 @@ def test_overlay_returns_to_the_usual_prompt_for_a_project_without_photo(window,
     window.save_project_as()
     window.open_project_path(str(tmp_path / "bare.t3d"))
     assert window.canvas.empty_state.title.text() == "No image loaded"
+
+
+# ----- Unsaved-changes prompt -------------------------------------------------------------------
+
+SAVE, DISCARD, CANCEL = (QMessageBox.StandardButton.Save, QMessageBox.StandardButton.Discard,
+                         QMessageBox.StandardButton.Cancel)
+
+
+def saved_window(window, tmp_path, monkeypatch):
+    """An edited window saved to scene.t3d, then edited again (dirty)."""
+    edited_window(window, tmp_path)
+    save_dialog(monkeypatch, str(tmp_path / "scene.t3d"))
+    window.save_project()
+    window.vm.set("camera", "fov", 21.0)
+    return str(tmp_path / "scene.t3d")
+
+
+def test_clean_window_closes_without_asking(window, prompts):
+    assert window.close() is True
+    assert prompts[0] == []
+
+
+def test_close_cancel_keeps_the_window_open(window, tmp_path, prompts):
+    edited_window(window, tmp_path)
+    prompts[1][0] = CANCEL
+    assert window.close() is False
+    assert len(prompts[0]) == 1 and "Unsaved changes" in prompts[0][0]
+    assert window.vm.dirty
+
+
+def test_close_discard_closes_without_saving(window, tmp_path, monkeypatch, prompts):
+    path = saved_window(window, tmp_path, monkeypatch)
+    assert window.close() is True
+    assert load_project(path).document.scene.camera.fov != 21.0
+
+
+def test_close_save_writes_the_project_first(window, tmp_path, monkeypatch, prompts):
+    path = saved_window(window, tmp_path, monkeypatch)
+    prompts[1][0] = SAVE
+    assert window.close() is True
+    assert load_project(path).document.scene.camera.fov == 21.0
+    assert "scene.t3d" in prompts[0][0][2]
+
+
+def test_close_save_cancelled_in_the_dialog_keeps_the_window(window, tmp_path, monkeypatch, prompts):
+    edited_window(window, tmp_path)
+    prompts[1][0] = SAVE
+    save_dialog(monkeypatch, "")
+    assert window.close() is False
+    assert window.vm.dirty
+
+
+def test_opening_a_project_over_changes_can_be_cancelled(window, tmp_path, monkeypatch, prompts):
+    path = saved_window(window, tmp_path, monkeypatch)
+    scene = window.vm.scene
+    prompts[1][0] = CANCEL
+    window.open_project_path(path)
+    assert window.vm.scene is scene and window.vm.dirty
+
+
+def test_opening_a_project_over_changes_discards_them(window, tmp_path, monkeypatch, prompts):
+    path = saved_window(window, tmp_path, monkeypatch)
+    window.open_project_path(path)
+    assert len(prompts[0]) == 1
+    assert window.vm.scene.camera.fov != 21.0 and not window.vm.dirty
+
+
+def test_opening_a_project_over_changes_can_save_them_first(window, tmp_path, monkeypatch, prompts):
+    path = saved_window(window, tmp_path, monkeypatch)
+    prompts[1][0] = SAVE
+    window.open_project_path(path)
+    assert window.vm.scene.camera.fov == 21.0  # saved, then reopened
+    assert not window.vm.dirty
+
+
+def test_opening_a_project_into_a_clean_window_does_not_ask(window, tmp_path, monkeypatch, preferences, prompts):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    window.open_project_path(path)
+    assert prompts[0] == []
+
+
+def test_opening_an_image_over_changes_can_be_cancelled(window, tmp_path, monkeypatch, prompts):
+    saved_window(window, tmp_path, monkeypatch)
+    prompts[1][0] = CANCEL
+    window.load_image_path(image_file(tmp_path, "other.png"))
+    assert window.vm.document.background_path == str(tmp_path / "photo.png")
+
+
+def test_opening_an_image_over_changes_can_discard_or_save(window, tmp_path, monkeypatch, prompts):
+    path = saved_window(window, tmp_path, monkeypatch)
+    window.load_image_path(image_file(tmp_path, "other.png"))
+    assert window.vm.document.background_path == str(tmp_path / "other.png")
+    assert load_project(path).document.scene.camera.fov != 21.0
+    window.vm.set("camera", "fov", 33.0)
+    prompts[1][0] = SAVE
+    window.load_image_path(image_file(tmp_path, "third.png"))
+    assert load_project(path).document.scene.camera.fov == 33.0
+    assert window.vm.document.background_path == str(tmp_path / "third.png")
+
+
+def test_opening_an_image_into_a_clean_window_does_not_ask(window, tmp_path, prompts):
+    window.load_image_path(image_file(tmp_path))
+    assert prompts[0] == []

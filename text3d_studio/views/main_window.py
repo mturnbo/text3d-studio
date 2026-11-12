@@ -143,6 +143,8 @@ class MainWindow(QMainWindow):
             self.open_project_path(path)
 
     def open_project_path(self, path: str) -> None:
+        if not self.maybe_save_changes():
+            return
         try:
             loaded = project_io.load_project(path)
         except (ValueError, OSError) as exc:
@@ -196,6 +198,26 @@ class MainWindow(QMainWindow):
         self._update_title()
         self.statusBar().showMessage(f"Saved {os.path.basename(path)}", 8000)
         return True
+
+    def maybe_save_changes(self) -> bool:
+        """Offers to save unsaved changes. Returns False when the user cancels (or the save doesn't happen)."""
+        if not self.vm.dirty:
+            return True
+        name = os.path.basename(self.project_path) if self.project_path else "this project"
+        buttons = QMessageBox.StandardButton
+        answer = QMessageBox.question(
+            self, "Unsaved changes", f"Do you want to save the changes to {name}?",
+            buttons.Save | buttons.Discard | buttons.Cancel, buttons.Save,
+        )
+        if answer == buttons.Save:
+            return self.save_project()
+        return answer == buttons.Discard
+
+    def closeEvent(self, event) -> None:
+        if self.maybe_save_changes():
+            event.accept()
+        else:
+            event.ignore()
 
     def _remember_file(self, path: str) -> None:
         self.preferences.set_last_directory(os.path.dirname(os.path.abspath(path)))
@@ -264,6 +286,8 @@ class MainWindow(QMainWindow):
             self.load_image_path(path)
 
     def load_image_path(self, path: str) -> None:
+        if not self.maybe_save_changes():
+            return
         had_background = self.vm.document.background is not None
         previous_size = self.vm.document.native_size
         try:
