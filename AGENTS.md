@@ -360,7 +360,8 @@ UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs · v0.5.0 image o
 (empty-state prompt, toolbar, drag and drop, Open Recent, size notice) · v0.6.0 perspective grid
 (ground model B, grid overlay, Move Text / Adjust Grid / Fit Rectangle tools) · v0.7.0 materials
 (PBR shading, metal / plastic / stone / wood / glass, procedural textures, glass refraction) · v0.7.1 input
-fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel scrolling, G from number fields).
+fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel scrolling, G from number fields) ·
+v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save and open).
 
 ### Project files (.t3d)
 
