@@ -477,6 +477,24 @@ void main() {
 }
 """
 
+# Puts the resolved text layer (premultiplied color, coverage in alpha) over the target, and carries its
+# depth along so later passes (the grid overlay) can test against the text. Fetches texels one-to-one with
+# the viewport's pixels, so nothing is filtered.
+LAYER_COMPOSITE_FS = """
+#version 410 core
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+uniform vec2 u_origin;   // the viewport's lower-left corner in window pixels
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy - u_origin);
+    vec4 color = texelFetch(u_color, texel, 0);
+    if (color.a <= 0.0) discard;
+    frag = color;
+    gl_FragDepth = texelFetch(u_depth, texel, 0).r;
+}
+"""
+
 # ----- Editor overlay (preview only, never exported) ----------------------------------------------
 
 # One large quad on the ground plane, in ground coordinates.

@@ -39,7 +39,7 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shaders.py          all GLSL 4.10 sources as strings
   text3d_renderer.py  instanced layer stack (beauty) + shadow casters (caps + side walls)
   shadow_renderer.py  half-res shadow mask → separable Gaussian blur → multiply composite
-  compositor.py       frame orchestration: background → shadow → text
+  compositor.py       frame orchestration: background → shadow → text layer (drawn alone, composited over)
   exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
   grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
                       vanishing-point rings. Drawn by ImageCanvas after Compositor.render
@@ -155,9 +155,15 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
 - **Never write alpha < 1 into the canvas framebuffer.** Qt composites the QOpenGLWidget as premultiplied
   color, so a pixel brighter than its alpha overflows and *wraps* (a 245 blue shows as 9): bright reflections
-  turned into rainbow speckles. The text pass (alpha-to-coverage) and the grid pass mask alpha writes with
+  turned into rainbow speckles. The text-layer composite and the grid pass mask alpha writes with
   `glColorMask(..., GL_FALSE)`. Exports never showed it because the exporter forces alpha to 255, so test
   the *preview* path: `test_preview_framebuffer_stays_opaque`.
+- **Text layer** (`Compositor.text_layer`, a `LayerTarget`). The text is drawn alone into a multisampled
+  layer (at least `MIN_LAYER_SAMPLES`, more if the target has more) cleared to transparent, with
+  alpha-to-coverage *and* alpha-to-one, then resolved: color comes out premultiplied and alpha is coverage.
+  `LAYER_COMPOSITE_FS` puts it over the target with (ONE, ONE_MINUS_SRC_ALPHA), fetching texels 1:1 with
+  the viewport. Exports match the old direct render to within one level. Passes that work on the text
+  alone (occlusion, grading, bloom, transparent export) read `text_layer.color` / `.depth`.
 - **Depth pre-pass** (`text3d_renderer.DEPTH_PREPASS`). The stack is drawn once into depth only
   (`LAYER_DEPTH_FS`), then shaded with `GL_EQUAL` and depth writes off, so expensive shading runs about
   once per pixel instead of once per slice. Real gains are modest on Apple GPUs (~11% without MSAA, ~0
@@ -176,7 +182,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Overlays are **preview only**. They're drawn in `ImageCanvas.paintGL` *after* `Compositor.render` and
   must never be added to `Compositor.render`, or they'd appear in exports.
   `test_export_is_identical_with_grid_shown_or_hidden` guards this.
-- They reuse the composite's depth buffer: depth test on, depth writes off, so the text hides them.
+- They reuse the composite's depth buffer: depth test on, depth writes off, so the text hides them. The
+  text-layer composite writes the layer's resolved depth (`gl_FragDepth`) for exactly this.
   The horizon pass sits at the far plane (z = 0.999999) for the same reason.
 - Procedural lines use `fwidth` for constant pixel width (scaled by the device pixel ratio). With
   `fract()`-wrapped coordinates, take the derivative of the *unwrapped* value, or a false line shows
@@ -198,6 +205,9 @@ press; Shift can be toggled mid-drag. Pinch arrives as a native gesture, caught 
 **Control panel input:** `WheelGuard` sends the wheel to the panel's scroll bar unless the control under the
 pointer has focus (sliders, spin boxes and combos are click/Tab focus only). `LetterShortcuts` keeps a
 focused spin box from swallowing G/V/P/R.
+
+**Focus in tests:** use `activate(window, qapp)` (`QApplication.setActiveWindow`) and `setFocus()`, not
+`activateWindow()` or clicks; macOS won't hand OS focus to a test window while you're using another app.
 
 **Tests:** an autouse fixture in `conftest.py` runs `gc.collect()` before each test. Widgets dropped by
 earlier tests otherwise die during a later canvas's paint, and destroying a GL widget switches the

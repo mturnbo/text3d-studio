@@ -216,6 +216,54 @@ class RenderTarget:
         GL.glDeleteRenderbuffers(2, [self.color_rb, self.depth_rb])
 
 
+class LayerTarget:
+    """A layer drawn multisampled (color + depth), then resolved into textures for compositing.
+
+    Resolving averages each pixel's samples, so color comes out premultiplied by coverage and alpha holds the
+    coverage: the layer composites with (ONE, ONE_MINUS_SRC_ALPHA).
+    """
+
+    def __init__(self):
+        self.width = self.height = self.samples = 0
+        self.draw: RenderTarget | None = None
+        self.color = Texture2D()
+        self.depth = Texture2D(GL.GL_DEPTH_COMPONENT24, GL.GL_DEPTH_COMPONENT)
+        self.resolved_fbo = GL.glGenFramebuffers(1)
+
+    def resize(self, width: int, height: int, samples: int) -> None:
+        if (width, height, samples) == (self.width, self.height, self.samples):
+            return
+        self.width, self.height, self.samples = width, height, samples
+        if self.draw is not None:
+            self.draw.delete()
+        self.draw = RenderTarget(width, height, samples)
+        self.color.allocate(width, height)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.depth.handle)
+        GL.glTexImage2D(
+            GL.GL_TEXTURE_2D, 0, GL.GL_DEPTH_COMPONENT24, width, height, 0,
+            GL.GL_DEPTH_COMPONENT, GL.GL_UNSIGNED_INT, None,
+        )
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.resolved_fbo)
+        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, self.color.handle, 0)
+        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_DEPTH_ATTACHMENT, GL.GL_TEXTURE_2D, self.depth.handle, 0)
+        _check_complete()
+
+    def resolve(self) -> None:
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self.draw.fbo)
+        GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self.resolved_fbo)
+        GL.glBlitFramebuffer(
+            0, 0, self.width, self.height, 0, 0, self.width, self.height,
+            GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT, GL.GL_NEAREST,
+        )
+
+    def delete(self) -> None:
+        if self.draw is not None:
+            self.draw.delete()
+        GL.glDeleteFramebuffers(1, [self.resolved_fbo])
+        self.color.delete()
+        self.depth.delete()
+
+
 def _check_complete() -> None:
     status = GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER)
     if status != GL.GL_FRAMEBUFFER_COMPLETE:

@@ -617,6 +617,16 @@ def test_grid_panel_controls_are_bound(vm):
     assert vm.scene.grid.cell_size == 2.5
 
 
+def activate(window, qapp):
+    """Shows the window and makes it Qt's active window, so focus works even while another app holds the
+    OS focus (macOS won't let a test steal it)."""
+    from PyQt6.QtWidgets import QApplication
+
+    window.show()
+    QApplication.setActiveWindow(window)
+    qapp.processEvents()
+
+
 def test_g_key_on_canvas_toggles_grid(window, qapp):
     from PyQt6.QtTest import QTest
 
@@ -633,11 +643,9 @@ def test_g_toggles_the_grid_while_a_number_field_has_focus(window, qapp, field):
 
     from text3d_studio.views.control_panel import SliderRow
 
-    window.show()
-    window.activateWindow()
-    assert QTest.qWaitForWindowActive(window)
+    activate(window, qapp)
     spin = window.panel.findChild(SliderRow, field).spin
-    QTest.mouseClick(spin, Qt.MouseButton.LeftButton)
+    spin.setFocus()
     qapp.processEvents()
     assert spin.hasFocus()
     QTest.keyClick(spin, Qt.Key.Key_G)
@@ -652,11 +660,9 @@ def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, q
     from text3d_studio.views.control_panel import SliderRow
     from text3d_studio.views.image_canvas import GRID_TOOL
 
-    window.show()
-    window.activateWindow()
-    assert QTest.qWaitForWindowActive(window)
+    activate(window, qapp)
     spin = window.panel.findChild(SliderRow, "transform.size").spin
-    QTest.mouseClick(spin, Qt.MouseButton.LeftButton)
+    spin.setFocus()
     spin.selectAll()
     QTest.keyClicks(spin, "5")
     QTest.keyClick(spin, Qt.Key.Key_Return)
@@ -1138,9 +1144,7 @@ def wheel_over(widget, steps=-1):
 
 def scrollable_panel(window, qapp):
     window.resize(1200, 500)  # short enough that the panel scrolls
-    window.show()
-    window.activateWindow()
-    qapp.processEvents()
+    activate(window, qapp)
     return window.panel
 
 
