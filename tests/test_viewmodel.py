@@ -49,7 +49,9 @@ def test_every_text_field_re_rasterizes(vm):
     assert RASTER_FIELDS == {f.name for f in dataclasses.fields(TextParams)}  # each one shapes the glyph mask
     text_events = record(vm.text_changed)
     vm.set("text", "align", "left")
-    assert len(text_events) == 1
+    vm.set("text", "letter_spacing", 0.2)
+    vm.set("text", "line_height", 1.5)
+    assert len(text_events) == 3
 
 
 def test_nudge_adds_delta(vm):

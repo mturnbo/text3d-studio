@@ -244,3 +244,52 @@ def test_left_and_right_alignment_mirror_the_short_lines(qapp):
 def test_unknown_alignment_raises(qapp):
     with pytest.raises(ValueError, match="alignment"):
         rasterize_text(TextParams(content="HI", align="justify"))
+
+
+# ----- Letter spacing and line height -------------------------------------------------------------------
+
+
+def test_letter_spacing_widens_the_mask_by_the_gaps_between_letters(qapp):
+    widths = {s: rasterize_text(TextParams(content="HHHH", letter_spacing=s)).size[0] for s in (-0.1, 0.0, 0.2, 0.5)}
+    assert widths[-0.1] < widths[0.0] < widths[0.2] < widths[0.5]
+    assert widths[0.2] - widths[0.0] == pytest.approx(3 * 0.2, abs=0.02)  # three gaps, no trailing space
+    assert widths[0.0] - widths[-0.1] == pytest.approx(3 * 0.1, abs=0.02)
+
+
+def test_letter_spacing_keeps_the_height(qapp):
+    plain = rasterize_text(TextParams(content="HI"))
+    spaced = rasterize_text(TextParams(content="HI", letter_spacing=0.5))
+    assert spaced.rgba.shape[0] == plain.rgba.shape[0]
+
+
+def test_letter_spacing_applies_to_every_line_and_keeps_them_aligned(qapp):
+    raster = rasterize_text(TextParams(content="HHHH\nHH", letter_spacing=0.3, align="left"))
+    extents = [ink_columns(raster, band) for band in ink_bands(raster)]
+    assert abs(extents[0][0] - extents[1][0]) <= 3
+
+
+@pytest.mark.parametrize("spacing", [-0.1, -0.3])
+def test_negative_letter_spacing_overlaps_letters_with_closed_walls(qapp, spacing):
+    raster = rasterize_text(TextParams(content="HOHO", letter_spacing=spacing))
+    assert raster.rgba[..., 3].max() == 255
+    assert_walls_closed(raster)
+
+
+@pytest.mark.parametrize("line_height", [1.0, 1.5, 2.0])
+def test_line_height_sets_the_distance_between_lines(qapp, line_height):
+    raster = rasterize_text(TextParams(content="HI\nHI", line_height=line_height))
+    first, second = ink_bands(raster)
+    em_rows = raster.rgba.shape[0] / raster.size[1]
+    assert (second[0] - first[0]) / em_rows == pytest.approx(line_height, abs=0.02)
+
+
+def test_tight_line_height_shrinks_the_mask_and_keeps_walls_closed(qapp):
+    normal = rasterize_text(TextParams(content="HI\nHI\nHI"))
+    tight = rasterize_text(TextParams(content="HI\nHI\nHI", line_height=0.7))
+    assert tight.size[1] == pytest.approx(normal.size[1] - 2 * 0.3, abs=0.02)
+    assert_walls_closed(tight)
+
+
+def test_line_height_changes_nothing_for_a_single_line(qapp):
+    plain = rasterize_text(TextParams(content="HI"))
+    assert np.array_equal(rasterize_text(TextParams(content="HI", line_height=2.0)).rgba, plain.rgba)

@@ -118,6 +118,7 @@ def _make_font(params: TextParams, pixel_size: int) -> QFont:
     font.setPixelSize(pixel_size)
     font.setBold(params.bold)
     font.setItalic(params.italic)
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, params.letter_spacing * pixel_size)
     return font
 
 
@@ -128,7 +129,7 @@ def _layout(params: TextParams, font_px: int) -> tuple[list[tuple[str, QPointF]]
     lines = params.content.split("\n")
     inks = [metrics.tightBoundingRect(line) if line.strip() else None for line in lines]
     widest = max(ink.width() for ink in inks if ink is not None)
-    pitch = metrics.lineSpacing()
+    pitch = metrics.lineSpacing() * params.line_height
     slack = font_px * 0.25
     pieces, bounds = [], QRectF()
     for index, (line, ink) in enumerate(zip(lines, inks)):
