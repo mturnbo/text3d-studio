@@ -1939,3 +1939,110 @@ def test_clicking_arced_text_picks_it(vm):
     assert not raster.covers(*under_arch)
     click(canvas, on_face(canvas, 1, ink_point(canvas, 1)))
     assert vm.selected == 1
+
+
+def align_combo(panel):
+    from PyQt6.QtWidgets import QComboBox
+
+    return panel.findChild(QComboBox, "text.align")
+
+
+def test_align_dropdown_lists_the_alignments(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    combo = align_combo(ControlPanel(vm))
+    assert [combo.itemData(i) for i in range(combo.count())] == ["left", "center", "right"]
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Left", "Center", "Right"]
+    assert combo.currentData() == "center"
+
+
+def test_arrow_keys_in_the_align_dropdown_set_the_alignment(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    activate(window, qapp)
+    combo = align_combo(window.panel)
+    combo.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(combo, Qt.Key.Key_Down)
+    assert window.vm.scene.objects[0].text.align == "right"
+    QTest.keyClick(combo, Qt.Key.Key_Down)  # already the last: nothing changes
+    assert window.vm.scene.objects[0].text.align == "right"
+    QTest.keyClick(combo, Qt.Key.Key_Up)
+    QTest.keyClick(combo, Qt.Key.Key_Up)
+    assert window.vm.scene.objects[0].text.align == "left"
+    press_undo(combo)
+    assert window.vm.scene.objects[0].text.align == "center"
+    assert combo.currentData() == "center"
+
+
+@pytest.mark.parametrize(("field", "typed", "expected"), [
+    ("letter_spacing", "0.25", 0.25),
+    ("letter_spacing", "-0.1", -0.1),  # the range's ends
+    ("line_height", "1.5", 1.5),
+    ("line_height", "2", 2.0),
+    ("line_height", "0.7", 0.7),
+    ("arc", "-90", -90),
+    ("arc", "180", 180),
+    ("arc", "-180", -180),
+])
+def test_typing_a_text_layout_value_sets_it(window, qapp, field, typed, expected):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    spin = window.panel.findChild(SliderRow, f"text.{field}").spin
+    spin.setFocus()
+    spin.selectAll()
+    qapp.processEvents()
+    QTest.keyClicks(spin, typed)
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert getattr(window.vm.scene.objects[0].text, field) == expected
+
+
+def test_out_of_range_text_layout_values_cannot_be_typed(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    spin = window.panel.findChild(SliderRow, "text.arc").spin
+    spin.setFocus()
+    spin.selectAll()
+    qapp.processEvents()
+    QTest.keyClicks(spin, "400")  # the spin box refuses the keystroke that would leave -180..180
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert -180 <= window.vm.scene.objects[0].text.arc <= 180
+
+
+def test_dragging_the_arc_slider_is_one_undo_step_and_re_rasterizes(window, qapp):
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, "text.arc")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    drag_slider(row.slider, 60)
+    arc = window.vm.scene.objects[0].text.arc
+    assert arc > 0 and row.spin.value() == arc
+    window.canvas._update_rasters()
+    assert window.canvas._rasters[window.vm.scene.objects[0].id][0].arc == arc
+    assert undo_steps(window.vm) == 1
+    assert window.vm.scene.objects[0].text.arc == 0.0
+
+
+def test_text_layout_controls_follow_the_selected_object(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    vm.set("text", "align", "left")
+    vm.set("text", "arc", 45)
+    vm.set("text", "line_height", 1.3)
+    assert align_combo(panel).currentData() == "left"
+    assert panel.findChild(SliderRow, "text.arc").spin.value() == 45
+    panel.object_list.setCurrentRow(0)
+    assert align_combo(panel).currentData() == "center"
+    assert panel.findChild(SliderRow, "text.arc").spin.value() == 0
+    assert panel.findChild(SliderRow, "text.line_height").spin.value() == 1.0
+    assert [o.text.align for o in vm.scene.objects] == ["center", "left"]

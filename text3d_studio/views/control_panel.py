@@ -24,11 +24,17 @@ from PyQt6.QtWidgets import (
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV
 from ..materials import KINDS
+from ..text_raster import ALIGNMENTS
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
 SLIDERS = {
-    "text": [("bevel_width", "Bevel width", 1, 20, 1)],
+    "text": [
+        ("bevel_width", "Bevel width", 1, 20, 1),
+        ("letter_spacing", "Letter spacing", -0.1, 0.5, 2),
+        ("line_height", "Line height", 0.7, 2.0, 2),
+        ("arc", "Arc", -180, 180, 0),
+    ],
     "transform": [
         ("x", "Position X", -30, 30, 2),
         ("z", "Position Z", -150, -0.5, 2),
@@ -387,6 +393,16 @@ class ControlPanel(QScrollArea):
             styles.addWidget(box)
         styles.addStretch(1)
         form.addRow("Style", styles)
+
+        align = QComboBox()
+        align.setObjectName("text.align")
+        for value in ALIGNMENTS:
+            align.addItem(value.capitalize(), value)
+        set_align = lambda v: _set_quietly(align, align.setCurrentIndex, align.findData(v))
+        set_align(self.vm.get("text", "align"))
+        self._setters[("text", "align")] = set_align
+        align.currentIndexChanged.connect(lambda index: self.vm.set("text", "align", align.itemData(index)))
+        form.addRow("Align", align)
 
     def _add_material_picker(self, form: QFormLayout) -> None:
         combo = QComboBox()
