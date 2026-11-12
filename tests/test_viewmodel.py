@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 
 import numpy as np
@@ -359,3 +360,330 @@ def test_select_emits_only_on_change_and_rejects_missing_indices(vm):
         with pytest.raises(IndexError):
             vm.select(index)
     assert vm.selected == 0
+
+
+# ----- Undo / redo ------------------------------------------------------------------------------
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock():
+    return FakeClock()
+
+
+@pytest.fixture
+def uvm(qapp, clock):
+    return SceneViewModel(Document(), clock=clock)
+
+
+def scene_copy(vm):
+    return copy.deepcopy(vm.scene)
+
+
+def undo_count(vm):
+    count = 0
+    while vm.undo():
+        count += 1
+    return count
+
+
+def test_fresh_viewmodel_has_nothing_to_undo_and_undo_redo_return_false(uvm):
+    assert not uvm.can_undo and not uvm.can_redo
+    before = scene_copy(uvm)
+    assert uvm.undo() is False
+    assert uvm.redo() is False
+    assert uvm.scene == before
+
+
+@pytest.mark.parametrize("edit", [
+    lambda vm: vm.set("light", "azimuth", 120.0),
+    lambda vm: vm.set("text", "content", "WORLD"),
+    lambda vm: vm.nudge("transform", "x", 1.5),
+    lambda vm: vm.set("ground", "pitch", 12.0),
+    lambda vm: vm.set_ground_pose(pitch=10.0, height=2.5),
+    lambda vm: vm.apply_material("wood"),
+    lambda vm: vm.add_object(),
+    lambda vm: vm.duplicate_object(),
+    lambda vm: (vm.add_object(), vm.clear_history(), vm.delete_object()),
+], ids=["set", "set-text", "nudge", "set-ground", "set_ground_pose", "apply_material", "add", "duplicate", "delete"])
+def test_every_entry_point_is_undoable_in_one_step_and_redoable(uvm, edit):
+    edit(uvm)
+    before_redo = scene_copy(uvm)
+    assert uvm.can_undo
+    assert uvm.undo()
+    assert not uvm.can_undo
+    assert uvm.scene != before_redo
+    assert uvm.redo()
+    assert uvm.scene == before_redo
+    assert not uvm.can_redo
+
+
+def test_undo_restores_the_exact_previous_scene(uvm):
+    original = scene_copy(uvm)
+    uvm.set("light", "azimuth", 120.0)
+    uvm.set("shadow", "opacity", 0.1)
+    uvm.undo()
+    uvm.undo()
+    assert uvm.scene == original
+
+
+def test_setting_an_unchanged_value_or_selecting_records_nothing(uvm):
+    uvm.set("light", "azimuth", uvm.scene.light.azimuth)
+    uvm.add_object()
+    uvm.clear_history()
+    uvm.select(0)
+    assert not uvm.can_undo
+
+
+def test_refused_delete_and_invalid_edits_record_nothing(uvm):
+    assert uvm.delete_object() is False
+    with pytest.raises(KeyError):
+        uvm.set("light", "nope", 1.0)
+    with pytest.raises(ValueError):
+        uvm.apply_material("cheese")
+    assert not uvm.can_undo
+
+
+def test_a_group_of_fifty_sets_is_one_step(uvm):
+    original = scene_copy(uvm)
+    uvm.begin_edit()
+    for i in range(50):
+        uvm.set("transform", "x", float(i + 1))
+    uvm.end_edit()
+    assert undo_count(uvm) == 1
+    assert uvm.scene == original
+
+
+def test_a_group_that_changes_nothing_records_nothing(uvm):
+    events = record(uvm.history_changed)
+    uvm.begin_edit()
+    uvm.set("transform", "x", 4.0)
+    uvm.set("transform", "x", 0.0)  # back where it started
+    uvm.end_edit()
+    uvm.begin_edit()
+    uvm.end_edit()
+    assert not uvm.can_undo
+    assert events == []
+
+
+def test_nested_groups_record_once_when_the_outermost_ends(uvm):
+    uvm.begin_edit()
+    uvm.set("transform", "x", 1.0)
+    uvm.begin_edit()
+    uvm.set("transform", "z", -5.0)
+    uvm.end_edit()
+    assert not uvm.can_undo  # the inner end doesn't record
+    uvm.set("light", "azimuth", 10.0)
+    uvm.end_edit()
+    assert undo_count(uvm) == 1
+
+
+def test_undo_is_refused_during_a_group(uvm):
+    uvm.set("light", "azimuth", 10.0)
+    uvm.begin_edit()
+    uvm.set("transform", "x", 1.0)
+    assert uvm.undo() is False
+    uvm.end_edit()
+    assert undo_count(uvm) == 2
+
+
+def test_quick_changes_to_one_field_merge_into_one_step(uvm, clock):
+    original = scene_copy(uvm)
+    for i in range(10):
+        uvm.nudge("transform", "size", 0.1)
+        clock.now += 0.5
+    assert undo_count(uvm) == 1
+    assert uvm.scene == original
+
+
+def test_typing_in_the_text_field_merges(uvm, clock):
+    for text in ("H", "HE", "HEL", "HELP"):
+        uvm.set("text", "content", text)
+        clock.now += 0.2
+    uvm.undo()
+    assert uvm.scene.objects[0].text.content == "HELLO"
+    assert not uvm.can_undo
+
+
+def test_changes_to_different_fields_do_not_merge(uvm):
+    uvm.set("transform", "size", 4.0)
+    uvm.set("transform", "x", 1.0)
+    uvm.set("transform", "size", 5.0)
+    assert undo_count(uvm) == 3
+
+
+def test_the_same_field_of_another_object_does_not_merge(uvm):
+    uvm.add_object()
+    uvm.clear_history()
+    uvm.set("transform", "size", 4.0)
+    uvm.select(0)
+    uvm.set("transform", "size", 5.0)
+    assert undo_count(uvm) == 2
+
+
+def test_a_pause_longer_than_the_merge_window_starts_a_new_step(uvm, clock):
+    uvm.set("transform", "size", 4.0)
+    clock.now += 0.61
+    uvm.set("transform", "size", 5.0)
+    uvm.undo()
+    assert uvm.scene.objects[0].transform.size == 4.0
+    assert undo_count(uvm) == 1
+
+
+def test_a_group_ends_a_burst(uvm):
+    uvm.set("transform", "size", 4.0)
+    uvm.begin_edit()
+    uvm.set("transform", "x", 2.0)
+    uvm.end_edit()
+    uvm.set("transform", "size", 5.0)
+    assert undo_count(uvm) == 3
+
+
+def test_a_new_change_after_undo_clears_redo(uvm):
+    uvm.set("light", "azimuth", 10.0)
+    uvm.undo()
+    assert uvm.can_redo
+    uvm.set("light", "elevation", 20.0)
+    assert not uvm.can_redo
+    assert uvm.redo() is False
+
+
+def test_undoing_add_removes_the_object_and_restores_the_selection(uvm):
+    uvm.add_object()
+    uvm.add_object()
+    uvm.select(0)
+    uvm.duplicate_object()
+    assert len(uvm.scene.objects) == 4 and uvm.selected == 3
+    uvm.undo()
+    assert len(uvm.scene.objects) == 3
+    assert uvm.selected == 0
+    uvm.redo()
+    assert len(uvm.scene.objects) == 4 and uvm.selected == 3
+
+
+def test_undoing_delete_brings_back_the_object_with_its_id_and_selection(uvm):
+    uvm.add_object()
+    uvm.set("text", "content", "SECOND")
+    uvm.select(0)
+    uvm.set("text", "content", "FIRST")
+    ids = [o.id for o in uvm.scene.objects]
+    uvm.delete_object()
+    assert [o.text.content for o in uvm.scene.objects] == ["SECOND"]
+    uvm.undo()
+    assert [o.id for o in uvm.scene.objects] == ids
+    assert [o.text.content for o in uvm.scene.objects] == ["FIRST", "SECOND"]
+    assert uvm.selected == 0
+
+
+def test_ids_stay_unique_after_undoing_an_add_and_adding_again(uvm):
+    uvm.add_object()
+    added = uvm.scene.objects[1].id
+    uvm.undo()
+    uvm.add_object()
+    assert uvm.scene.objects[1].id != added
+
+
+def test_ground_edit_that_replaces_every_object_undoes_in_one_step(uvm):
+    uvm.add_object()
+    uvm.clear_history()
+    original = scene_copy(uvm)
+    uvm.set("ground", "pitch", 15.0)
+    assert [o.transform for o in uvm.scene.objects] != [o.transform for o in original.objects]
+    uvm.undo()
+    assert uvm.scene == original
+    assert not uvm.can_undo
+
+
+def test_set_ground_pose_with_anchor_undoes_in_one_step(uvm):
+    original = scene_copy(uvm)
+    anchor = uvm.placement_snapshot()
+    uvm.set_ground_pose(anchor=anchor, pitch=8.0, roll=3.0, height=2.0)
+    uvm.undo()
+    assert uvm.scene == original
+    assert not uvm.can_undo
+
+
+def test_set_background_clears_history(uvm):
+    uvm.set("light", "azimuth", 10.0)
+    uvm.undo()
+    uvm.set("light", "azimuth", 20.0)
+    uvm.undo()
+    assert uvm.can_redo
+    events = record(uvm.history_changed)
+    uvm.set_background(np.zeros((4, 4, 4), np.uint8), "photo.png")
+    assert not uvm.can_undo and not uvm.can_redo
+    assert events
+
+
+def test_clear_history_emits_and_empties(uvm):
+    uvm.set("light", "azimuth", 10.0)
+    events = record(uvm.history_changed)
+    uvm.clear_history()
+    assert not uvm.can_undo
+    assert len(events) == 1
+
+
+def test_history_changed_fires_on_record_undo_and_redo(uvm):
+    events = record(uvm.history_changed)
+    uvm.set("light", "azimuth", 10.0)
+    uvm.undo()
+    uvm.redo()
+    assert len(events) == 3
+
+
+def test_restoring_does_not_record_a_step(uvm):
+    uvm.set("light", "azimuth", 10.0)
+    uvm.undo()
+    assert not uvm.can_undo
+    assert uvm.can_redo
+
+
+def test_history_is_bounded_to_one_hundred_steps(uvm, clock):
+    for i in range(120):
+        uvm.set("light", "azimuth", float(i + 1))
+        clock.now += 1.0
+    assert undo_count(uvm) == 100
+    assert uvm.scene.light.azimuth == 20.0
+
+
+def test_undo_emits_changes_for_shared_fields_and_refreshes_objects(uvm):
+    uvm.set("light", "azimuth", 10.0)
+    uvm.set("text", "content", "WORLD")
+    uvm.undo()
+    scene_events, text_events = record(uvm.scene_changed), record(uvm.text_changed)
+    object_events, selection_events = record(uvm.objects_changed), record(uvm.selection_changed)
+    uvm.undo()
+    assert scene_events == [("light", "azimuth")]
+    assert text_events == []
+    assert object_events == [()]
+    assert selection_events == [(0,)]
+
+
+def test_undoing_a_text_change_emits_text_changed(uvm):
+    uvm.set("text", "content", "WORLD")
+    events = record(uvm.text_changed)
+    uvm.undo()
+    assert len(events) == 1
+
+
+def test_undo_keeps_the_scene_object_in_place(uvm):
+    scene = uvm.scene
+    uvm.add_object()
+    uvm.undo()
+    assert uvm.scene is scene
+    assert uvm.document.scene is scene
+
+
+def test_later_edits_do_not_alter_recorded_states(uvm):
+    uvm.set("transform", "x", 1.0)
+    uvm.set("transform", "z", -5.0)  # mutates the live objects the first state must not share
+    uvm.undo()
+    uvm.undo()
+    assert uvm.scene.objects[0].transform == Document().scene.objects[0].transform
