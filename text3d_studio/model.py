@@ -14,6 +14,7 @@ class TextParams:
     bold: bool = True
     italic: bool = False
     bevel_width: float = 6.0  # in raster pixels; controls how wide the beveled rim is
+    align: str = "center"  # "left", "center" or "right": how the lines line up, relative to the widest one
 
 
 @dataclass

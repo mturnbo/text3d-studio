@@ -19,6 +19,7 @@ from .model import TextParams
 FONT_PIXEL_SIZE = 384
 MAX_TEXTURE_WIDTH = 8192  # the mask's limit on both sides; larger text is rasterized at a smaller font size
 MIN_FONT_PIXEL_SIZE = 16
+ALIGNMENTS = {"left": 0.0, "center": 0.5, "right": 1.0}  # TextParams.align -> share of the slack put before a line
 WALL_STEP = 2  # outline tracing resolution (texels per step); the shadow is blurred, so coarse is fine
 
 
@@ -42,6 +43,8 @@ class GlyphRaster:
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
     """Rasterizes every line of the text, stacked downward. Blank lines keep their height; the mask is
     cropped to the ink, so leading and trailing blank lines don't count."""
+    if params.align not in ALIGNMENTS:
+        raise ValueError(f"Unknown text alignment: {params.align!r}")
     if not params.content.strip():
         return None
 
@@ -119,8 +122,8 @@ def _make_font(params: TextParams, pixel_size: int) -> QFont:
 
 
 def _layout(params: TextParams, font_px: int) -> tuple[list[tuple[str, QPointF]], QRectF]:
-    """Places each line's text at its baseline start, in pixels (y down). Returns the pieces and the box their
-    ink can reach (with slack for italic overhang the metrics may miss)."""
+    """Places each line's text at its baseline start, in pixels (y down), aligning the lines' ink. Returns the
+    pieces and the box their ink can reach (with slack for italic overhang the metrics may miss)."""
     metrics = QFontMetricsF(_make_font(params, font_px))
     lines = params.content.split("\n")
     inks = [metrics.tightBoundingRect(line) if line.strip() else None for line in lines]
@@ -131,7 +134,7 @@ def _layout(params: TextParams, font_px: int) -> tuple[list[tuple[str, QPointF]]
     for index, (line, ink) in enumerate(zip(lines, inks)):
         if ink is None:
             continue
-        start = QPointF((widest - ink.width()) / 2 - ink.left(), index * pitch)
+        start = QPointF((widest - ink.width()) * ALIGNMENTS[params.align] - ink.left(), index * pitch)
         pieces.append((line, start))
         bounds = bounds.united(ink.translated(start).adjusted(-slack, -slack, slack, slack))
     return pieces, bounds

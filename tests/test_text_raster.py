@@ -207,3 +207,40 @@ def test_covers_hits_the_second_line(qapp):
     assert raster.covers(x, y)
     gap_row = (first[1] + second[0]) // 2
     assert not raster.covers(x, raster.origin[1] + (1 - (gap_row + 0.5) / height) * raster.size[1])
+
+
+# ----- Alignment ----------------------------------------------------------------------------------------
+
+ALIGN_CONTENT = "HHHHHH\nHH\nHHHH"  # flat-sided letters, so ink extents are exact
+
+
+@pytest.mark.parametrize("align", ["left", "center", "right"])
+def test_lines_line_up_as_aligned(qapp, align):
+    raster = rasterize_text(TextParams(content=ALIGN_CONTENT, align=align))
+    extents = [ink_columns(raster, band) for band in ink_bands(raster)]
+    assert len(extents) == 3
+    lefts, rights = [e[0] for e in extents], [e[1] for e in extents]
+    centers = [(e[0] + e[1]) / 2 for e in extents]
+    lined_up = {"left": lefts, "center": centers, "right": rights}[align]
+    assert max(lined_up) - min(lined_up) <= 3
+    assert max(rights) - min(lefts) - max(e[1] - e[0] for e in extents) <= 3  # the widest line sets the span
+
+
+def test_alignment_changes_nothing_for_a_single_line(qapp):
+    rasters = [rasterize_text(TextParams(content="HELLO", align=a)) for a in ("left", "center", "right")]
+    assert all(np.array_equal(r.rgba, rasters[0].rgba) for r in rasters)
+
+
+def test_left_and_right_alignment_mirror_the_short_lines(qapp):
+    left = rasterize_text(TextParams(content=ALIGN_CONTENT, align="left"))
+    right = rasterize_text(TextParams(content=ALIGN_CONTENT, align="right"))
+    width = left.rgba.shape[1]
+    short_left = ink_columns(left, ink_bands(left)[1])
+    short_right = ink_columns(right, ink_bands(right)[1])
+    assert short_left[0] < width / 3 and short_right[1] > width * 2 / 3
+    assert left.rgba.shape == right.rgba.shape
+
+
+def test_unknown_alignment_raises(qapp):
+    with pytest.raises(ValueError, match="alignment"):
+        rasterize_text(TextParams(content="HI", align="justify"))

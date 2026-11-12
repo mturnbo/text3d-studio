@@ -13,7 +13,7 @@ from .materials import KINDS, PRESETS
 from .model import Document, Scene, TextObject, TransformParams
 
 # Fields that change the rasterized glyph mask (expensive, CPU) rather than just uniforms (cheap, GPU).
-RASTER_FIELDS = {"content", "font_family", "bold", "italic", "bevel_width"}
+RASTER_FIELDS = {"content", "font_family", "bold", "italic", "bevel_width", "align"}
 OBJECT_SECTIONS = ("text", "transform", "material")  # per-object sections; the rest are shared by the scene
 SHARED_SECTIONS = tuple(f.name for f in dataclasses.fields(Scene) if f.name != "objects")
 
