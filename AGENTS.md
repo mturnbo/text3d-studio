@@ -38,14 +38,16 @@ viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
 history.py          History: bounded (100) undo/redo stacks of opaque states, with burst merging. No Qt.
 views/              Qt widgets only. Never touch GL state or numpy image math here.
   main_window.py      menus (Edit › Undo/Redo in _build_edit_menu, File › project actions in
-                      _build_project_actions), status bar, file dialogs, unsaved-changes prompt
+                      _build_project_actions, Looks in _build_looks_menu), status bar, file dialogs,
+                      unsaved-changes prompt, BatchExportDialog
   control_panel.py    Objects list (Add / Duplicate / Delete) + declarative slider/colour/checkbox layout,
                       two-way bound to the ViewModel; a selection change refreshes every per-object control
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
                       Keeps a CPU raster per object id (re-rasterized only when that object's text changes),
                       uploads them to the compositor and uses them to pick objects under the cursor.
                       Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL), which is editor state, not
-                      scene state. FitHandlesOverlay (a plain child widget) draws the fit handles
+                      scene state. FitHandlesOverlay (a plain child widget) draws the fit handles.
+                      Also view state: zoom/pan (in _image_rect) and the before/after toggle
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
@@ -54,7 +56,8 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shadow_renderer.py  half-res shadow mask (all objects) → separable Gaussian blur → multiply composite
   compositor.py       frame orchestration: background → shadow → text layer (every object, composited over).
                       Holds a Glyph per object id: set_glyph(id, raster|None), retain_glyphs(ids)
-  exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
+  exporter.py         offscreen 8× MSAA render at native size (× scale) → resolve → glReadPixels;
+                      transparent export (compose_transparent); batch naming (batch_jobs)
   grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
                       vanishing-point rings. Drawn by ImageCanvas after Compositor.render
 math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32.
@@ -68,7 +71,10 @@ ground.py           Ground model B: ground pose (GroundParams) → plane, origin
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
-preferences.py      QSettings-backed last folder + recent files (images and projects, max 8). MainWindow requires one.
+preferences.py      QSettings-backed last folder + recent files (images and projects, max 8), and the looks folder
+                    (injectable: Preferences(settings, looks_directory)). MainWindow requires one.
+presets.py          Looks: material + light + shadow. BUILTIN_LOOKS, apply_look(vm, look) (one undo step),
+                    capture_look, user looks as JSON files: load_user_looks / save_user_look / delete_user_look
 project_io.py       .t3d project files: save_project(path, document, embed_photo) / load_project(path) -> LoadedProject
 app.py              configure_opengl() + main()
 ```
@@ -148,6 +154,42 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   this), a slider/colour entry, and the kinds that show it.
 - Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
   using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
+
+### Workflow features (wave 1A)
+
+- **Looks** (`presets.py`). A look is a dict per section (`material`, `light`, `shadow`) of field → value.
+  `apply_look` sets only fields the model knows, inside one `begin_edit`/`end_edit`, so it's one undo step and
+  touches only the selected object's material and the shared light and shadow. Built-ins are full presets
+  (`materials.PRESETS` + overrides, dataclass defaults + overrides), so a new Material/Light/Shadow field
+  appears in them automatically. User looks are `{"format": "text3d-studio-look", "version": 1, "name", ...}`
+  files in `Preferences.looks_directory()` (AppDataLocation/looks). Loading checks each value against the
+  default's type and skips a bad file with a warning (shown in the status bar). Names compare case-insensitively;
+  a built-in's name is refused, a user look's asks to replace. The Looks menu reads the folder only when it
+  opens (`aboutToShow`), so building a MainWindow never touches it; tests pass a `tmp_path` folder.
+- **Transparent export** (`render_document(..., transparent=True)`). After the normal render, it reads
+  `text_layer.color` (premultiplied) and renders the shadow twice into an RGBA16F target with
+  `Compositor.render_shadow_factor`: once colored, once `strength_only` (every caster darkens all channels).
+  On white, these give `1 − opacity·strength·(1 − color)` and `1 − opacity·strength`, from which
+  `compose_transparent` recovers alpha = opacity × strength and the per-pixel shadow color (glass tints
+  included), then puts the text over it as straight alpha. Glass still refracts the photo and its shadow
+  (that is what it shows); the photo itself isn't drawn. Over a photo, alpha-over only approximates the
+  multiplied shadow (the photo's own color doesn't show through). PNG only: the UI refuses other extensions.
+- **Scaled and batch export.** `render_document(..., scale=s)` renders at `scaled_size(native, s)`; the scene is
+  resolution independent (projection follows the aspect, shadow softness is relative to image height), so a
+  half-size export matches a downscaled native one. `batch_jobs` names files `<photo>_3d_<w>x<h>.png|.jpg` and
+  `..._transparent.png`, exports a repeated size once, and never replaces a file: it adds `-2`, `-3`, ….
+  `MainWindow.run_batch_export(folder, scales, formats)` renders once per (size, transparent) and stops at
+  the first failure, saying how many files were written.
+- **Before/after.** Holding backslash on the focused canvas (or View › Show Original Photo) renders a copy of
+  the scene with no objects and skips the grid and fit handles. Auto-repeat is ignored and losing focus ends
+  the hold. Preview only.
+- **Zoom and pan.** `_image_rect(scale)` is the one mapping between widget pixels (origin top left) and the
+  image; zoom (`_zoom`, device pixels per image pixel, `None` = fit) and pan (`_pan`, widget pixels, clamped
+  so a zoomed image keeps covering the canvas) live there, so picking, drags, the grid and the fit handles
+  follow. `paintGL` flips its y to GL's bottom-left origin (needed once the image is panned). The compositor
+  renders the *whole* zoomed image into a viewport larger than the framebuffer (its layers are sized to it),
+  so zoom stops at `MAX_ZOOMED_SIDE_PX` (6144) on the longer side. A new photo or project resets to Fit.
+  Space + left-drag pans and never opens an undo step.
 
 ## Hard-won gotchas (read before touching render code)
 
@@ -330,8 +372,8 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 - Never let tests touch the user's real settings. Build `Preferences` on a temporary INI file
   (`QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)`), as the `preferences`
   fixture in `tests/test_views.py` does.
-- Modal dialogs (`QFileDialog`, `QMessageBox`) block a test run. Monkeypatch them on the
-  `text3d_studio.views.main_window` module. This is the one acceptable kind of mock.
+- Modal dialogs (`QFileDialog`, `QMessageBox`, `QInputDialog`, `BatchExportDialog.exec`) block a test run.
+  Monkeypatch them on the `text3d_studio.views.main_window` module. This is the one acceptable kind of mock.
 - **Visual check:** to confirm a UI or render change by eye, script a `MainWindow`, load an image,
   then `window.grab().save(...)` and `save_image(window.canvas.render_export(), ...)` from a
   `QTimer.singleShot`, and look at the PNGs.
@@ -395,8 +437,9 @@ v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save a
 - `MainWindow.open_path(path)` dispatches drops and Open Recent by extension to `open_project_path` or
   `load_image_path`.
 - Window tests that build a `MainWindow` must sort after `tests/test_render.py` (hence
-  `tests/test_views_projects.py`): a window destroyed earlier in the session leaves no current GL context for
-  the render fixtures.
+  `tests/test_views_projects.py`, `tests/test_views_workflow.py`): a window destroyed earlier in the session
+  leaves no current GL context for the render fixtures. `tests/test_export.py` (no windows) holds the
+  transparent, scaled and batch-naming render tests.
 
 ## Known limitations / next work
 
@@ -410,5 +453,9 @@ v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save a
   `load_image_path(path)` is the single image load path used by the menu, toolbar, prompt, drops and Open Recent
   (both via `open_path`) and the CLI.
   Image decoding is synchronous (busy cursor only). Moving it to a worker thread is a possible follow-up.
+- Zoom renders the whole zoomed image each frame, hence the 6144 px cap: Actual Size isn't reachable for
+  photos longer than that. Rendering only the visible part (an off-center projection, with the shadow, glass
+  backdrop and text layer sized to it) would lift it. While zoomed, glass near the canvas edge can refract
+  undefined pixels from outside the framebuffer.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
   tiled export, packaging.

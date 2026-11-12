@@ -65,6 +65,36 @@ Any of these loads a PNG, JPG, BMP, WebP or TIFF as the background:
 
 Exports render at the loaded image's size. The status bar shows it, and says so when a new image changes it.
 
+## Looks
+
+The **Looks** menu applies a ready-made combination of the selected text's material with the scene's light
+and shadow: **Gold at sunset**, **Chrome at noon**, **Frosted glass, overcast**, **Marble** and **Oak**. A look
+is one step to undo. **Save Look…** stores your current material, light and shadow under a name, and it then
+appears in the menu; **Delete Look** removes one of yours (the built-in looks stay). Saved looks are small
+JSON files in the app's data folder (on macOS `~/Library/Application Support/Text3D Studio/looks`); a damaged
+one is skipped and the status bar says so.
+
+## Exporting
+
+- **File → Export…** (⌘E / Ctrl+E) saves PNG or JPG at the photo's full size.
+- **File → Export Transparent PNG…** (⇧⌘E / Ctrl+Shift+E) saves only the text and its shadow over
+  transparency, for layering in another editor. The shadow keeps its colour with partial transparency. Glass
+  text still shows the photo it bends, since that is what glass looks like. PNG only (JPEG has no transparency).
+- **File → Batch Export…** (⌥⌘E / Ctrl+Alt+E) writes several sizes (native, 50%, a long edge you choose) in
+  several formats (PNG, JPG, transparent PNG) into one folder, named `photo_3d_3000x2000.png`,
+  `photo_3d_1500x1000.jpg`, `photo_3d_1500x1000_transparent.png` and so on. Existing files are never replaced:
+  a number is added (`photo_3d_3000x2000-2.png`). Smaller sizes are rendered at that size, so shadows and edges
+  look the same as in the full-size image.
+
+## Viewing
+
+- **Before/after:** hold **\\** over the canvas, or tick **View → Show Original Photo**, to see the photo
+  without the text. It only changes the view, never an export.
+- **Zoom:** **View → Zoom In** (⌘= / Ctrl+=), **Zoom Out** (⌘- / Ctrl+-), **Fit** (⌘0 / Ctrl+0) and
+  **Actual Size** (⌘1 / Ctrl+1, one photo pixel per screen pixel). The status bar shows the zoom. While zoomed
+  in, hold **Space** and drag to pan. Every tool keeps working while zoomed. Very large photos can't be zoomed
+  past 6144 pixels on their longer side.
+
 ## Saving and opening projects
 
 A project (`.t3d`) saves the whole scene (every text object, the ground, grid, lighting, shadow and camera)
