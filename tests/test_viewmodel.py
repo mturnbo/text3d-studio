@@ -904,3 +904,38 @@ def test_duplicating_wall_text_keeps_it_on_the_wall_without_overlap(vm):
     vm.duplicate_object()
     copy_t, original = vm.selected_object.transform, vm.scene.objects[0].transform
     assert copy_t.mount == "wall" and copy_t.wall_x == original.wall_x and copy_t.wall_y < original.wall_y
+
+
+def test_set_mount_moves_the_selected_object_onto_the_wall_and_back_in_one_step_each(vm):
+    from text3d_studio import ground
+
+    vm.set("transform", "z", -30.0)
+    vm.clear_history()
+    floor = dataclasses.replace(vm.selected_object.transform)
+    vm.set_mount("wall")
+    t = vm.selected_object.transform
+    assert t.mount == "wall"
+    assert (t.wall_x, t.wall_y, t.size) == pytest.approx(ground.mount_on_wall(vm.scene.ground, vm.scene.wall, floor))
+    vm.set_mount("floor")
+    assert vm.selected_object.transform.mount == "floor"
+    assert vm.undo() and vm.selected_object.transform.mount == "wall"
+    assert vm.undo() and vm.selected_object.transform == floor and not vm.can_undo
+
+
+def test_set_mount_to_the_current_mount_changes_nothing(vm):
+    vm.clear_history()
+    vm.set_mount("floor")
+    assert not vm.can_undo
+
+
+def test_set_mount_refuses_an_unknown_mount(vm):
+    with pytest.raises(ValueError):
+        vm.set_mount("ceiling")
+    assert vm.selected_object.transform.mount == "floor"
+
+
+def test_set_mount_only_moves_the_selected_object(vm):
+    vm.add_object()
+    first = dataclasses.replace(vm.scene.objects[0].transform)
+    vm.set_mount("wall")
+    assert vm.scene.objects[0].transform == first and vm.scene.objects[1].transform.mount == "wall"

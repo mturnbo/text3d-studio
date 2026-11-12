@@ -345,3 +345,60 @@ def test_duplicated_wall_text_moves_down_the_wall_or_up_off_the_floor():
     assert lower.wall_y < high.wall_y - high.size * ground.INK_HEIGHT_EM and lower.size == high.size
     low = wall_text(wall_y=0.5, size=2.0)
     assert ground.placement_in_front(GroundParams(), low).wall_y > low.wall_y + low.size * ground.INK_HEIGHT_EM
+
+
+def screen_direction(point):
+    return np.asarray(point) / np.linalg.norm(point)
+
+
+@pytest.mark.parametrize("g", POSES[:2])
+def test_mounting_floor_text_behind_the_wall_keeps_it_on_its_ray_and_apparent_size(g):
+    wall = WallParams(angle=10, offset=8)
+    t = TransformParams(x=0.5, z=-20.0, size=2.0)  # beyond the wall: its ray meets the wall above the floor
+    wall_x, wall_y, size = ground.mount_on_wall(g, wall, t)
+    moved = wall_text(wall_x=wall_x, wall_y=wall_y, size=size)
+    before, after = ground.text_position(g, t), ground.text_position(g, moved, wall)
+    assert wall_y > 0
+    np.testing.assert_allclose(screen_direction(after), screen_direction(before), atol=1e-9)
+    assert size / np.linalg.norm(after) == pytest.approx(t.size / np.linalg.norm(before))
+
+
+def test_mounting_floor_text_in_front_of_the_wall_puts_it_on_the_base_line():
+    g, wall = GroundParams(pitch=10), WallParams(offset=20)
+    wall_x, wall_y, size = ground.mount_on_wall(g, wall, TransformParams(x=1.0, z=-8.0))
+    assert wall_y == 0.0
+    assert ground.world_to_wall(g, wall, ground.wall_to_world(g, wall, wall_x, 0.0)) == pytest.approx((wall_x, 0.0))
+
+
+def test_mounting_on_a_wall_the_ray_misses_drops_the_text_straight_onto_it():
+    g, wall = GroundParams(), WallParams(angle=180, offset=5)  # behind the camera
+    t = TransformParams(x=2.0, z=-10.0)
+    wall_x, wall_y, _size = ground.mount_on_wall(g, wall, t)
+    np.testing.assert_allclose(ground.wall_to_world(g, wall, wall_x, wall_y)[[0, 1]], ground.text_position(g, t)[[0, 1]])
+
+
+@pytest.mark.parametrize("g", POSES[:2])
+def test_mounting_wall_text_on_the_floor_keeps_it_on_its_ray_facing_the_walls_way(g):
+    wall = WallParams(angle=25, offset=12)
+    t = wall_text(wall_y=0.5)
+    x, z, rot_y, size = ground.mount_on_floor(g, wall, t)
+    moved = TransformParams(x=x, z=z, rot_y=rot_y, size=size)
+    before, after = ground.text_position(g, t, wall), ground.text_position(g, moved)
+    np.testing.assert_allclose(screen_direction(after), screen_direction(before), atol=1e-9)
+    assert size / np.linalg.norm(after) == pytest.approx(t.size / np.linalg.norm(before))
+    np.testing.assert_allclose(ground.text_model_matrix(g, moved)[:3, 2] / size, ground.wall_normal(g, wall), atol=1e-12)
+
+
+def test_wall_text_above_the_horizon_drops_to_the_walls_foot_on_the_floor():
+    g, wall = GroundParams(), WallParams(offset=10)
+    t = wall_text(wall_x=2.0, wall_y=5.0)  # well above the camera: its ray never meets the floor
+    x, z, _rot_y, _size = ground.mount_on_floor(g, wall, t)
+    np.testing.assert_allclose(ground.ground_to_world(g, x, z), ground.wall_to_world(g, wall, 2.0, 0.0), atol=1e-12)
+
+
+def test_floor_to_wall_and_back_returns_to_the_same_spot_on_screen():
+    g, wall = GroundParams(pitch=6), WallParams(angle=-15, offset=9)
+    t = TransformParams(x=-1.0, z=-25.0, rot_y=-15.0, size=2.5)
+    wall_x, wall_y, size = ground.mount_on_wall(g, wall, t)
+    x, z, rot_y, back_size = ground.mount_on_floor(g, wall, wall_text(wall_x=wall_x, wall_y=wall_y, size=size))
+    assert (x, z, rot_y, back_size) == pytest.approx((t.x, t.z, t.rot_y, t.size))

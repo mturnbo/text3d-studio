@@ -137,6 +137,38 @@ def wall_text_model_matrix(ground: GroundParams, wall: WallParams, transform: Tr
     return math3d.translation(*position) @ rotation @ math3d.scaling(transform.size)
 
 
+def mount_on_wall(ground: GroundParams, wall: WallParams, transform: TransformParams) -> tuple[float, float, float]:
+    """(wall_x, wall_y, size) that put floor text on the wall where, and as big as, it appears on screen.
+
+    The anchor moves along its camera ray onto the wall, or straight onto it when the ray misses. It never goes
+    below the floor: text standing in front of the wall lands on the wall's base line instead.
+    """
+    anchor = text_position(ground, transform)
+    distance = float(np.linalg.norm(anchor))
+    plane = wall_plane(ground, wall)
+    hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), anchor / distance, plane)
+    if hit is None:
+        hit = anchor - (plane[:3] @ anchor + plane[3]) * plane[:3]
+    wall_x, wall_y = world_to_wall(ground, wall, hit)
+    wall_y = max(wall_y, 0.0)
+    point = wall_to_world(ground, wall, wall_x, wall_y)
+    return wall_x, wall_y, transform.size * float(np.linalg.norm(point)) / distance
+
+
+def mount_on_floor(
+    ground: GroundParams, wall: WallParams, transform: TransformParams
+) -> tuple[float, float, float, float]:
+    """(x, z, rot_y, size) that stand wall text on the floor where, and as big as, it appears on screen, facing the
+    way the wall does. When its ray misses the floor (it shows above the horizon), it drops to the wall's foot."""
+    anchor = text_position(ground, transform, wall)
+    distance = float(np.linalg.norm(anchor))
+    hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), anchor / distance, ground_plane(ground))
+    if hit is None:
+        hit = wall_to_world(ground, wall, transform.wall_x, 0.0)
+    x, z = world_to_ground(ground, hit)
+    return x, z, wall.angle, transform.size * float(np.linalg.norm(hit)) / distance
+
+
 def wall_through(a, b) -> WallParams | None:
     """The wall whose base line passes through ground points `a` and `b` (x, z), or None when they coincide.
 

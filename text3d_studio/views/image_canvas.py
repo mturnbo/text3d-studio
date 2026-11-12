@@ -203,6 +203,7 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_mode: str | None = None  # "move", "slide" or "yaw", chosen by the button and modifiers on press
         self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
         self._drag_transform = None  # the text's placement on press
+        self._drag_wall_start: tuple[float, float] | None = None  # wall point grabbed on press (wall-mounted text)
         self._editing = False  # a press began an undo step (vm.begin_edit) that the release will end
         self.tool = TEXT_TOOL  # editor state, not part of the scene
         self._grid_drag: str | None = None  # "tilt", "roll", "shift" or "rotate" while dragging in the grid tool
@@ -436,6 +437,7 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_origin = self._drag_press = event.position()
         self._drag_mode = self._text_drag_mode(event)
         self._drag_ground_start = self.ground_point_at(event.position())
+        self._drag_wall_start = self.wall_point_at(event.position())
         self._drag_transform = dataclasses.replace(self.vm.selected_object.transform)
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -454,6 +456,7 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_press = None
         self._drag_mode = None
         self._drag_ground_start = None
+        self._drag_wall_start = None
         self._grid_drag = None
         self._fit_handle = None
         self._wall_start = None
@@ -493,8 +496,13 @@ class ImageCanvas(QOpenGLWidget):
         position = event.position()
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             position = self._locked_to_axis(position)
-        if self._drag_mode == "slide":
+        on_wall = self._drag_transform.mount == "wall"
+        if self._drag_mode == "slide" and on_wall:
+            self._slide_wall_text_to(position)
+        elif self._drag_mode == "slide":
             self._slide_text_to(position)
+        elif on_wall:
+            self._move_wall_text_on_screen(position)
         else:
             self._move_text_on_screen(position)
 
@@ -568,6 +576,41 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.set("transform", "x", x)
         self.vm.set("transform", "z", z)
         self.vm.set("transform", "size", start.size * float(np.linalg.norm(hit) / np.linalg.norm(anchor)))
+
+    def _slide_wall_text_to(self, position: QPointF) -> None:
+        """Moves wall text so the wall point grabbed on press stays under the cursor (never below the floor)."""
+        current = self.wall_point_at(position)
+        if self._drag_wall_start is None or current is None:
+            return
+        start = self._drag_transform
+        self.vm.set("transform", "wall_x", start.wall_x + current[0] - self._drag_wall_start[0])
+        self.vm.set("transform", "wall_y", max(start.wall_y + current[1] - self._drag_wall_start[1], 0.0))
+
+    def _move_wall_text_on_screen(self, position: QPointF) -> None:
+        """Like _move_text_on_screen, on the wall: the anchor follows the cursor's pixels onto the wall, and the size
+        scales with its distance. Below the floor it stays on the wall's base line."""
+        if self._drag_wall_start is None:
+            return  # pressed where the wall can't be seen
+        scene = self.vm.scene
+        start = self._drag_transform
+        _, _, rect_w, rect_h = self._image_rect()
+        anchor = ground_model.text_position(scene.ground, start, scene.wall)
+        anchor_px = math3d.project_to_image(anchor, scene.camera.fov, (rect_w, rect_h))
+        if anchor_px is None:
+            return
+        moved = position - self._drag_press
+        ray = math3d.image_ray(
+            (anchor_px[0] + moved.x(), anchor_px[1] + moved.y()), scene.camera.fov, (rect_w, rect_h)
+        )
+        hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), ray, ground_model.wall_plane(scene.ground, scene.wall))
+        if hit is None or np.linalg.norm(hit) > MAX_TEXT_DISTANCE:
+            return
+        wall_x, wall_y = ground_model.world_to_wall(scene.ground, scene.wall, hit)
+        wall_y = max(wall_y, 0.0)
+        point = ground_model.wall_to_world(scene.ground, scene.wall, wall_x, wall_y)
+        self.vm.set("transform", "wall_x", wall_x)
+        self.vm.set("transform", "wall_y", wall_y)
+        self.vm.set("transform", "size", start.size * float(np.linalg.norm(point) / np.linalg.norm(anchor)))
 
     def wheelEvent(self, event) -> None:
         steps = event.angleDelta().y() / 120.0
@@ -754,6 +797,20 @@ class ImageCanvas(QOpenGLWidget):
     def ground_point_at(self, position: QPointF) -> tuple[float, float] | None:
         """Ground (x, z) under a widget position, or None when that pixel shows sky or lies off the image."""
         return self._ground_point_at_pixel(self._image_pixel(position))
+
+    def wall_point_at(self, position: QPointF) -> tuple[float, float] | None:
+        """Wall coordinates (along, height) under a widget position, or None off the image or where the wall's plane
+        isn't in view. Heights below the floor are returned as they are."""
+        pixel = self._image_pixel(position)
+        _, _, rect_w, rect_h = self._image_rect()
+        if not (0 <= pixel[0] <= rect_w and 0 <= pixel[1] <= rect_h):
+            return None
+        scene = self.vm.scene
+        ray = math3d.image_ray(pixel, scene.camera.fov, (rect_w, rect_h))
+        hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), ray, ground_model.wall_plane(scene.ground, scene.wall))
+        if hit is None:
+            return None
+        return ground_model.world_to_wall(scene.ground, scene.wall, hit)
 
     def _ground_point_at_pixel(self, pixel) -> tuple[float, float] | None:
         _, _, rect_w, rect_h = self._image_rect()

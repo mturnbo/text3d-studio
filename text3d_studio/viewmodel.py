@@ -120,6 +120,23 @@ class SceneViewModel(QObject):
                 if getattr(obj.transform, name) != value:
                     self._assign(obj.transform, "transform", name, value)
 
+    def set_mount(self, mount: str) -> None:
+        """Moves the selected object onto the floor or the wall, keeping it where it appears on screen."""
+        if mount not in ground_model.MOUNTS:
+            raise ValueError(f"Unknown mount: {mount!r}")
+        transform = self.selected_object.transform
+        if transform.mount == mount:
+            return
+        if mount == "wall":
+            placement = zip(("wall_x", "wall_y", "size"), ground_model.mount_on_wall(self.scene.ground, self.scene.wall, transform))
+        else:
+            placement = zip(("x", "z", "rot_y", "size"), ground_model.mount_on_floor(self.scene.ground, self.scene.wall, transform))
+        self.begin_edit()
+        for name, value in placement:
+            self.set("transform", name, value)
+        self.set("transform", "mount", mount)
+        self.end_edit()
+
     def apply_material(self, kind: str) -> None:
         """Switches the material kind and loads its preset values (replacing any adjustments)."""
         if kind not in KINDS:

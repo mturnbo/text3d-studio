@@ -838,3 +838,64 @@ def test_two_objects_stay_above_30_fps(compositor):
     finally:
         target.delete()
     assert fps > 30, f"only {fps:.1f} FPS"
+
+
+# ----- Wall-mounted text ------------------------------------------------------------------------
+
+WALL_GROUND = {"pitch": 12.0, "height": 1.5}
+WALL = {"angle": 20.0, "offset": 10.0}
+
+
+def wall_text_object(object_id=0, **transform):
+    return text_object(object_id, mount="wall", **{"wall_x": 0.0, "wall_y": 0.8, "size": 1.6, "depth": 0.3, **transform})
+
+
+def wall_face_center_px(doc):
+    """Pixel (x, y, top row first) where the wall text's face shows, from its model matrix."""
+    from text3d_studio import ground, math3d
+
+    scene = doc.scene
+    model = ground.text_model_matrix(scene.ground, scene.objects[0].transform, scene.wall)
+    center = model @ np.array([0.0, 0.35, 0.0, 1.0])
+    return math3d.project_to_image(center[:3], scene.camera.fov, doc.native_size)
+
+
+def test_wall_text_shows_its_face_where_the_wall_puts_it(compositor):
+    doc = scene_of(wall_text_object(), ground=WALL_GROUND, wall=WALL)
+    mask = changed_mask(render(compositor, doc))
+    assert mask.sum() > 1500
+    rows, cols = np.nonzero(mask)
+    u, v = wall_face_center_px(doc)
+    assert abs(cols.mean() - u) < 25 and abs(rows.mean() - v) < 25
+
+
+def test_wall_text_faces_the_camera_side_of_the_wall(compositor):
+    """The face normal is the wall's: a light in front of the wall lights it, one behind the wall doesn't."""
+    facing = WALL["angle"]  # light azimuth along the wall's normal (the ground has no yaw)
+    front = scene_of(wall_text_object(), ground=WALL_GROUND, wall=WALL, light={"azimuth": facing, "elevation": 15})
+    behind = scene_of(wall_text_object(), ground=WALL_GROUND, wall=WALL, light={"azimuth": facing + 180, "elevation": 15})
+    lit, unlit = text_pixels(compositor, front), text_pixels(compositor, behind)
+    assert len(lit) > 500 and len(unlit) > 500
+    assert luminance(lit).mean() > luminance(unlit).mean() + 40
+
+
+def test_wall_text_casts_its_shadow_on_the_floor(compositor):
+    from text3d_studio import ground, math3d
+
+    light = {"azimuth": WALL["angle"] + 160, "elevation": 40}  # from behind the wall, so the shadow falls in front of it
+    shadow = {"enabled": True, "softness": 0.1, "opacity": 0.8, "falloff": 0.0}
+    objects = (wall_text_object(wall_y=0.3),)
+    lit = render(compositor, scene_of(*objects, ground=WALL_GROUND, wall=WALL, light=light))
+    doc = scene_of(*objects, ground=WALL_GROUND, wall=WALL, light=light, shadow=shadow)
+    dark = render(compositor, doc)
+    darker = (luminance(lit) - luminance(dark) > 10) & ~changed_mask(lit)
+    assert darker.sum() > 300
+    scene = doc.scene
+    plane = ground.ground_plane(scene.ground)
+    rows, cols = np.nonzero(darker)
+    for u, v in zip(cols[::25], rows[::25]):
+        ray = math3d.image_ray((u + 0.5, v + 0.5), scene.camera.fov, doc.native_size)
+        hit = math3d.intersect_ray_plane((0, 0, 0), ray, plane)
+        assert hit is not None  # below the horizon: on the floor
+        wall_plane = ground.wall_plane(scene.ground, scene.wall)
+        assert wall_plane[:3] @ hit + wall_plane[3] > -0.05  # on the camera's side of the wall
