@@ -12,6 +12,7 @@ from .model import Document, TextObject, TransformParams
 # Fields that change the rasterized glyph mask (expensive, CPU) rather than just uniforms (cheap, GPU).
 RASTER_FIELDS = {"content", "font_family", "bold", "italic", "bevel_width"}
 OBJECT_SECTIONS = ("text", "transform", "material")  # per-object sections; the rest are shared by the scene
+SHARED_SECTIONS = ("ground", "grid", "light", "shadow", "camera")
 
 
 class SceneViewModel(QObject):
@@ -20,6 +21,8 @@ class SceneViewModel(QObject):
     background_changed = pyqtSignal()
     objects_changed = pyqtSignal()  # an object was added or deleted
     selection_changed = pyqtSignal(int)  # the selected object's index; its text, transform and material changed
+    dirty_changed = pyqtSignal(bool)  # the document gained or lost unsaved changes
+    document_loaded = pyqtSignal()  # load_document replaced the whole document
 
     def __init__(self, document: Document | None = None):
         super().__init__()
@@ -27,6 +30,10 @@ class SceneViewModel(QObject):
         self.selected = 0  # editor state: the object that "text", "transform" and "material" edits address
         # Ids are never reused, so nothing keyed by a deleted object's id (a cached raster) can match a new one.
         self._next_object_id = max(o.id for o in self.scene.objects) + 1
+        self.dirty = False  # unsaved changes since the last save or load
+        self.scene_changed.connect(self._mark_dirty)
+        self.objects_changed.connect(self._mark_dirty)
+        self.background_changed.connect(self._mark_dirty)
 
     @property
     def scene(self):
@@ -143,6 +150,35 @@ class SceneViewModel(QObject):
         self.document.background = pixels
         self.document.background_path = path
         self.background_changed.emit()
+
+    def load_document(self, document: Document) -> None:
+        """Replaces the document wholesale (opening a project), refreshes every view and leaves it clean.
+
+        Selection resets to the first object. Listeners that keep per-document state (such as edit history)
+        reset it on `document_loaded`, emitted last.
+        """
+        self.document = document
+        self.selected = 0
+        self._next_object_id = max(o.id for o in self.scene.objects) + 1
+        self.background_changed.emit()
+        self.objects_changed.emit()  # the canvas re-rasterizes every object whose text differs from its cached raster
+        self.selection_changed.emit(0)  # per-object controls show the first object
+        for section in SHARED_SECTIONS:
+            for f in dataclasses.fields(getattr(self.scene, section)):
+                self.scene_changed.emit(section, f.name)
+        self._set_dirty(False)
+        self.document_loaded.emit()
+
+    def mark_saved(self) -> None:
+        self._set_dirty(False)
+
+    def _mark_dirty(self, *_args) -> None:
+        self._set_dirty(True)
+
+    def _set_dirty(self, dirty: bool) -> None:
+        if dirty != self.dirty:
+            self.dirty = dirty
+            self.dirty_changed.emit(dirty)
 
     def _section(self, section: str, name: str):
         owner = self.selected_object if section in OBJECT_SECTIONS else self.scene
