@@ -252,7 +252,7 @@ def test_failed_load_is_not_added_to_recent(window, preferences, tmp_path, monke
 
 def test_empty_recent_menu_shows_disabled_placeholder_and_clear(window):
     texts = {a.text(): a.isEnabled() for a in window.recent_menu.actions() if not a.isSeparator()}
-    assert texts == {"No Recent Images": False, "Clear Menu": False}
+    assert texts == {"No Recent Files": False, "Clear Menu": False}
 
 
 def test_recent_menu_lists_newest_first(window, tmp_path):

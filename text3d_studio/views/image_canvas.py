@@ -19,6 +19,7 @@ from ..render.compositor import Compositor
 from ..render.exporter import render_document
 from ..render.grid_renderer import GridRenderer
 from ..model import TextObject, TextParams
+from ..project_io import PROJECT_EXTENSION
 from ..text_raster import GlyphRaster, rasterize_text
 from ..viewmodel import SceneViewModel
 
@@ -42,12 +43,12 @@ FPS_IDLE_RESET_S = 0.25  # a gap this long means interaction stopped; start a fr
 
 
 def dropped_image_path(mime_data) -> str | None:
-    """Returns the path when the drag holds exactly one local file with a supported image extension."""
+    """Returns the path when the drag holds exactly one local file that is a supported image or a project."""
     urls = mime_data.urls() if mime_data.hasUrls() else []
     if len(urls) != 1 or not urls[0].isLocalFile():
         return None
     path = urls[0].toLocalFile()
-    if not os.path.isfile(path) or not path.lower().endswith(SUPPORTED_EXTENSIONS):
+    if not os.path.isfile(path) or not path.lower().endswith((*SUPPORTED_EXTENSIONS, PROJECT_EXTENSION)):
         return None
     return path
 

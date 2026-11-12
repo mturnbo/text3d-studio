@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
         self.canvas.fps_changed.connect(lambda fps: self.fps_label.setText(f"{fps:5.1f} FPS"))
         self.canvas.error.connect(lambda msg: QMessageBox.warning(self, "Rendering problem", msg))
         self.canvas.open_requested.connect(lambda: self.open_image_dialog())
-        self.canvas.file_dropped.connect(self.load_image_path)
+        self.canvas.file_dropped.connect(self.open_path)
         self.vm.background_changed.connect(self._update_size_label)
         self._update_size_label()
         self._build_actions()
@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
         self.recent_menu.clear()
         paths = self.preferences.recent_files()
         if not paths:
-            self.recent_menu.addAction("No Recent Images").setEnabled(False)
+            self.recent_menu.addAction("No Recent Files").setEnabled(False)
         for path in paths:
             action = self.recent_menu.addAction(_menu_label(path))
             action.setData(path)
@@ -264,10 +264,17 @@ class MainWindow(QMainWindow):
             self.preferences.remove_recent_file(path)
             self._rebuild_recent_menu()
             QMessageBox.information(
-                self, "Image not found", f"{path}\n\nThis file no longer exists and was removed from Open Recent."
+                self, "File not found", f"{path}\n\nThis file no longer exists and was removed from Open Recent."
             )
             return
-        self.load_image_path(path)
+        self.open_path(path)
+
+    def open_path(self, path: str) -> None:
+        """Opens a project or an image, by extension: used by drops and Open Recent."""
+        if path.lower().endswith(project_io.PROJECT_EXTENSION):
+            self.open_project_path(path)
+        else:
+            self.load_image_path(path)
 
     def clear_recent_files(self) -> None:
         self.preferences.clear_recent_files()

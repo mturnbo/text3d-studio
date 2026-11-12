@@ -3,8 +3,8 @@ import os
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QSettings
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 from PyQt6.QtWidgets import QMessageBox
 
 from text3d_studio.image_io import save_image
@@ -13,6 +13,7 @@ from text3d_studio.preferences import Preferences
 from text3d_studio.project_io import load_project
 from text3d_studio.viewmodel import SceneViewModel
 from text3d_studio.views.control_panel import SliderRow
+from text3d_studio.views.image_canvas import dropped_image_path
 from text3d_studio.views.main_window import MainWindow
 
 MAIN = "text3d_studio.views.main_window"
@@ -373,3 +374,110 @@ def test_opening_an_image_over_changes_can_discard_or_save(window, tmp_path, mon
 def test_opening_an_image_into_a_clean_window_does_not_ask(window, tmp_path, prompts):
     window.load_image_path(image_file(tmp_path))
     assert prompts[0] == []
+
+
+# ----- Drag and drop, Open Recent ---------------------------------------------------------------
+
+
+def mime_with(path):
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(path)])
+    return mime
+
+
+def drag_enter(canvas, mime):
+    event = QDragEnterEvent(
+        QPoint(10, 10), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    canvas.dragEnterEvent(event)
+    return event.isAccepted()
+
+
+def drop(canvas, mime):
+    event = QDropEvent(
+        QPointF(10, 10), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    canvas.dropEvent(event)
+    return event.isAccepted()
+
+
+def test_canvas_accepts_a_dragged_project(window, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    assert dropped_image_path(mime_with(path)) == path
+    assert drag_enter(window.canvas, mime_with(path))
+
+
+def test_project_extension_check_ignores_case(window, tmp_path):
+    path = tmp_path / "SCENE.T3D"
+    path.write_text("{}")
+    assert drag_enter(window.canvas, mime_with(str(path)))
+
+
+def test_canvas_rejects_other_files_and_missing_projects(window, tmp_path):
+    other = tmp_path / "notes.json"
+    other.write_text("{}")
+    assert not drag_enter(window.canvas, mime_with(str(other)))
+    assert not drag_enter(window.canvas, mime_with(str(tmp_path / "gone.t3d")))
+
+
+def test_dropping_a_project_opens_it(window, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    assert drop(window.canvas, mime_with(path))
+    assert window.project_path == path
+    assert [o.text.content for o in window.vm.scene.objects] == ["HELLO", "SECOND"]
+    assert preferences.recent_files()[0] == path
+
+
+def test_dropping_a_project_over_changes_asks_first(window, tmp_path, monkeypatch, preferences, prompts):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    window.vm.set("camera", "fov", 21.0)
+    prompts[1][0] = QMessageBox.StandardButton.Cancel
+    drop(window.canvas, mime_with(path))
+    assert len(prompts[0]) == 1 and window.project_path is None
+
+
+def test_dropping_a_broken_project_warns(window, tmp_path, monkeypatch):
+    path = tmp_path / "broken.t3d"
+    path.write_text("nope")
+    shown = errors(monkeypatch)
+    drop(window.canvas, mime_with(str(path)))
+    assert len(shown) == 1 and window.project_path is None
+
+
+def recent_entries(window):
+    return [a for a in window.recent_menu.actions() if a.data()]
+
+
+def test_recent_menu_holds_images_and_projects(window, tmp_path, monkeypatch):
+    photo = image_file(tmp_path)
+    window.load_image_path(photo)
+    save_dialog(monkeypatch, str(tmp_path / "scene.t3d"))
+    window.save_project()
+    assert [a.data() for a in recent_entries(window)] == [str(tmp_path / "scene.t3d"), photo]
+
+
+def test_choosing_a_recent_project_opens_it(window, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    window._rebuild_recent_menu()
+    entry = next(a for a in recent_entries(window) if a.data() == path)
+    entry.trigger()
+    assert window.project_path == path
+    assert window.windowTitle() == "Text3D Studio — scene.t3d[*]"
+
+
+def test_choosing_a_recent_image_still_loads_it(window, tmp_path, preferences):
+    photo = image_file(tmp_path)
+    preferences.add_recent_file(photo)
+    window._rebuild_recent_menu()
+    recent_entries(window)[0].trigger()
+    assert window.vm.document.background_path == photo and window.project_path is None
+
+
+def test_missing_recent_project_is_removed_with_message(window, tmp_path, monkeypatch, preferences):
+    missing = str(tmp_path / "gone.t3d")
+    preferences.add_recent_file(missing)
+    window._rebuild_recent_menu()
+    shown = errors(monkeypatch, "information")
+    recent_entries(window)[0].trigger()
+    assert len(shown) == 1 and missing in shown[0][2]
+    assert preferences.recent_files() == []
