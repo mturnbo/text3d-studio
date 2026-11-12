@@ -24,6 +24,7 @@ from .model import (
     TextObject,
     TextParams,
     TransformParams,
+    WallParams,
 )
 
 PROJECT_EXTENSION = ".t3d"
@@ -132,6 +133,7 @@ def _scene_from_dict(data: dict) -> Scene:
         light=_params_from_dict(LightParams, data.get("light")),
         shadow=_params_from_dict(ShadowParams, data.get("shadow")),
         camera=_params_from_dict(CameraParams, data.get("camera")),
+        wall=_params_from_dict(WallParams, data.get("wall")),
     )
     if objects:
         scene.objects = objects

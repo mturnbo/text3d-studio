@@ -26,6 +26,9 @@ class TransformParams:
     size: float = 3.0  # world height of one em
     depth: float = 0.35  # extrusion depth as a fraction of size
     layers: int = 96  # number of duplicated layers in the stack
+    mount: str = "floor"  # "floor": stands on the ground at (x, z); "wall": lies flat on the wall at (wall_x, wall_y)
+    wall_x: float = 0.0  # distance along the wall's base line
+    wall_y: float = 0.0  # height of the ink's bottom above the floor
 
 
 @dataclass
@@ -36,6 +39,14 @@ class GroundParams:
     roll: float = 0.0  # tilt around the view axis
     yaw: float = 0.0  # spins the ground's grid axes (and the text placed on them) within the plane
     height: float = 1.5  # camera height above the ground, in world units
+
+
+@dataclass
+class WallParams:
+    """A vertical wall standing on the ground, set by its base line in ground coordinates (see ground.py)."""
+
+    angle: float = 0.0  # facing of the wall, like transform.rot_y: 0 runs the base line along the ground's x axis
+    offset: float = 20.0  # distance of the base line from the point below the camera
 
 
 @dataclass
@@ -120,6 +131,7 @@ class Scene:
     light: LightParams = field(default_factory=LightParams)
     shadow: ShadowParams = field(default_factory=ShadowParams)
     camera: CameraParams = field(default_factory=CameraParams)
+    wall: WallParams = field(default_factory=WallParams)
 
 
 @dataclass

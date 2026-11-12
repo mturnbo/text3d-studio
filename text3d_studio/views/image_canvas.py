@@ -466,7 +466,7 @@ class ImageCanvas(QOpenGLWidget):
         ray = math3d.image_ray(pixel, scene.camera.fov, (rect_w, rect_h))
         nearest, nearest_distance = None, np.inf
         for index, obj in enumerate(scene.objects):
-            hit = ground_model.text_face_hit(scene.ground, obj.transform, ray)
+            hit = ground_model.text_face_hit(scene.ground, obj.transform, ray, scene.wall)
             if hit is None or hit[0] >= nearest_distance:
                 continue
             raster = self._raster_of(obj)

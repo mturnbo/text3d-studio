@@ -138,7 +138,7 @@ class Text3DRenderer:
         if t.depth <= 1e-4:
             return 1
         focal_px = (viewport_height / 2) / math.tan(math.radians(scene.camera.fov) / 2)
-        depth_px = t.depth * t.size * focal_px / ground_model.text_distance(scene.ground, t)
+        depth_px = t.depth * t.size * focal_px / ground_model.text_distance(scene.ground, t, scene.wall)
         needed = math.ceil(depth_px * LAYERS_PER_PIXEL)
         return min(MAX_LAYERS, max(int(t.layers), needed))
 
@@ -147,7 +147,7 @@ class Text3DRenderer:
         return max(1, int(t.layers)) if t.depth > 1e-4 else 1
 
     def _bind_common(self, program, scene, t, glyph, proj, flatten_gl, lighting) -> None:
-        model = ground_model.text_model_matrix(scene.ground, t)
+        model = ground_model.text_model_matrix(scene.ground, t, scene.wall)
         program.use()
         glyph.mask.bind(0)
         program.set_int("u_mask", 0)

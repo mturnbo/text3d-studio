@@ -85,8 +85,12 @@ class SceneViewModel(QObject):
         self.end_edit()
 
     def placement_snapshot(self):
-        """(ground, [each object's transform]): copies of everything a ground edit re-places the objects from."""
-        return (dataclasses.replace(self.scene.ground), [dataclasses.replace(o.transform) for o in self.scene.objects])
+        """(ground, [each object's transform], wall): copies of everything a ground edit re-places the objects from."""
+        return (
+            dataclasses.replace(self.scene.ground),
+            [dataclasses.replace(o.transform) for o in self.scene.objects],
+            dataclasses.replace(self.scene.wall),
+        )
 
     def _assign(self, target, section: str, name: str, value) -> None:
         setattr(target, name, value)
@@ -94,14 +98,25 @@ class SceneViewModel(QObject):
             self.text_changed.emit()
         self.scene_changed.emit(section, name)
 
-    def _place_objects_from(self, base_ground, base_transforms) -> None:
-        """Aligning the ground to the photo shouldn't fling the text around: keep every object where it appeared
-        on `base_ground`. When that's impossible on the new ground, fall back to the object's base placement."""
+    def _place_objects_from(self, base_ground, base_transforms, base_wall) -> None:
+        """Aligning the ground to the photo shouldn't fling the text around: keep the wall and every object where they
+        appeared on `base_ground`. When that's impossible on the new ground, fall back to the base placement."""
+        wall = ground_model.reanchor_wall(base_ground, self.scene.ground, base_wall) or base_wall
+        for name, value in dataclasses.asdict(wall).items():
+            if getattr(self.scene.wall, name) != value:
+                self._assign(self.scene.wall, "wall", name, value)
         for obj, base in zip(self.scene.objects, base_transforms, strict=True):
-            placement = ground_model.reanchor_text(base_ground, self.scene.ground, base)
-            if placement is None:
-                placement = (base.x, base.z, base.rot_y, base.size)
-            for name, value in zip(("x", "z", "rot_y", "size"), placement):
+            if base.mount == "wall":
+                names = ("wall_x", "wall_y", "size")
+                placement = ground_model.reanchor_wall_text(base_ground, base_wall, self.scene.ground, wall, base)
+                if placement is None:
+                    placement = (base.wall_x, base.wall_y, base.size)
+            else:
+                names = ("x", "z", "rot_y", "size")
+                placement = ground_model.reanchor_text(base_ground, self.scene.ground, base)
+                if placement is None:
+                    placement = (base.x, base.z, base.rot_y, base.size)
+            for name, value in zip(names, placement):
                 if getattr(obj.transform, name) != value:
                     self._assign(obj.transform, "transform", name, value)
 
