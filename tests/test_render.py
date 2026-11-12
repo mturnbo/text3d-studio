@@ -614,3 +614,49 @@ def test_glass_casts_a_lighter_shadow_than_plastic(compositor):
         return (luminance(lit) - luminance(shaded))[ground].sum()
 
     assert 0 < darkening("glass") < 0.5 * darkening("plastic")
+
+
+# ----- Text layer ---------------------------------------------------------------------------------
+
+
+def read_text_layer(compositor):
+    """The resolved text layer as an (H, W, 4) float array, top row first."""
+    from OpenGL import GL
+
+    layer = compositor.text_layer
+    layer.color.bind(0)
+    GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+    data = GL.glGetTexImage(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+    return np.frombuffer(data, np.uint8).reshape(layer.height, layer.width, 4)[::-1].astype(float)
+
+
+@pytest.mark.parametrize("kind", ["metal", "glass"])
+def test_text_layer_is_premultiplied_with_coverage_alpha(compositor, kind):
+    from text3d_studio.materials import PRESETS
+
+    render(compositor, make_document(material={**PRESETS[kind], "kind": kind}, shadow={"enabled": False}))
+    layer = read_text_layer(compositor)
+    alpha = layer[..., 3]
+    assert alpha.max() == 255 and alpha.min() == 0  # solid interior, empty surroundings
+    edges = (alpha > 0) & (alpha < 255)
+    assert edges.sum() > 200  # antialiased outline
+    assert np.all(layer[..., :3] <= alpha[..., None] + 1)  # premultiplied: color never exceeds coverage
+    assert not layer[alpha == 0, :3].any()
+
+
+def test_export_is_the_text_layer_composited_over_the_background(compositor):
+    doc = make_document(shadow={"enabled": False})
+    exported = render(compositor, doc)[..., :3].astype(float)
+    layer = read_text_layer(compositor)
+    background = doc.background[..., :3].astype(float)
+    expected = layer[..., :3] + (1 - layer[..., 3:] / 255) * background
+    assert np.abs(exported - expected).max() <= 1.0
+
+
+def test_preview_without_multisampling_still_antialiases_text_edges(compositor):
+    doc = grid_document()
+    doc.background = make_document().background
+    render_preview(compositor, doc, with_grid=False)  # into a target with no multisampling
+    assert compositor.text_layer.samples >= 4
+    alpha = read_text_layer(compositor)[..., 3]
+    assert ((alpha > 0) & (alpha < 255)).sum() > 200
