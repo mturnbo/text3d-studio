@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
+    QListWidget,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -23,7 +24,7 @@ from PyQt6.QtWidgets import (
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV
 from ..materials import KINDS
-from ..viewmodel import SceneViewModel
+from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
 SLIDERS = {
@@ -228,6 +229,7 @@ class ControlPanel(QScrollArea):
 
         content = QWidget()
         column = QVBoxLayout(content)
+        self._add_object_list(column)
         for section, title in GROUP_TITLES:
             group = QGroupBox(title)
             form = QFormLayout(group)
@@ -257,6 +259,51 @@ class ControlPanel(QScrollArea):
         self._show_material_controls(self.vm.get("material", "kind"))
 
         self.vm.scene_changed.connect(self._refresh)
+        self.vm.objects_changed.connect(self._rebuild_object_list)
+        self.vm.selection_changed.connect(self._refresh_selection)
+
+    def _add_object_list(self, column: QVBoxLayout) -> None:
+        group = QGroupBox("Objects")
+        layout = QVBoxLayout(group)
+        self.object_list = QListWidget()
+        self.object_list.setObjectName("objects")
+        self.object_list.setMaximumHeight(110)
+        self.object_list.currentRowChanged.connect(self._on_object_row_changed)
+        layout.addWidget(self.object_list)
+
+        buttons = QHBoxLayout()
+        self.add_button = QPushButton("Add")
+        self.duplicate_button = QPushButton("Duplicate")
+        self.delete_button = QPushButton("Delete")
+        self.add_button.clicked.connect(lambda: self.vm.add_object())
+        self.duplicate_button.clicked.connect(lambda: self.vm.duplicate_object())
+        self.delete_button.clicked.connect(lambda: self.vm.delete_object())
+        for button in (self.add_button, self.duplicate_button, self.delete_button):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        column.addWidget(group)
+        self._rebuild_object_list()
+
+    def _rebuild_object_list(self) -> None:
+        self.object_list.blockSignals(True)
+        self.object_list.clear()
+        for obj in self.vm.scene.objects:
+            self.object_list.addItem(_object_label(obj.text.content))
+        self.object_list.setCurrentRow(self.vm.selected)
+        self.object_list.blockSignals(False)
+        self.delete_button.setEnabled(len(self.vm.scene.objects) > 1)  # the last object can't be deleted
+
+    def _on_object_row_changed(self, row: int) -> None:
+        if row >= 0:
+            self.vm.select(row)
+
+    def _refresh_selection(self, index: int) -> None:
+        """Shows the newly selected object's text, placement and material in every control."""
+        _set_quietly(self.object_list, self.object_list.setCurrentRow, index)
+        for (section, field), setter in self._setters.items():
+            if section in OBJECT_SECTIONS:
+                setter(self.vm.get(section, field))
+        self._show_material_controls(self.vm.get("material", "kind"))
 
     def _bind(self, section, field, setter, signal) -> None:
         setter(self.vm.get(section, field))
@@ -265,6 +312,7 @@ class ControlPanel(QScrollArea):
 
     def _add_text_inputs(self, form: QFormLayout) -> None:
         edit = QLineEdit()
+        edit.setObjectName("text.content")
 
         def set_text(value: str) -> None:
             # Only push text back when it differs, so refreshes don't move the cursor while typing.
@@ -339,6 +387,12 @@ class ControlPanel(QScrollArea):
             setter(self.vm.get(section, field))
         if (section, field) == ("material", "kind"):
             self._show_material_controls(self.vm.get(section, field))
+        if (section, field) == ("text", "content"):
+            self.object_list.item(self.vm.selected).setText(_object_label(self.vm.get(section, field)))
+
+
+def _object_label(content: str) -> str:
+    return content if content.strip() else "(empty)"
 
 
 def _set_quietly(widget: QWidget, setter, value) -> None:

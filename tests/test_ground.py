@@ -183,3 +183,19 @@ def test_fov_estimate_fails_for_a_square_on_rectangle():
     quad = project_ground_rectangle(GroundParams(pitch=10, yaw=0, roll=0), 40.0)  # front edge stays horizontal
     with pytest.raises(ValueError):
         ground.fit_ground_to_rectangle(quad, (2.0, 3.0), 40.0, IMAGE, 1.0, estimate_fov=True)
+
+
+@pytest.mark.parametrize("pitch, yaw, rot_y", [(0.0, 0.0, -20.0), (25.0, 40.0, 70.0), (-5.0, -15.0, 0.0)])
+def test_face_hit_finds_the_local_point_a_ray_sees(pitch, yaw, rot_y):
+    g = GroundParams(pitch=pitch, yaw=yaw, height=1.8)
+    t = TransformParams(x=1.0, z=-9.0, rot_y=rot_y, size=2.5)
+    point = ground.text_model_matrix(g, t) @ np.array([0.3, 0.4, 0.0, 1.0])  # on the front face, in em units
+    distance, x, y = ground.text_face_hit(g, t, point[:3] / np.linalg.norm(point[:3]))
+    assert (x, y) == pytest.approx((0.3, 0.4), abs=1e-9)
+    assert distance == pytest.approx(np.linalg.norm(point[:3]))
+
+
+def test_face_hit_misses_rays_parallel_to_or_away_from_the_face():
+    g, t = GroundParams(), TransformParams(rot_y=0.0)  # the face looks straight at the camera
+    assert ground.text_face_hit(g, t, np.array([1.0, 0.0, 0.0])) is None  # parallel to the face
+    assert ground.text_face_hit(g, t, np.array([0.0, 0.0, 1.0])) is None  # pointing away from it

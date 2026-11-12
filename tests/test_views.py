@@ -1,3 +1,4 @@
+import dataclasses
 import os
 
 import numpy as np
@@ -358,10 +359,10 @@ def test_loading_the_same_size_does_not_report_a_change(window, tmp_path):
 def test_loading_a_new_image_keeps_the_text_transform(window, tmp_path):
     window.vm.set("transform", "x", 2.5)
     window.vm.set("transform", "rot_y", 33.0)
-    before = dict(vars(window.vm.scene.transform))
+    before = dict(vars(window.vm.scene.objects[0].transform))
     window.load_image_path(sized_image(tmp_path, "a.png", 300, 200))
     window.load_image_path(sized_image(tmp_path, "b.png", 120, 900))
-    assert vars(window.vm.scene.transform) == before
+    assert vars(window.vm.scene.objects[0].transform) == before
 
 
 def test_busy_cursor_shown_during_decode_and_restored(window, tmp_path, monkeypatch, qapp):
@@ -444,14 +445,16 @@ COMMAND = Qt.KeyboardModifier.ControlModifier  # Qt's name for macOS's Command k
 
 def apparent_size(vm):
     """On-screen text size up to a constant: world size over distance from the camera."""
-    return vm.scene.transform.size / np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.transform))
+    return vm.scene.objects[0].transform.size / np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.objects[0].transform))
 
 
-def text_anchor_on_screen(canvas):
+def text_anchor_on_screen(canvas, index=None):
+    """Where an object's anchor shows in widget pixels: the selected object's unless `index` names another."""
     rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
     scene = canvas.vm.scene
+    obj = canvas.vm.selected_object if index is None else scene.objects[index]
     pixel = math3d.project_to_image(
-        ground_model.text_position(scene.ground, scene.transform), scene.camera.fov, (rect_w, rect_h)
+        ground_model.text_position(scene.ground, obj.transform), scene.camera.fov, (rect_w, rect_h)
     )
     return (pixel[0] + rect_x, pixel[1] + rect_y)
 
@@ -470,7 +473,7 @@ def test_plain_drag_moves_the_text_without_changing_its_on_screen_size(vm, targe
     before = apparent_size(vm)
     drag(canvas, text_anchor_on_screen(canvas), target)
     assert apparent_size(vm) == pytest.approx(before)
-    assert vm.scene.transform.size != pytest.approx(3.0)  # it had to change size to keep its apparent size
+    assert vm.scene.objects[0].transform.size != pytest.approx(3.0)  # it had to change size to keep its apparent size
 
 
 def test_plain_drag_moves_the_text_by_the_cursor_motion_wherever_it_is_grabbed(vm):
@@ -486,8 +489,8 @@ def test_option_drag_slides_along_the_ground_in_perspective(vm):
     start = text_anchor_on_screen(canvas)
     drag(canvas, start, (start[0], start[1] - 40), modifiers=OPTION)
     np.testing.assert_allclose(text_anchor_on_screen(canvas), (start[0], start[1] - 40), atol=1e-6)
-    assert vm.scene.transform.size == 3.0  # further away, so it looks smaller
-    assert vm.scene.transform.z < -12.0
+    assert vm.scene.objects[0].transform.size == 3.0  # further away, so it looks smaller
+    assert vm.scene.objects[0].transform.z < -12.0
 
 
 @pytest.mark.parametrize("modifiers", [Qt.KeyboardModifier.ShiftModifier, Qt.KeyboardModifier.ShiftModifier | OPTION])
@@ -503,10 +506,10 @@ def test_shift_drag_locks_to_the_dominant_axis(vm, modifiers, motion, kept_axis)
 
 def test_command_drag_only_changes_yaw(vm):
     canvas = sized_canvas(vm)
-    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size, vm.scene.transform.rot_y)
+    before = (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z, vm.scene.objects[0].transform.size, vm.scene.objects[0].transform.rot_y)
     drag(canvas, (400, 300), (450, 340), modifiers=COMMAND)
-    assert (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size) == before[:3]
-    assert vm.scene.transform.rot_y == pytest.approx(before[3] + 50 * 0.4)
+    assert (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z, vm.scene.objects[0].transform.size) == before[:3]
+    assert vm.scene.objects[0].transform.rot_y == pytest.approx(before[3] + 50 * 0.4)
 
 
 def test_plain_drag_stops_before_pushing_the_text_too_far_away(vm):
@@ -518,7 +521,7 @@ def test_plain_drag_stops_before_pushing_the_text_too_far_away(vm):
     for y in np.linspace(start[1], 0, 60):
         mouse(canvas, QEvent.Type.MouseMove if y != start[1] else QEvent.Type.MouseButtonPress, (start[0], y),
               Qt.MouseButton.NoButton if y != start[1] else Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
-    distance = np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.transform))
+    distance = np.linalg.norm(ground_model.text_position(vm.scene.ground, vm.scene.objects[0].transform))
     assert 20 < distance <= MAX_TEXT_DISTANCE
 
 
@@ -538,30 +541,30 @@ def test_pinch_scales_text_in_text_tool_cells_in_grid_tool_and_nothing_when_fitt
 
     canvas = sized_canvas(vm)
     assert pinch(canvas, 0.25)
-    assert vm.scene.transform.size == pytest.approx(3.0 * 1.25)
+    assert vm.scene.objects[0].transform.size == pytest.approx(3.0 * 1.25)
     canvas.set_tool(GRID_TOOL)
     pinch(canvas, -0.5)
     assert vm.scene.grid.cell_size == pytest.approx(0.5)
-    assert vm.scene.transform.size == pytest.approx(3.0 * 1.25)
+    assert vm.scene.objects[0].transform.size == pytest.approx(3.0 * 1.25)
     canvas.set_tool(FIT_TOOL)
-    before = (vm.scene.transform.size, vm.scene.grid.cell_size)
+    before = (vm.scene.objects[0].transform.size, vm.scene.grid.cell_size)
     pinch(canvas, 0.3)
-    assert (vm.scene.transform.size, vm.scene.grid.cell_size) == before
+    assert (vm.scene.objects[0].transform.size, vm.scene.grid.cell_size) == before
 
 
 def test_dragging_keeps_the_text_on_the_ground(vm):
     canvas = sized_canvas(vm)
     drag(canvas, text_anchor_on_screen(canvas), (600, 450))
-    position = ground_model.text_position(vm.scene.ground, vm.scene.transform)
+    position = ground_model.text_position(vm.scene.ground, vm.scene.objects[0].transform)
     plane = ground_model.ground_plane(vm.scene.ground)
     assert plane[:3] @ position + plane[3] == pytest.approx(0, abs=1e-9)
 
 
 def test_drag_starting_in_the_sky_does_nothing(vm):
     canvas = sized_canvas(vm)
-    before = (vm.scene.transform.x, vm.scene.transform.z)
+    before = (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z)
     drag(canvas, (400, 50), (450, 300))
-    assert (vm.scene.transform.x, vm.scene.transform.z) == before
+    assert (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z) == before
 
 
 def test_dragging_into_the_sky_stops_at_the_last_ground_position(vm):
@@ -569,18 +572,18 @@ def test_dragging_into_the_sky_stops_at_the_last_ground_position(vm):
     start = text_anchor_on_screen(canvas)
     mouse(canvas, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
     mouse(canvas, QEvent.Type.MouseMove, (start[0] + 40, start[1]), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
-    settled = (vm.scene.transform.x, vm.scene.transform.z)
+    settled = (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z)
     mouse(canvas, QEvent.Type.MouseMove, (start[0] + 40, 20), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
-    assert (vm.scene.transform.x, vm.scene.transform.z) == settled
+    assert (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z) == settled
 
 
 def test_right_drag_only_changes_yaw(vm):
     canvas = sized_canvas(vm)
     before_ground = dict(vars(vm.scene.ground))
-    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.rot_y)
+    before = (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z, vm.scene.objects[0].transform.rot_y)
     drag(canvas, (400, 300), (450, 340), Qt.MouseButton.RightButton)
-    assert (vm.scene.transform.x, vm.scene.transform.z) == before[:2]
-    assert vm.scene.transform.rot_y == pytest.approx(before[2] + 50 * 0.4)
+    assert (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z) == before[:2]
+    assert vm.scene.objects[0].transform.rot_y == pytest.approx(before[2] + 50 * 0.4)
     assert vars(vm.scene.ground) == before_ground
 
 
@@ -623,6 +626,7 @@ def activate(window, qapp):
     from PyQt6.QtWidgets import QApplication
 
     window.show()
+    qapp.processEvents()  # first let the OS's activation events for this and earlier windows arrive
     QApplication.setActiveWindow(window)
     qapp.processEvents()
 
@@ -630,7 +634,7 @@ def activate(window, qapp):
 def test_g_key_on_canvas_toggles_grid(window, qapp):
     from PyQt6.QtTest import QTest
 
-    window.show()
+    activate(window, qapp)
     window.canvas.setFocus()
     qapp.processEvents()
     QTest.keyClick(window.canvas, Qt.Key.Key_G)
@@ -666,7 +670,7 @@ def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, q
     spin.selectAll()
     QTest.keyClicks(spin, "5")
     QTest.keyClick(spin, Qt.Key.Key_Return)
-    assert window.vm.scene.transform.size == 5.0
+    assert window.vm.scene.objects[0].transform.size == 5.0
     QTest.keyClick(spin, Qt.Key.Key_P)
     assert window.canvas.tool == GRID_TOOL
 
@@ -728,9 +732,9 @@ def test_dragging_over_the_text_in_grid_tool_moves_grid_lines_not_text(vm):
 
     canvas = sized_canvas(vm)
     canvas.set_tool(GRID_TOOL)
-    before = dict(vars(vm.scene.transform))
+    before = dict(vars(vm.scene.objects[0].transform))
     drag(canvas, text_anchor_on_screen(canvas), (600, 450))
-    assert vars(vm.scene.transform) == before
+    assert vars(vm.scene.objects[0].transform) == before
     assert (vm.scene.grid.offset_x, vm.scene.grid.offset_z) != (0.0, 0.0)
 
 
@@ -777,6 +781,19 @@ def test_horizon_drags_keep_the_text_in_place_on_screen(vm):
     drag(canvas, (760, 215), (760, 240))  # roll from the right end
     assert vm.scene.ground.pitch != 0 and vm.scene.ground.roll != 0
     np.testing.assert_allclose(text_anchor_on_screen(canvas), before, atol=1e-6)
+
+
+def test_horizon_drags_keep_every_object_in_place_on_screen(vm):
+    vm.add_object()
+    vm.set("transform", "x", -2.0)
+    canvas = grid_canvas(vm)
+    before = [text_anchor_on_screen(canvas, i) for i in range(2)]
+    drag(canvas, (400, 250), (400, 215))
+    drag(canvas, (760, 215), (760, 240))
+    drag(canvas, (400, 120), (460, 120), Qt.MouseButton.RightButton)  # grid yaw
+    assert vm.scene.ground.pitch != 0 and vm.scene.ground.roll != 0 and vm.scene.ground.yaw != 0
+    for i in range(2):
+        np.testing.assert_allclose(text_anchor_on_screen(canvas, i), before[i], atol=1e-6)
 
 
 def test_tilt_is_clamped_to_the_slider_range(vm):
@@ -852,10 +869,10 @@ def test_wheel_scales_cells_in_grid_tool_and_text_in_text_tool(vm):
     canvas = grid_canvas(vm)
     wheel(canvas, 2)
     assert vm.scene.grid.cell_size == pytest.approx(1.06**2)
-    assert vm.scene.transform.size == 3.0
+    assert vm.scene.objects[0].transform.size == 3.0
     canvas.set_tool(TEXT_TOOL)
     wheel(canvas, 1)
-    assert vm.scene.transform.size == pytest.approx(3.0 * 1.06)
+    assert vm.scene.objects[0].transform.size == pytest.approx(3.0 * 1.06)
 
 
 def test_cell_size_is_clamped(vm):
@@ -941,12 +958,12 @@ def test_starting_handles_describe_the_current_ground(vm):
 
 def test_clicking_a_handle_without_dragging_changes_nothing(vm):
     canvas = fit_canvas(vm)
-    before = (dict(vars(vm.scene.ground)), dict(vars(vm.scene.transform)))
+    before = (dict(vars(vm.scene.ground)), dict(vars(vm.scene.objects[0].transform)))
     rect_x, rect_y, _, _ = canvas._image_rect()
     u, v = canvas.fit_corners_px()[0]
     mouse(canvas, QEvent.Type.MouseButtonPress, (rect_x + u, rect_y + v), Qt.MouseButton.LeftButton)
     mouse(canvas, QEvent.Type.MouseButtonRelease, (rect_x + u, rect_y + v), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
-    assert (dict(vars(vm.scene.ground)), dict(vars(vm.scene.transform))) == before
+    assert (dict(vars(vm.scene.ground)), dict(vars(vm.scene.objects[0].transform))) == before
 
 
 def test_crossed_corners_turn_invalid_and_leave_the_scene_alone(vm):
@@ -986,7 +1003,7 @@ def test_moving_the_text_between_corner_drags_is_respected(vm):
     targets = true_rectangle_px(canvas, GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8))
     drag_fit_corner(canvas, 0, targets[0])
     drag_fit_corner(canvas, 1, targets[1])
-    vm.set("transform", "x", vm.scene.transform.x + 1.0)  # the user nudges the text mid-session
+    vm.set("transform", "x", vm.scene.objects[0].transform.x + 1.0)  # the user nudges the text mid-session
     anchor = text_anchor_on_screen(canvas)
     drag_fit_corner(canvas, 2, targets[2])
     drag_fit_corner(canvas, 3, targets[3])
@@ -995,12 +1012,12 @@ def test_moving_the_text_between_corner_drags_is_respected(vm):
 
 def test_horizon_drag_across_the_text_and_back_returns_it(vm):
     canvas = grid_canvas(vm)
-    before = (vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size)
+    before = (vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z, vm.scene.objects[0].transform.size)
     mouse(canvas, QEvent.Type.MouseButtonPress, (400, 250), Qt.MouseButton.LeftButton)
     for row in (300, 380, 460, 380, 300, 250):  # the horizon sweeps down past the text, then back
         mouse(canvas, QEvent.Type.MouseMove, (400, row), Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
     mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 250), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
-    np.testing.assert_allclose((vm.scene.transform.x, vm.scene.transform.z, vm.scene.transform.size), before, atol=1e-9)
+    np.testing.assert_allclose((vm.scene.objects[0].transform.x, vm.scene.objects[0].transform.z, vm.scene.objects[0].transform.size), before, atol=1e-9)
 
 
 # ----- Materials ----------------------------------------------------------------------------------
@@ -1028,7 +1045,7 @@ def test_choosing_a_material_applies_its_preset_and_updates_sliders(vm):
     panel = ControlPanel(vm)
     combo = material_combo(panel)
     combo.activated.emit(combo.findData("stone"))
-    assert vm.scene.material.kind == "stone"
+    assert vm.scene.objects[0].material.kind == "stone"
     assert panel.findChild(SliderRow, "material.roughness").spin.value() == 0.85
 
 
@@ -1160,9 +1177,9 @@ def test_wheel_over_an_unfocused_control_scrolls_the_panel_instead(window, qapp,
     panel.ensureWidgetVisible(widget)
     window.canvas.setFocus()
     scrolled = panel.verticalScrollBar().value()
-    before = (window.vm.scene.transform.size, window.vm.scene.material.kind)
+    before = (window.vm.scene.objects[0].transform.size, window.vm.scene.objects[0].material.kind)
     wheel_over(widget)
-    assert (window.vm.scene.transform.size, window.vm.scene.material.kind) == before
+    assert (window.vm.scene.objects[0].transform.size, window.vm.scene.objects[0].material.kind) == before
     assert panel.verticalScrollBar().value() > scrolled
 
 
@@ -1176,7 +1193,7 @@ def test_wheel_over_a_focused_control_changes_its_value(window, qapp, control):
     widget.setFocus()
     qapp.processEvents()
     wheel_over(widget, steps=1)
-    assert window.vm.scene.transform.size != 3.0
+    assert window.vm.scene.objects[0].transform.size != 3.0
 
 
 def test_clicking_a_slider_gives_it_focus(window, qapp):
@@ -1188,3 +1205,288 @@ def test_clicking_a_slider_gives_it_focus(window, qapp):
     slider = panel.findChild(SliderRow, "transform.size").slider
     QTest.mouseClick(slider, Qt.MouseButton.LeftButton)
     assert slider.hasFocus()
+
+
+# ----- Multiple text objects ----------------------------------------------------------------------
+
+
+def test_canvas_rasterizes_only_objects_whose_text_changed(vm):
+    vm.add_object()
+    canvas = sized_canvas(vm)
+    canvas._update_rasters()
+    first, second = (canvas._rasters[o.id][1] for o in vm.scene.objects)
+    vm.set("text", "content", "NEW")  # the selected (second) object
+    vm.set("transform", "size", 4.0)  # not a raster field
+    canvas._update_rasters()
+    assert canvas._rasters[vm.scene.objects[0].id][1] is first
+    assert canvas._rasters[vm.scene.objects[1].id][1] is not second
+    deleted = vm.selected_object.id
+    vm.delete_object()
+    canvas._update_rasters()
+    assert set(canvas._rasters) == {vm.scene.objects[0].id}
+    assert deleted not in canvas._unsent
+
+
+def test_new_objects_rasterize_at_once_but_typing_waits_for_the_debounce(vm):
+    canvas = sized_canvas(vm)
+    canvas._glyph_dirty = False
+    vm.set("text", "content", "TYPING")
+    assert not canvas._glyph_dirty and canvas._text_timer.isActive()
+    vm.add_object()
+    assert canvas._glyph_dirty
+
+
+def place(vm, index, content, **transform):
+    vm.select(index)
+    vm.set("text", "content", content)
+    for name, value in {"rot_y": 0.0, **transform}.items():
+        vm.set("transform", name, value)
+
+
+def two_objects(vm, first="OO", second="XX"):
+    """A sized canvas with two objects side by side, facing the camera; the first is selected."""
+    vm.add_object()
+    place(vm, 0, first, x=-3.5, z=-12.0, size=3.0)
+    place(vm, 1, second, x=3.5, z=-12.0, size=3.0)
+    vm.select(0)
+    return sized_canvas(vm)
+
+
+def on_face(canvas, index, local):
+    """Widget position of a point on an object's front face, given in em units."""
+    scene = canvas.vm.scene
+    model = ground_model.text_model_matrix(scene.ground, scene.objects[index].transform)
+    world = model @ np.array([local[0], local[1], 0.0, 1.0])
+    rect_x, rect_y, rect_w, rect_h = canvas._image_rect()
+    pixel = math3d.project_to_image(world[:3], scene.camera.fov, (rect_w, rect_h))
+    return (pixel[0] + rect_x, pixel[1] + rect_y)
+
+
+def ink_point(canvas, index):
+    """An em-unit point well inside an object's ink: the solid texel nearest the raster's middle."""
+    raster = canvas._raster_of(canvas.vm.scene.objects[index])
+    alpha = raster.rgba[..., 3]
+    solid = alpha == 255
+    for axis in (0, 1):
+        for shift in (-6, 6):
+            solid &= np.roll(alpha, shift, axis) == 255
+    rows, cols = np.nonzero(solid)
+    height, width = alpha.shape
+    nearest = np.argmin((rows - height / 2) ** 2 + (cols - width / 2) ** 2)
+    u, v = (cols[nearest] + 0.5) / width, (rows[nearest] + 0.5) / height
+    return (raster.origin[0] + u * raster.size[0], raster.origin[1] + (1 - v) * raster.size[1])
+
+
+def counter_of_o(canvas, index):
+    """The middle of the hole of an object whose text is a single O."""
+    raster = canvas._raster_of(canvas.vm.scene.objects[index])
+    pad = -raster.origin[1]
+    return (0.0, (raster.size[1] - 2 * pad) / 2)
+
+
+def click(canvas, pos, button=Qt.MouseButton.LeftButton):
+    mouse(canvas, QEvent.Type.MouseButtonPress, pos, button)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, pos, button, Qt.MouseButton.NoButton)
+
+
+def transforms(vm):
+    return [dataclasses.replace(o.transform) for o in vm.scene.objects]
+
+
+def test_clicking_an_object_selects_it_without_moving_anything(vm):
+    canvas = two_objects(vm)
+    before = transforms(vm)
+    for index in (1, 0, 1):
+        click(canvas, on_face(canvas, index, ink_point(canvas, index)))
+        assert vm.selected == index
+    assert transforms(vm) == before
+
+
+def test_dragging_an_object_selects_and_moves_only_it(vm):
+    canvas = two_objects(vm)
+    before = transforms(vm)
+    start = on_face(canvas, 1, ink_point(canvas, 1))
+    drag(canvas, start, (start[0] - 40, start[1] + 30))
+    assert vm.selected == 1
+    assert vm.scene.objects[0].transform == before[0]
+    assert vm.scene.objects[1].transform != before[1]
+
+
+def test_a_press_on_empty_ground_keeps_the_selection_and_drags_it(vm):
+    canvas = two_objects(vm)
+    vm.select(1)
+    before = transforms(vm)
+    assert canvas.object_at(QPointF(400, 470)) is None
+    drag(canvas, (400, 470), (430, 450))
+    assert vm.selected == 1
+    assert vm.scene.objects[0].transform == before[0]
+    assert vm.scene.objects[1].transform != before[1]
+
+
+def test_a_press_in_a_letters_hole_does_not_pick_that_object(vm):
+    canvas = two_objects(vm, first="O")
+    vm.select(1)
+    hole = on_face(canvas, 0, counter_of_o(canvas, 0))
+    assert canvas.object_at(QPointF(*hole)) is None
+    click(canvas, hole)
+    assert vm.selected == 1
+
+
+def test_a_press_through_a_hole_picks_the_object_behind(vm):
+    canvas = two_objects(vm, first="O", second="MMMM")
+    place(vm, 1, "MMMM", x=0.0, z=-40.0, size=12.0)  # far behind the O, showing through its counter
+    hole = on_face(canvas, 0, counter_of_o(canvas, 0))
+    ring = on_face(canvas, 0, ink_point(canvas, 0))
+    vm.select(0)
+    click(canvas, hole)
+    assert vm.selected == 1
+    click(canvas, ring)
+    assert vm.selected == 0
+
+
+def test_the_nearest_object_wins_where_they_overlap(vm):
+    canvas = two_objects(vm, first="I", second="I")
+    place(vm, 0, "I", x=0.0, z=-20.0, size=6.0)  # twice as far and twice as big: behind the other I
+    place(vm, 1, "I", x=0.0, z=-10.0, size=3.0)
+    point = QPointF(*on_face(canvas, 1, ink_point(canvas, 1)))
+    assert canvas.object_at(point) == 1
+    vm.set("transform", "x", 40.0)  # move the near I aside: the far one was under it all along
+    assert canvas.object_at(point) == 0
+    vm.select(0)
+    vm.set("transform", "z", -8.0)  # bring the far one in front of where the near one stood
+    vm.select(1)
+    vm.set("transform", "x", 0.0)
+    assert canvas.object_at(point) == 0
+
+
+def test_a_press_off_the_image_picks_nothing(vm):
+    canvas = two_objects(vm)
+    canvas.vm.set_background(np.zeros((100, 400, 4), np.uint8))  # wide: letterboxed above and below
+    assert canvas.object_at(QPointF(400, 5)) is None
+
+
+def test_wheel_and_yaw_act_only_on_the_selected_object(vm):
+    canvas = two_objects(vm)
+    vm.select(1)
+    before = transforms(vm)
+    wheel(canvas, 1)
+    assert vm.scene.objects[1].transform.size == pytest.approx(before[1].size * 1.06)
+    start = on_face(canvas, 0, ink_point(canvas, 0))
+    drag(canvas, start, (start[0] + 50, start[1]), Qt.MouseButton.RightButton)  # picks the first, then yaws it
+    assert vm.selected == 0
+    assert vm.scene.objects[0].transform.rot_y == pytest.approx(50 * 0.4)
+    assert vm.scene.objects[0].transform.size == before[0].size
+    assert vm.scene.objects[1].transform.rot_y == before[1].rot_y
+
+
+def test_export_renders_every_object(window, qapp):
+    window.vm.set_background(np.full((200, 320, 4), 255, np.uint8), "photo.png")
+    window.vm.set("shadow", "enabled", False)
+    window.show()
+    qapp.processEvents()
+    one = window.canvas.render_export()
+    window.vm.add_object()
+    window.vm.set("text", "content", "MORE")
+    two = window.canvas.render_export()
+    assert set(window.canvas.compositor.glyphs) == {o.id for o in window.vm.scene.objects}
+    covered = lambda pixels: np.any(pixels[..., :3] != 255, axis=-1)
+    assert covered(two).sum() > covered(one).sum() + 200
+    assert (covered(two) & covered(one)).sum() >= 0.99 * covered(one).sum()  # the first object is still there
+    window.vm.delete_object()
+    np.testing.assert_array_equal(window.canvas.render_export(), one)
+
+
+# ----- Objects list in the panel ------------------------------------------------------------------
+
+
+def object_rows(panel):
+    return [panel.object_list.item(i).text() for i in range(panel.object_list.count())]
+
+
+def test_objects_list_starts_with_the_one_object_and_delete_disabled(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    assert object_rows(panel) == ["HELLO"]
+    assert panel.object_list.currentRow() == 0
+    assert panel.add_button.isEnabled() and panel.duplicate_button.isEnabled()
+    assert not panel.delete_button.isEnabled()
+
+
+def test_add_duplicate_and_delete_buttons_edit_the_objects(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.set("text", "content", "FIRST")
+    panel.add_button.click()
+    assert object_rows(panel) == ["FIRST", "HELLO"] and panel.object_list.currentRow() == 1
+    assert panel.delete_button.isEnabled()
+    panel.duplicate_button.click()
+    assert object_rows(panel) == ["FIRST", "HELLO", "HELLO"] and vm.selected == 2
+    panel.object_list.setCurrentRow(0)
+    panel.delete_button.click()
+    assert object_rows(panel) == ["HELLO", "HELLO"] and vm.selected == 0
+    panel.delete_button.click()
+    assert object_rows(panel) == ["HELLO"]
+    assert not panel.delete_button.isEnabled()
+    panel.delete_button.click()  # disabled: does nothing
+    assert len(vm.scene.objects) == 1
+
+
+def test_choosing_a_row_selects_the_object_and_refreshes_every_control(vm):
+    from PyQt6.QtWidgets import QLineEdit
+
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    vm.set("text", "content", "WOOD")
+    vm.set("transform", "depth", 1.5)
+    vm.apply_material("wood")
+    text = panel.findChild(QLineEdit, "text.content")
+    assert (text.text(), material_combo(panel).currentData()) == ("WOOD", "wood")
+    panel.object_list.setCurrentRow(0)
+    assert vm.selected == 0
+    assert text.text() == "HELLO"
+    assert panel.findChild(SliderRow, "transform.depth").spin.value() == 0.35
+    assert material_combo(panel).currentData() == "metal"
+    assert not material_row_visible(panel, "grain_angle") and material_row_visible(panel, "side_color")
+    panel.object_list.setCurrentRow(1)
+    assert material_row_visible(panel, "grain_angle") and not material_row_visible(panel, "side_color")
+    assert panel.findChild(SliderRow, "transform.depth").spin.value() == 1.5
+
+
+def test_controls_edit_the_object_chosen_in_the_list(vm):
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    panel.object_list.setCurrentRow(0)
+    panel.findChild(SliderRow, "transform.layers").spin.setValue(200)
+    assert [o.transform.layers for o in vm.scene.objects] == [200, 96]
+
+
+def test_typing_renames_the_selected_row(vm):
+    from PyQt6.QtWidgets import QLineEdit
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.add_object()
+    panel.findChild(QLineEdit, "text.content").setText("SIGN")
+    assert object_rows(panel) == ["HELLO", "SIGN"]
+    vm.set("text", "content", "   ")
+    assert object_rows(panel) == ["HELLO", "(empty)"]
+
+
+def test_picking_on_the_canvas_updates_the_list(window):
+    from text3d_studio.views.control_panel import SliderRow
+
+    vm, panel, canvas = window.vm, window.panel, window.canvas
+    vm.add_object()
+    place(vm, 0, "OO", x=-3.5, z=-12.0, size=3.0)
+    place(vm, 1, "XX", x=3.5, z=-12.0, size=3.0)
+    canvas.resize(800, 500)
+    click(canvas, on_face(canvas, 0, ink_point(canvas, 0)))
+    assert vm.selected == 0 and panel.object_list.currentRow() == 0
+    assert panel.findChild(SliderRow, "transform.x").spin.value() == -3.5

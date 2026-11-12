@@ -5,7 +5,7 @@ The ground is posed relative to the camera (GroundParams). Text stands on it at 
 are measured in the ground's tilt frame and ignore the grid's yaw, so rotating the grid never moves the sun.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -16,6 +16,7 @@ from .model import GroundParams, TransformParams
 MAX_PITCH = 89.0
 MAX_ROLL = 60.0
 MIN_FOV, MAX_FOV = 10.0, 100.0
+INK_HEIGHT_EM = 0.75  # about a capital's height: how tall placement_in_front assumes the text stands
 
 
 @dataclass
@@ -74,9 +75,33 @@ def text_model_matrix(ground: GroundParams, transform: TransformParams) -> np.nd
     )
 
 
+def text_face_hit(ground: GroundParams, transform: TransformParams, ray) -> tuple[float, float, float] | None:
+    """Where a camera ray meets the plane of the text's front face: (distance along the ray, local x, local y),
+    local coordinates in em units like the glyph raster's. None when the ray runs parallel to or away from it."""
+    model = text_model_matrix(ground, transform)
+    plane = math3d.plane_from_point_normal(model[:3, 3], model[:3, 2])
+    hit = math3d.intersect_ray_plane((0.0, 0.0, 0.0), ray, plane)
+    if hit is None:
+        return None
+    local = np.linalg.inv(model) @ np.append(hit, 1.0)
+    return float(np.linalg.norm(hit)), float(local[0]), float(local[1])
+
+
 def text_distance(ground: GroundParams, transform: TransformParams) -> float:
     """Depth of the text's anchor along the view axis (always positive for visible text)."""
     return max(-float(text_position(ground, transform)[2]), 1e-3)
+
+
+def placement_in_front(ground: GroundParams, transform: TransformParams) -> TransformParams:
+    """A copy of `transform` moved toward the camera, and shrunk with its distance, so text standing there shows
+    below the original instead of over it.
+
+    Placement and size scale by the same factor f around the point below the camera, in the ground's frame.
+    The camera's ray to the original's base then passes height (1 - f) * camera height above the new spot,
+    which clears the new text's top (f * size * INK_HEIGHT_EM) when f < height / (size * INK_HEIGHT_EM + height).
+    """
+    f = 0.9 * ground.height / (transform.size * INK_HEIGHT_EM + ground.height)
+    return replace(transform, x=transform.x * f, z=transform.z * f, size=transform.size * f)
 
 
 def reanchor_text(

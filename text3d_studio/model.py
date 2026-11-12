@@ -101,12 +101,22 @@ class CameraParams:
 
 
 @dataclass
-class Scene:
+class TextObject:
+    """One piece of 3D text: what it says, where it stands and what it's made of."""
+
+    id: int = 0  # stable and unique within a scene; the renderer keys its glyph rasters by it
     text: TextParams = field(default_factory=TextParams)
     transform: TransformParams = field(default_factory=TransformParams)
+    material: MaterialParams = field(default_factory=MaterialParams)
+
+
+@dataclass
+class Scene:
+    """The text objects plus the sections they share. There is always at least one object."""
+
+    objects: list[TextObject] = field(default_factory=lambda: [TextObject()])
     ground: GroundParams = field(default_factory=GroundParams)
     grid: GridParams = field(default_factory=GridParams)
-    material: MaterialParams = field(default_factory=MaterialParams)
     light: LightParams = field(default_factory=LightParams)
     shadow: ShadowParams = field(default_factory=ShadowParams)
     camera: CameraParams = field(default_factory=CameraParams)

@@ -18,7 +18,8 @@ from ..image_io import SUPPORTED_EXTENSIONS
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
 from ..render.grid_renderer import GridRenderer
-from ..text_raster import rasterize_text
+from ..model import TextObject, TextParams
+from ..text_raster import GlyphRaster, rasterize_text
 from ..viewmodel import SceneViewModel
 
 TEXT_DEBOUNCE_MS = 60
@@ -145,6 +146,9 @@ class ImageCanvas(QOpenGLWidget):
         self.compositor: Compositor | None = None
         self.grid_renderer: GridRenderer | None = None
         self._glyph_dirty = True
+        # Each object's raster with the text it was made from, so only objects whose text changed re-rasterize.
+        self._rasters: dict[int, tuple[TextParams, GlyphRaster | None]] = {}
+        self._unsent: set[int] = set()  # rasterized but not yet uploaded to the compositor
         self._background_dirty = True
         self._drag_origin: QPointF | None = None  # previous cursor position (yaw drags are incremental)
         self._drag_press: QPointF | None = None
@@ -156,10 +160,10 @@ class ImageCanvas(QOpenGLWidget):
         self._roll_pivot: tuple[float, float] | None = None
         self._offset_start: tuple[float, float] | None = None
         self.fit_corners: list[tuple[float, float]] | None = None  # fractions of the image rect
-        self._pose_base = None  # (ground, transform) when a ground-changing drag began; text re-places from it
+        self._pose_base = None  # placement snapshot when a ground-changing drag began; the text re-places from it
         # Fit Rectangle re-places the text from the start of the whole tracing session, since corners are
         # dragged one at a time and the shape is only meaningful once all four are on the rectangle.
-        self._fit_settled = None  # (ground, transform) right after the last fit, to notice outside edits
+        self._fit_settled = None  # placement snapshot right after the last fit, to notice outside edits
         self.fit_overlay = FitHandlesOverlay(self)
         self.fit_valid = True
         self._fit_handle: int | None = None
@@ -169,6 +173,8 @@ class ImageCanvas(QOpenGLWidget):
         self._text_timer.timeout.connect(self._mark_glyph_dirty)
         self.vm.scene_changed.connect(lambda *_: self.update())
         self.vm.text_changed.connect(self._text_timer.start)
+        self.vm.objects_changed.connect(self._mark_glyph_dirty)  # new objects show at once, without the debounce
+        self.vm.selection_changed.connect(lambda *_: self.update())
         self.vm.background_changed.connect(self._mark_background_dirty)
 
         self.empty_state = EmptyStateOverlay(self)
@@ -190,6 +196,7 @@ class ImageCanvas(QOpenGLWidget):
     def initializeGL(self) -> None:
         self.compositor = Compositor()
         self.grid_renderer = GridRenderer(self.compositor.quad)
+        self._unsent = set(self._rasters)  # a new context starts without glyphs
         self.context().aboutToBeDestroyed.connect(self._release_gl)
 
     def paintGL(self) -> None:
@@ -203,8 +210,9 @@ class ImageCanvas(QOpenGLWidget):
         self.compositor.render(self.vm.scene, self.defaultFramebufferObject(), rect)
         if self.vm.scene.grid.visible:
             # Editor overlay: drawn here, after the composite, so exports never contain it.
+            obj = self.vm.selected_object
             self.grid_renderer.render(
-                self.vm.scene, self.compositor.text.raster, self.defaultFramebufferObject(), rect, dpr
+                self.vm.scene, obj, self.compositor.glyph_raster(obj.id), self.defaultFramebufferObject(), rect, dpr
             )
         self._track_fps()
 
@@ -217,7 +225,29 @@ class ImageCanvas(QOpenGLWidget):
                 self.error.emit(str(exc))
         if self._glyph_dirty:
             self._glyph_dirty = False
-            self.compositor.set_glyph(rasterize_text(self.vm.scene.text))
+            self._update_rasters()
+        self.compositor.retain_glyphs(self._rasters)
+        for object_id in self._unsent:
+            self.compositor.set_glyph(object_id, self._rasters[object_id][1])
+        self._unsent.clear()
+
+    def _update_rasters(self) -> None:
+        """Re-rasterizes the objects whose text changed since their last raster, and forgets deleted ones."""
+        objects = self.vm.scene.objects
+        ids = {obj.id for obj in objects}
+        for object_id in [i for i in self._rasters if i not in ids]:
+            del self._rasters[object_id]
+            self._unsent.discard(object_id)
+        for obj in objects:
+            cached = self._rasters.get(obj.id)
+            if cached is None or cached[0] != obj.text:
+                self._rasterize(obj)
+
+    def _rasterize(self, obj: TextObject) -> GlyphRaster | None:
+        raster = rasterize_text(obj.text)
+        self._rasters[obj.id] = (dataclasses.replace(obj.text), raster)
+        self._unsent.add(obj.id)
+        return raster
 
     def _release_gl(self) -> None:
         self.makeCurrent()
@@ -319,6 +349,7 @@ class ImageCanvas(QOpenGLWidget):
         self.tool_changed.emit(tool)
 
     # ----- Mouse interaction --------------------------------------------------------------------
+    # Press: select the object under the cursor; every gesture acts on the selected object
     # Drag: move the text on screen, keeping its on-screen size    Shift+drag: lock to horizontal/vertical
     # Option/Alt+drag: slide along the ground in perspective        Cmd/Ctrl+drag or right drag: yaw
     # Wheel or pinch: scale                                         Cmd/Ctrl+wheel: nearer/farther
@@ -332,10 +363,16 @@ class ImageCanvas(QOpenGLWidget):
             if self._pose_snapshot() != self._fit_settled:
                 self._capture_pose_base()  # something else moved the ground or text since the last fit
             return
+        # A press on an object selects it; elsewhere the selection stays, so the drag still moves it. With one
+        # object there is nothing to choose, which also spares a raster for a canvas that never painted.
+        if len(self.vm.scene.objects) > 1:
+            index = self.object_at(event.position())
+            if index is not None:
+                self.vm.select(index)
         self._drag_origin = self._drag_press = event.position()
         self._drag_mode = self._text_drag_mode(event)
         self._drag_ground_start = self.ground_point_at(event.position())
-        self._drag_transform = dataclasses.replace(self.vm.scene.transform)
+        self._drag_transform = dataclasses.replace(self.vm.selected_object.transform)
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     @staticmethod
@@ -387,6 +424,33 @@ class ImageCanvas(QOpenGLWidget):
             self._slide_text_to(position)
         else:
             self._move_text_on_screen(position)
+
+    def object_at(self, position: QPointF) -> int | None:
+        """Index of the nearest object whose ink is under a widget position, or None.
+
+        Tests the cursor ray against each object's front face and its glyph mask, so a press in a letter's
+        counter (the hole of an O) or between letters goes through to whatever is behind.
+        """
+        pixel = self._image_pixel(position)
+        _, _, rect_w, rect_h = self._image_rect()
+        if not (0 <= pixel[0] <= rect_w and 0 <= pixel[1] <= rect_h):
+            return None
+        scene = self.vm.scene
+        ray = math3d.image_ray(pixel, scene.camera.fov, (rect_w, rect_h))
+        nearest, nearest_distance = None, np.inf
+        for index, obj in enumerate(scene.objects):
+            hit = ground_model.text_face_hit(scene.ground, obj.transform, ray)
+            if hit is None or hit[0] >= nearest_distance:
+                continue
+            raster = self._raster_of(obj)
+            if raster is not None and raster.covers(hit[1], hit[2]):
+                nearest, nearest_distance = index, hit[0]
+        return nearest
+
+    def _raster_of(self, obj: TextObject) -> GlyphRaster | None:
+        """The raster on screen for `obj` (it can lag the text by the debounce), made now if it has none yet."""
+        cached = self._rasters.get(obj.id)
+        return cached[1] if cached is not None else self._rasterize(obj)
 
     def _locked_to_axis(self, position: QPointF) -> QPointF:
         """The cursor position with the smaller of its horizontal and vertical motion since the press removed."""
@@ -445,7 +509,7 @@ class ImageCanvas(QOpenGLWidget):
             cell = self.vm.scene.grid.cell_size * factor
             self.vm.set("grid", "cell_size", float(np.clip(cell, MIN_CELL, MAX_CELL)))
         elif self.tool == TEXT_TOOL:
-            self.vm.set("transform", "size", self.vm.scene.transform.size * factor)
+            self.vm.set("transform", "size", self.vm.selected_object.transform.size * factor)
 
     # ----- Grid tool --------------------------------------------------------------------------
     # Drag the horizon's middle: tilt   Drag its outer ends: roll around its center
@@ -455,8 +519,7 @@ class ImageCanvas(QOpenGLWidget):
         self._pose_base = self._pose_snapshot()
 
     def _pose_snapshot(self):
-        scene = self.vm.scene
-        return (dataclasses.replace(scene.ground), dataclasses.replace(scene.transform))
+        return self.vm.placement_snapshot()
 
     def _grid_press(self, event) -> None:
         self._drag_origin = event.position()

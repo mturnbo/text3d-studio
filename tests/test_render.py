@@ -27,14 +27,22 @@ def make_document(width=640, height=400, **scene_overrides) -> Document:
     background[..., 3] = 255
     doc.background = background
     for section, values in scene_overrides.items():
+        owner = doc.scene.objects[0] if section in ("text", "transform", "material") else doc.scene
         for name, value in values.items():
-            setattr(getattr(doc.scene, section), name, value)
+            setattr(getattr(owner, section), name, value)
     return doc
+
+
+def upload_glyphs(compositor, doc):
+    """Rasterizes and uploads every object's text, and frees glyphs of objects no longer in the scene."""
+    compositor.retain_glyphs({obj.id for obj in doc.scene.objects})
+    for obj in doc.scene.objects:
+        compositor.set_glyph(obj.id, rasterize_text(obj.text))
 
 
 def render(compositor, doc):
     compositor.set_background(doc.background)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    upload_glyphs(compositor, doc)
     return render_document(compositor, doc)
 
 
@@ -90,7 +98,7 @@ def test_lighting_azimuth_changes_text_shading(compositor):
 def test_render_without_background_uses_default_canvas(compositor):
     doc = Document()
     compositor.set_background(None)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    upload_glyphs(compositor, doc)
     assert render_document(compositor, doc).shape == (1000, 1600, 4)
 
 
@@ -107,7 +115,7 @@ def test_interactive_frame_rate_exceeds_30_fps(compositor, gl_context):
 
     doc = make_document(width=1600, height=1000)
     compositor.set_background(doc.background)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    upload_glyphs(compositor, doc)
     target = RenderTarget(1600, 1000, samples=4)
     try:
         compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
@@ -115,7 +123,7 @@ def test_interactive_frame_rate_exceeds_30_fps(compositor, gl_context):
         frames = 30
         start = time.perf_counter()
         for i in range(frames):
-            doc.scene.transform.rot_y = -40 + i  # simulate a slider drag
+            doc.scene.objects[0].transform.rot_y = -40 + i  # simulate a slider drag
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         fps = frames / (time.perf_counter() - start)
@@ -128,37 +136,38 @@ def test_layer_count_auto_increases_when_extrusion_spans_many_pixels():
     from text3d_studio.render.text3d_renderer import MAX_LAYERS, Text3DRenderer
 
     doc = make_document()
-    doc.scene.transform.layers = 8
-    doc.scene.transform.depth = 0.5
-    assert Text3DRenderer.effective_layers(doc.scene, 4000) > 8
-    doc.scene.transform.z = -1000
-    assert Text3DRenderer.effective_layers(doc.scene, 400) == 8  # far away: user count suffices
-    doc.scene.transform.z = -0.01
-    assert Text3DRenderer.effective_layers(doc.scene, 4000) == MAX_LAYERS
-    doc.scene.transform.depth = 0.0
-    assert Text3DRenderer.effective_layers(doc.scene, 4000) == 1
+    doc.scene.objects[0].transform.layers = 8
+    doc.scene.objects[0].transform.depth = 0.5
+    assert Text3DRenderer.effective_layers(doc.scene, doc.scene.objects[0].transform, 4000) > 8
+    doc.scene.objects[0].transform.z = -1000
+    assert Text3DRenderer.effective_layers(doc.scene, doc.scene.objects[0].transform, 400) == 8  # far away: user count suffices
+    doc.scene.objects[0].transform.z = -0.01
+    assert Text3DRenderer.effective_layers(doc.scene, doc.scene.objects[0].transform, 4000) == MAX_LAYERS
+    doc.scene.objects[0].transform.depth = 0.0
+    assert Text3DRenderer.effective_layers(doc.scene, doc.scene.objects[0].transform, 4000) == 1
 
 
 # ----- Grid overlay (preview only) ----------------------------------------------------------------
 
 
-def render_preview(compositor, doc, with_grid):
-    """Composite plus (optionally) the grid overlay into an offscreen target, like the canvas does."""
+def render_preview(compositor, doc, with_grid, selected=0):
+    """Composite plus (optionally) the grid overlay for the selected object into an offscreen target, like the
+    canvas does."""
     from OpenGL import GL
 
     from text3d_studio.render.gl_utils import RenderTarget
     from text3d_studio.render.grid_renderer import GridRenderer
 
     height, width = doc.background.shape[:2]
-    raster = rasterize_text(doc.scene.text)
     compositor.set_background(doc.background)
-    compositor.set_glyph(raster)
+    upload_glyphs(compositor, doc)
+    obj = doc.scene.objects[selected]
     target = RenderTarget(width, height, 0)
     grid = GridRenderer(compositor.quad)
     try:
         compositor.render(doc.scene, target.fbo, (0, 0, width, height))
         if with_grid:
-            grid.render(doc.scene, raster, target.fbo, (0, 0, width, height))
+            grid.render(doc.scene, obj, compositor.glyph_raster(obj.id), target.fbo, (0, 0, width, height))
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         data = GL.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
@@ -232,17 +241,17 @@ def test_preview_with_grid_still_exceeds_30_fps(compositor):
 
     doc = grid_document(ground={"pitch": 8.0})
     doc.background = make_document(width=1600, height=1000).background
-    raster = rasterize_text(doc.scene.text)
+    raster = rasterize_text(doc.scene.objects[0].text)
     compositor.set_background(doc.background)
-    compositor.set_glyph(raster)
+    compositor.set_glyph(doc.scene.objects[0].id, raster)
     target, grid = RenderTarget(1600, 1000, samples=4), GridRenderer(compositor.quad)
     try:
         GL.glFinish()
         start = time.perf_counter()
         for i in range(30):
-            doc.scene.transform.rot_y = -40 + i
+            doc.scene.objects[0].transform.rot_y = -40 + i
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
-            grid.render(doc.scene, raster, target.fbo, (0, 0, 1600, 1000))
+            grid.render(doc.scene, doc.scene.objects[0], raster, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         fps = 30 / (time.perf_counter() - start)
     finally:
@@ -354,7 +363,7 @@ def test_neutral_materials_stay_neutral_at_grazing_angles(compositor, kind):
     doc = material_document(background_rgb=(128, 128, 128), **{**PRESETS[kind], "face_color": neutral, "side_color": neutral})
     doc.scene.light.color = (1.0, 1.0, 1.0)
     doc.scene.light.ambient_color = (1.0, 1.0, 1.0)
-    doc.scene.transform.rot_y = -60  # plenty of grazing side walls
+    doc.scene.objects[0].transform.rot_y = -60  # plenty of grazing side walls
     pixels = text_pixels(compositor, doc)
     saturation = (pixels.max(-1) - pixels.min(-1)) / np.maximum(pixels.max(-1), 1)
     assert saturation.max() < 0.2
@@ -406,14 +415,14 @@ def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
     doc = make_document(width=1600, height=1000, material={**PRESETS[kind], "kind": kind},
                         transform={"size": 6.0, "depth": 1.2, "z": -10.0})
     compositor.set_background(doc.background)
-    compositor.set_glyph(rasterize_text(doc.scene.text))
+    upload_glyphs(compositor, doc)
     target = RenderTarget(1600, 1000, samples=4)
     try:
         compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         start = time.perf_counter()
         for i in range(20):
-            doc.scene.transform.rot_y = -40 + i
+            doc.scene.objects[0].transform.rot_y = -40 + i
             compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
         GL.glFinish()
         fps = 20 / (time.perf_counter() - start)
@@ -430,8 +439,8 @@ def textured_document(kind, **material):
     from text3d_studio.materials import PRESETS
 
     doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
-    doc.scene.transform.rot_y = 0.0  # face the camera so the face fills most of the text
-    doc.scene.transform.size = 4.0
+    doc.scene.objects[0].transform.rot_y = 0.0  # face the camera so the face fills most of the text
+    doc.scene.objects[0].transform.size = 4.0
     doc.scene.light.reflect_photo = False
     return doc
 
@@ -503,22 +512,22 @@ def test_shadow_color_lightens_and_tints_only_for_transmissive_materials(kind, e
     from text3d_studio.render.shadow_renderer import shadow_color
 
     doc = make_document(material={"kind": kind, "face_color": (0.8, 0.9, 1.0)}, shadow={"color": (0.0, 0.0, 0.0)})
-    assert shadow_color(doc.scene) == pytest.approx(expected)
+    assert shadow_color(doc.scene.shadow, doc.scene.objects[0].material) == pytest.approx(expected)
 
 
 def test_glass_shadow_keeps_a_custom_shadow_color_in_proportion():
     from text3d_studio.render.shadow_renderer import shadow_color
 
     doc = make_document(material={"kind": "glass", "face_color": (1.0, 1.0, 1.0)}, shadow={"color": (0.2, 0.4, 0.6)})
-    assert shadow_color(doc.scene) == pytest.approx((0.72, 0.79, 0.86))
+    assert shadow_color(doc.scene.shadow, doc.scene.objects[0].material) == pytest.approx((0.72, 0.79, 0.86))
 
 
 def glass_document(kind="glass", background=None, **material):
     from text3d_studio.materials import PRESETS
 
     doc = material_document(**{**PRESETS[kind], "kind": kind, **material})
-    doc.scene.transform.rot_y = 0.0
-    doc.scene.transform.size = 4.0
+    doc.scene.objects[0].transform.rot_y = 0.0
+    doc.scene.objects[0].transform.size = 4.0
     doc.scene.light.reflect_photo = False  # opaque materials then ignore the photo entirely
     if background is not None:
         doc.background = background
@@ -660,3 +669,172 @@ def test_preview_without_multisampling_still_antialiases_text_edges(compositor):
     assert compositor.text_layer.samples >= 4
     alpha = read_text_layer(compositor)[..., 3]
     assert ((alpha > 0) & (alpha < 255)).sum() > 200
+
+
+# ----- Multiple text objects ----------------------------------------------------------------------
+
+
+def text_object(object_id, content="HI", material="plastic", **transform):
+    from text3d_studio.materials import PRESETS
+    from text3d_studio.model import MaterialParams, TextObject, TextParams, TransformParams
+
+    return TextObject(
+        id=object_id,
+        text=TextParams(content=content),
+        transform=TransformParams(**{"rot_y": 0.0, "size": 2.0, **transform}),
+        material=MaterialParams(**{**PRESETS[material], "kind": material}),
+    )
+
+
+def scene_of(*objects, **overrides):
+    doc = make_document(**{"shadow": {"enabled": False}, **overrides})
+    doc.scene.objects = list(objects)
+    return doc
+
+
+def eroded(mask, erode=2):
+    interior = mask.copy()
+    for axis in (0, 1):
+        for shift in range(1, erode + 1):
+            interior &= np.roll(mask, shift, axis) & np.roll(mask, -shift, axis)
+    return interior
+
+
+@pytest.mark.parametrize("kind", ["plastic", "glass"])
+def test_every_object_is_drawn(compositor, kind):
+    left, right = text_object(0, x=-3.0), text_object(1, material=kind, x=3.0)
+    alone_left = changed_mask(render(compositor, scene_of(left)))
+    alone_right = changed_mask(render(compositor, scene_of(right)))
+    both = changed_mask(render(compositor, scene_of(left, right)))
+    assert alone_left.sum() > 2000 and alone_right.sum() > 2000
+    assert not (alone_left & alone_right).any()  # side by side
+    assert np.mean(both != (alone_left | alone_right)) < 1e-3
+
+
+def test_a_nearer_object_hides_a_farther_one_whatever_the_order(compositor):
+    far = text_object(0, content="WW", z=-16.0, size=3.0)
+    near = text_object(1, content="O", material="metal", x=0.6, z=-9.0)
+    near_alone = render(compositor, scene_of(near))
+    far_alone = changed_mask(render(compositor, scene_of(far)))
+    near_interior = eroded(changed_mask(near_alone))
+    overlap = near_interior & far_alone
+    assert overlap.sum() > 500
+    for doc in (scene_of(far, near), scene_of(near, far)):
+        both = render(compositor, doc)
+        np.testing.assert_array_equal(both[near_interior], near_alone[near_interior])
+        assert changed_mask(both)[far_alone & ~changed_mask(near_alone)].all()  # the rest of the far one shows
+
+
+def test_every_object_casts_a_shadow(compositor):
+    light = {"azimuth": -110, "elevation": 30}
+    shadow = {"softness": 0.1, "opacity": 0.8}
+    left, right = text_object(0, x=-4.0), text_object(1, material="metal", x=4.0)
+
+    def shaded(*objects):
+        lit = render(compositor, scene_of(*objects, light=light))
+        dark = render(compositor, scene_of(*objects, light=light, shadow=shadow))
+        return luminance(lit) - luminance(dark) > 10, changed_mask(lit)
+
+    shadow_left, _ = shaded(left)
+    shadow_right, _ = shaded(right)
+    shadow_both, text_both = shaded(left, right)
+    for alone in (shadow_left, shadow_right):
+        alone = alone & ~text_both
+        assert alone.sum() > 500
+        assert (shadow_both & alone).sum() >= 0.98 * alone.sum()
+
+
+def test_each_object_tints_its_own_shadow(compositor):
+    light = {"azimuth": -110, "elevation": 30}
+    shadow = {"softness": 0.1, "opacity": 0.8, "color": (0.0, 0.0, 0.0)}
+    glass, solid = text_object(0, material="glass", x=-4.0), text_object(1, x=4.0)
+    glass.material.face_color = (0.2, 0.4, 1.0)
+
+    def darkening(*objects):
+        lit = render(compositor, scene_of(*objects, light=light))
+        dark = render(compositor, scene_of(*objects, light=light, shadow=shadow))
+        return lit[..., :3].astype(float) - dark[..., :3].astype(float), changed_mask(lit)
+
+    glass_only, _ = darkening(glass)
+    solid_only, _ = darkening(solid)
+    both, text = darkening(glass, solid)
+    glass_shadow = (glass_only.sum(-1) > 30) & ~text
+    solid_shadow = (solid_only.sum(-1) > 30) & ~text & ~glass_shadow
+    assert glass_shadow.sum() > 300 and solid_shadow.sum() > 300
+    glass_rgb, solid_rgb = both[glass_shadow].mean(0), both[solid_shadow].mean(0)
+    assert glass_rgb[0] > glass_rgb[2] + 10  # blue light passes through the tinted glass, so it darkens red most
+    assert abs(solid_rgb[0] - solid_rgb[2]) < 0.25 * solid_rgb.mean() + 5  # a black shadow darkens evenly
+    np.testing.assert_allclose(both[glass_shadow], glass_only[glass_shadow], atol=2)  # unchanged by the other
+
+
+def test_deleting_an_object_removes_it_from_the_render(compositor):
+    keep, drop = text_object(0, x=-3.0), text_object(1, x=3.0)
+    doc = scene_of(keep, drop)
+    render(compositor, doc)
+    assert set(compositor.glyphs) == {0, 1}
+    doc.scene.objects.remove(drop)
+    after = render(compositor, doc)  # frees the dropped object's glyph, like the canvas
+    assert set(compositor.glyphs) == {0}
+    np.testing.assert_array_equal(after, render(compositor, scene_of(keep)))
+
+
+def test_an_object_without_ink_draws_nothing_and_hides_nothing(compositor):
+    shown, empty = text_object(0), text_object(1, content="  ", z=-4.0, size=6.0)
+    with_empty = render(compositor, scene_of(shown, empty))
+    assert set(compositor.glyphs) == {0}
+    np.testing.assert_array_equal(with_empty, render(compositor, scene_of(shown)))
+
+
+def test_set_glyph_replaces_and_removes_an_objects_glyph(compositor):
+    from text3d_studio.model import TextParams
+
+    first, second = rasterize_text(TextParams(content="A")), rasterize_text(TextParams(content="BCD"))
+    compositor.set_glyph(5, first)
+    glyph = compositor.glyphs[5]
+    compositor.set_glyph(5, second)
+    assert compositor.glyphs[5] is glyph and compositor.glyph_raster(5) is second  # re-uploaded in place
+    compositor.set_glyph(5, None)
+    assert 5 not in compositor.glyphs and compositor.glyph_raster(5) is None
+    compositor.set_glyph(6, None)  # removing what isn't there is fine
+    assert compositor.glyphs == {}
+
+
+def test_grid_lanes_follow_the_selected_object(compositor):
+    doc = scene_of(text_object(0, x=-5.0), text_object(1, x=5.0, rot_y=35.0),
+                   grid={"visible": True, "opacity": 1.0, "color": (0.0, 0.0, 1.0), "accent_color": (1.0, 0.0, 0.0)},
+                   ground={"pitch": 10.0})
+    plain = render_preview(compositor, doc, False).astype(int)
+
+    def lane_columns(selected):
+        moved = render_preview(compositor, doc, True, selected).astype(int) - plain
+        accent = (moved[..., 0] > 20) & (moved[..., 2] < 0)  # redder: the accent, not the blue grid lines
+        assert accent.sum() > 300
+        return np.nonzero(accent)[1]
+
+    left, right = lane_columns(0), lane_columns(1)
+    width = plain.shape[1]
+    assert np.median(left) < width / 2 < np.median(right)
+
+
+def test_two_objects_stay_above_30_fps(compositor):
+    from OpenGL import GL
+
+    from text3d_studio.render.gl_utils import RenderTarget
+
+    doc = scene_of(text_object(0, material="stone", x=-3.0, depth=0.8), text_object(1, material="glass", x=3.0),
+                   width=1600, height=1000, shadow={"enabled": True})
+    compositor.set_background(doc.background)
+    upload_glyphs(compositor, doc)
+    target = RenderTarget(1600, 1000, samples=4)
+    try:
+        compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        start = time.perf_counter()
+        for i in range(20):
+            doc.scene.objects[0].transform.rot_y = -40 + i
+            compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        fps = 20 / (time.perf_counter() - start)
+    finally:
+        target.delete()
+    assert fps > 30, f"only {fps:.1f} FPS"

@@ -28,6 +28,15 @@ class GlyphRaster:
     size: tuple[float, float]  # quad size in em units
     walls: np.ndarray  # (N, 3) float32 side-wall triangles used by the shadow pass
 
+    def covers(self, x: float, y: float) -> bool:
+        """Whether the glyphs' ink covers the point (x, y) in em units (the text's local space)."""
+        u = (x - self.origin[0]) / self.size[0]
+        v = (y - self.origin[1]) / self.size[1]
+        if not (0.0 <= u < 1.0 and 0.0 < v <= 1.0):
+            return False
+        height, width = self.rgba.shape[:2]
+        return bool(self.rgba[int((1.0 - v) * height), int(u * width), 3] >= 128)  # row 0 is the top
+
 
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
     text = params.content

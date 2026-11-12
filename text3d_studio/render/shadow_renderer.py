@@ -4,10 +4,10 @@ from OpenGL import GL
 
 from ..lighting import LightingState
 from ..materials import TRANSMISSION
-from ..model import Scene
+from ..model import MaterialParams, Scene, ShadowParams, TextObject
 from . import shaders
 from .gl_utils import ColorTarget, ShaderProgram, UnitQuad
-from .text3d_renderer import Text3DRenderer
+from .text3d_renderer import Glyph, Text3DRenderer
 
 BLUR_TAPS = 12  # one-sided tap count in BLUR_FS
 BLUR_ITERATIONS = 2
@@ -18,11 +18,15 @@ class ShadowRenderer:
         self.quad = quad
         self.blur = ShaderProgram(shaders.FULLSCREEN_VS, shaders.BLUR_FS)
         self.composite = ShaderProgram(shaders.FULLSCREEN_VS, shaders.SHADOW_COMPOSITE_FS)
-        self.ping = ColorTarget()
-        self.pong = ColorTarget()
+        # RGB: each channel's darkening, so every object's shadow keeps its own tint (see shadow_color).
+        self.ping = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
+        self.pong = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
 
-    def render_mask(self, text: Text3DRenderer, scene: Scene, proj, lighting: LightingState, viewport) -> None:
-        """Renders the blurred shadow mask at half the viewport resolution into self.ping."""
+    def render_mask(
+        self, text: Text3DRenderer, scene: Scene, casters: list[tuple[TextObject, Glyph]], proj,
+        lighting: LightingState, viewport,
+    ) -> None:
+        """Renders every caster's shadow into one blurred mask at half the viewport resolution, in self.ping."""
         _, _, width, height = viewport
         sw, sh = max(1, width // 2), max(1, height // 2)
         self.ping.resize(sw, sh)
@@ -35,7 +39,9 @@ class ShadowRenderer:
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendEquation(GL.GL_MAX)
         GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE)
-        text.draw_shadow_caster(scene, proj, lighting)
+        for obj, glyph in casters:
+            darken = tuple(1.0 - c for c in shadow_color(scene.shadow, obj.material))
+            text.draw_shadow_caster(scene, obj, glyph, proj, lighting, darken)
         GL.glBlendEquation(GL.GL_FUNC_ADD)
         GL.glDisable(GL.GL_BLEND)
 
@@ -63,7 +69,6 @@ class ShadowRenderer:
         self.ping.texture.bind(0)
         self.composite.set_int("u_image", 0)
         self.composite.set_int("u_flip_y", 0)
-        self.composite.set_vec3("u_color", shadow_color(scene))
         self.composite.set_float("u_opacity", scene.shadow.opacity)
         self.quad.draw()
         GL.glDisable(GL.GL_BLEND)
@@ -75,9 +80,9 @@ class ShadowRenderer:
         self.pong.delete()
 
 
-def shadow_color(scene: Scene) -> tuple[float, float, float]:
-    """The shadow's color at full strength. Light passing through a transmissive material lightens the
-    shadow and takes on the material's tint."""
-    transmission = TRANSMISSION.get(scene.material.kind, 0.0)
-    tint = scene.material.face_color
-    return tuple(s * (1 - transmission) + t * transmission for s, t in zip(scene.shadow.color, tint))
+def shadow_color(shadow: ShadowParams, material: MaterialParams) -> tuple[float, float, float]:
+    """The color of an object's shadow at full strength. Light passing through a transmissive material lightens
+    the shadow and takes on the material's tint."""
+    transmission = TRANSMISSION.get(material.kind, 0.0)
+    tint = material.face_color
+    return tuple(s * (1 - transmission) + t * transmission for s, t in zip(shadow.color, tint))

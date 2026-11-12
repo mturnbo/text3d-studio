@@ -23,23 +23,32 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 ## Architecture (MVVM)
 
 ```
-model.py            Pure dataclasses: Scene{text, transform, ground, grid, material, light, shadow, camera}, Document.
-                    No Qt, no OpenGL. Document.native_size is the export size.
+model.py            Pure dataclasses: Scene{objects: [TextObject{id, text, transform, material}], ground, grid,
+                    light, shadow, camera}, Document. No Qt, no OpenGL. Document.native_size is the export size.
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
-                      signals: scene_changed(section, field), text_changed(), background_changed()
+                      "text", "transform" and "material" (OBJECT_SECTIONS) address the SELECTED object
+                      (vm.selected, vm.selected_object: editor state); other sections are shared by the scene
+                      add_object() / duplicate_object() / delete_object() / select(index)
+                      signals: scene_changed(section, field), text_changed(), background_changed(),
+                               objects_changed(), selection_changed(index)
 views/              Qt widgets only. Never touch GL state or numpy image math here.
   main_window.py      menus, status bar, file dialogs
-  control_panel.py    declarative slider/colour/checkbox layout, two-way bound to the ViewModel
+  control_panel.py    Objects list (Add / Duplicate / Delete) + declarative slider/colour/checkbox layout,
+                      two-way bound to the ViewModel; a selection change refreshes every per-object control
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
+                      Keeps a CPU raster per object id (re-rasterized only when that object's text changes),
+                      uploads them to the compositor and uses them to pick objects under the cursor.
                       Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL), which is editor state, not
                       scene state. FitHandlesOverlay (a plain child widget) draws the fit handles
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
-  text3d_renderer.py  instanced layer stack (beauty) + shadow casters (caps + side walls)
-  shadow_renderer.py  half-res shadow mask → separable Gaussian blur → multiply composite
-  compositor.py       frame orchestration: background → shadow → text layer (drawn alone, composited over)
+  text3d_renderer.py  instanced layer stack (beauty) + shadow casters (caps + side walls), one object at a time;
+                      Glyph = one object's mask texture + wall triangles
+  shadow_renderer.py  half-res shadow mask (all objects) → separable Gaussian blur → multiply composite
+  compositor.py       frame orchestration: background → shadow → text layer (every object, composited over).
+                      Holds a Glyph per object id: set_glyph(id, raster|None), retain_glyphs(ids)
   exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
   grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
                       vanishing-point rings. Drawn by ImageCanvas after Compositor.render
@@ -66,13 +75,16 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 
 1. **Background**: full-screen quad. The viewport is letterboxed to the photo's aspect ratio, and the
    projection aspect always equals the photo aspect.
-2. **Shadow** (if enabled): the casters are flattened onto the ground plane with
-   `math3d.planar_shadow_matrix`, rendered at half resolution into an R8 target with `GL_MAX`
-   blending (strength fades with height above the ground, controlled by `shadow.falloff`). The
-   result is blurred twice in each direction, then **multiplied** onto the background.
-3. **Text**: the glyph quad is drawn as one instanced call, with `layers` instances. Instance 0 is the
-   beveled face, the middle instances are side walls (normal = outward edge direction, darkening
-   with depth) and the last instance is the back cap. Depth test is on, with alpha-to-coverage.
+2. **Shadow** (if enabled): every object's casters are flattened onto the ground plane with
+   `math3d.planar_shadow_matrix` and rendered at half resolution into one RGBA8 mask with `GL_MAX`
+   blending (strength fades with height above the ground, controlled by `shadow.falloff`). Each object
+   writes its strength × `1 − shadow_color(shadow, its material)` per channel, so a glass object's shadow
+   keeps its own tint next to an opaque one. The mask is blurred twice in each direction, then the
+   background is **multiplied** by `1 − opacity × mask`.
+3. **Text**: each object's glyph quad is drawn as one instanced call, with `layers` instances. Instance 0 is
+   the beveled face, the middle instances are side walls (normal = outward edge direction, darkening
+   with depth) and the last instance is the back cap. All objects share the text layer's depth buffer, so
+   nearer objects hide farther ones whatever their order. Alpha-to-coverage is on.
 
 ### Coordinate conventions
 
@@ -89,10 +101,11 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - The light is defined in the ground's **tilt frame** (`ground.light_frame`, pitch and roll only):
   azimuth 0 = toward the camera, elevation measured from the ground. Grid yaw and text yaw don't move
   the light, but tilting the ground does.
-- **Ground edits keep the text where it appears.** `SceneViewModel.set("ground", …)` calls
-  `ground.reanchor_text`. The text's anchor stays on the same camera ray, `size` scales with its distance
-  along that ray (so apparent size is kept), and text yaw offsets grid yaw. Expect `transform.x/z/rot_y/size`
-  change events after any ground edit. If the ray misses the new ground, the text is left as is.
+- **Ground edits keep every object where it appears.** `SceneViewModel.set("ground", …)` calls
+  `ground.reanchor_text` for each object. Its anchor stays on the same camera ray, `size` scales with its
+  distance along that ray (so apparent size is kept), and text yaw offsets grid yaw. Expect
+  `transform.x/z/rot_y/size` change events (for any object, not only the selected one) after a ground edit.
+  An object whose ray misses the new ground is left as is.
 - The default scene (pitch 0, height 1.5, text at z −12, yaw −20) renders pixel-identically to
   v0.5.0's defaults. `tests/test_ground.py` holds the legacy conversion if old values ever need migrating.
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
@@ -113,13 +126,15 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - **Procedural textures** (stone, wood) sample `NOISE_GLSL` at `v_local` (text space, em units), so
   patterns are continuous from face to side walls and stick to the text. Relief (bump) only runs on the
   front and back slices. `u_pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
-- **Glass** (kinds in `materials.TRANSMISSION`). Before drawing the text, the compositor blits the
-  viewport (background + shadow, MSAA resolved) into the mipmapped `backdrop` texture. The shader samples
+- **Glass** (kinds in `materials.TRANSMISSION`). Before drawing any text, the compositor blits the
+  viewport (background + shadow, MSAA resolved) into the mipmapped `backdrop` texture, once per frame for
+  all glass objects. So glass doesn't show the other text objects behind it. The shader samples
   it along the refracted ray (IOR 1.5, `REFRACTION_DEPTH` em behind the surface, projected back to the
   screen), blurs it by roughness (shown as **Frost**), tints it by Beer-Lambert absorption
   (`tint^(path × absorption)`, path = depth along the view), and splits it from the surface reflection by
   Fresnel. The output is still opaque. Glass only shows the backdrop, not the text's own far walls.
-  `shadow_renderer.shadow_color` lightens and tints the shadow by the transmission fraction.
+  `shadow_renderer.shadow_color(shadow, material)` lightens and tints that object's shadow by the transmission
+  fraction.
 - **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
   re-picking the current kind resets it. `control_panel.MATERIAL_CONTROLS` lists the fields shown per kind,
   and `MATERIAL_LABELS` renames them (glass: Tint / Edge tint / Tint depth / Frost). `metallic` is set by the kind and never shown.
@@ -149,8 +164,12 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - **Keep samplers complete.** Upload a 1×1 placeholder before real data. An incomplete bound texture
   triggers macOS "unloadable texture" warnings.
 - **Rasterizing is CPU work (~0.2 s).** Only `text.{content, font_family, bold, italic, bevel_width}`
-  (`viewmodel.RASTER_FIELDS`) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`).
-  Everything else is a uniform and must stay cheap. Never re-rasterize per frame.
+  (`viewmodel.RASTER_FIELDS`) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`). The canvas
+  compares each object's `TextParams` with the one its raster came from, so only changed objects
+  re-rasterize; added objects skip the debounce (`objects_changed`). Everything else is a uniform and must
+  stay cheap. Never re-rasterize per frame.
+- **Object ids key the rasters and glyphs**, not list indices (which shift on delete). The viewmodel never
+  reuses an id, so a stale cache entry can't match a new object.
 - **PyQt signal arguments.** `QAction.triggered` and `QAbstractButton.clicked` pass a `checked`
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
 - **Never write alpha < 1 into the canvas framebuffer.** Qt composites the QOpenGLWidget as premultiplied
@@ -195,12 +214,19 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 
 | Tool | Left-drag | Right-drag | Wheel |
 |---|---|---|---|
-| **Move Text** (V) | move text on screen at constant on-screen size (size rescales with distance) · Shift: lock to dominant axis · Option/Alt: slide on the ground in perspective (grabbed point stays under the cursor) · Cmd/Ctrl: yaw | text yaw | size (pinch too); Ctrl/Cmd: distance |
+| **Move Text** (V) | press: select the object under the cursor (empty ground keeps the selection) · drag: move the selected object on screen at constant on-screen size (size rescales with distance) · Shift: lock to dominant axis · Option/Alt: slide on the ground in perspective (grabbed point stays under the cursor) · Cmd/Ctrl: yaw | text yaw | size (pinch too); Ctrl/Cmd: distance |
 | **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
 | **Fit Rectangle** (R) | drag the 4 corner handles onto a rectangle in the photo; the ground is solved live (`ground.fit_ground_to_rectangle`) | — | — |
 
 Qt reports macOS's Command key as `ControlModifier` and Option as `AltModifier`. The drag mode is fixed on
-press; Shift can be toggled mid-drag. Pinch arrives as a native gesture, caught by `PinchFilter`.
+press; Shift can be toggled mid-drag. Pinch arrives as a native gesture, caught by `PinchFilter`. Every
+gesture acts on the selected object.
+
+**Picking** (`ImageCanvas.object_at`) is CPU only: the cursor ray meets each object's front-face plane
+(`ground.text_face_hit`, local em coordinates), `GlyphRaster.covers` tests the mask's alpha there, and the
+nearest hit wins. Letter counters and gaps between letters fall through to whatever is behind. Side walls
+aren't pickable. With a single object no picking runs (nothing to choose, and no raster is needed). The grid
+overlay's footprint, lanes and vanishing points follow the selected object.
 
 **Control panel input:** `WheelGuard` sends the wheel to the panel's scroll bar unless the control under the
 pointer has focus (sliders, spin boxes and combos are click/Tab focus only). `LetterShortcuts` keeps a
@@ -208,6 +234,8 @@ focused spin box from swallowing G/V/P/R.
 
 **Focus in tests:** use `activate(window, qapp)` (`QApplication.setActiveWindow`) and `setFocus()`, not
 `activateWindow()` or clicks; macOS won't hand OS focus to a test window while you're using another app.
+`activate` processes events once *before* setting the active window: a late deactivation from the previous
+test's window otherwise clears it again, which made focus tests fail depending on timing.
 
 **Tests:** an autouse fixture in `conftest.py` runs `gc.collect()` before each test. Widgets dropped by
 earlier tests otherwise die during a later canvas's paint, and destroying a GL widget switches the
@@ -222,8 +250,8 @@ either; add a filter object.
 - An impossible shape turns the handles red, reports why via `fit_status`, and keeps the last valid fit.
 
 **Drags re-place the text from where they started.** Ground-changing drags call
-`SceneViewModel.set_ground_pose(anchor=(ground, transform), …)` with the state from the press, or, for Fit
-Rectangle, from the start of the tracing session. A pose mid-drag that can't hold the text therefore can't
+`SceneViewModel.set_ground_pose(anchor=vm.placement_snapshot(), …)` (ground plus every object's transform, in
+list order) with the state from the press, or, for Fit Rectangle, from the start of the tracing session. A pose mid-drag that can't hold the text therefore can't
 strand it. Never re-anchor incrementally per mouse move.
 
 Don't draw text with QPainter inside `paintGL`. In the core-profile context the GL paint engine garbles
@@ -301,8 +329,12 @@ fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel s
 
 - Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
+- Multiple text objects (wave 0.2): no undo yet, and glass doesn't refract other text objects. New and
+  duplicated objects are placed in front of the selected one (`ground.placement_in_front`), assuming a
+  cap-height ink; very tall or descending text can still overlap a little, and near the image's bottom edge
+  the new object may be partly cut off.
 - Image opening is done (v0.5.0). `MainWindow.open_image_dialog()` asks for a file, and
   `load_image_path(path)` is the single load path used by the menu, toolbar, prompt, drops, Open Recent and the CLI.
   Image decoding is synchronous (busy cursor only). Moving it to a worker thread is a possible follow-up.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
-  multiple text objects with undo, tiled export, packaging.
+  undo, tiled export, packaging.
