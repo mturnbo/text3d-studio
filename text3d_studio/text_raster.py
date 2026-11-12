@@ -7,6 +7,7 @@ Output RGBA channels:
 """
 
 import math
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
@@ -20,6 +21,14 @@ FONT_PIXEL_SIZE = 384
 MAX_TEXTURE_WIDTH = 8192  # the mask's limit on both sides; larger text is rasterized at a smaller font size
 MIN_FONT_PIXEL_SIZE = 16
 ALIGNMENTS = {"left": 0.0, "center": 0.5, "right": 1.0}  # TextParams.align -> share of the slack put before a line
+# The layout values' allowed ranges (the panel's sliders use them too). Text params can come from a project file,
+# so rasterize_text clamps them: extreme values would otherwise defeat the size limit or crash the paint.
+LAYOUT_RANGES = {
+    "bevel_width": (1.0, 20.0),
+    "letter_spacing": (-0.1, 0.5),
+    "line_height": (0.7, 2.0),
+    "arc": (-180.0, 180.0),
+}
 WALL_STEP = 2  # outline tracing resolution (texels per step); the shadow is blurred, so coarse is fine
 
 
@@ -43,8 +52,7 @@ class GlyphRaster:
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
     """Rasterizes every line of the text, stacked downward and optionally bent along an arc. Blank lines keep
     their height; the mask is cropped to the ink, so leading and trailing blank lines don't count."""
-    if params.align not in ALIGNMENTS:
-        raise ValueError(f"Unknown text alignment: {params.align!r}")
+    params = _sanitized(params)
     if not params.content.strip():
         return None
 
@@ -70,6 +78,18 @@ def rasterize_text(params: TextParams) -> GlyphRaster | None:
         size=size,
         walls=extract_walls(cropped, origin, size),
     )
+
+
+def _sanitized(params: TextParams) -> TextParams:
+    """The params with layout values clamped to LAYOUT_RANGES; a non-finite value or an unknown alignment
+    falls back to the default."""
+    defaults = TextParams()
+    values = {}
+    for name, (low, high) in LAYOUT_RANGES.items():
+        value = getattr(params, name)
+        values[name] = min(max(value, low), high) if math.isfinite(value) else getattr(defaults, name)
+    align = params.align if params.align in ALIGNMENTS else defaults.align
+    return dataclasses.replace(params, align=align, **values)
 
 
 def extract_walls(alpha: np.ndarray, origin, size, step: int = WALL_STEP) -> np.ndarray:
@@ -193,8 +213,11 @@ def _bend(placed, font, widest, widest_baseline, angle, slack):
 
 
 def _paint_alpha(lines, glyphs, font, bounds, pad) -> np.ndarray:
-    width = int(math.ceil(bounds.width())) + 2 * pad
-    height = int(math.ceil(bounds.height())) + 2 * pad
+    # Text that still overflows at the smallest font size (very long lines) is clipped. Ink starts after the
+    # leading pad and cropping adds a pad back on each side, so leaving out one pad keeps the result in the limit.
+    cap = MAX_TEXTURE_WIDTH - pad
+    width = min(int(math.ceil(bounds.width())) + 2 * pad, cap)
+    height = min(int(math.ceil(bounds.height())) + 2 * pad, cap)
     image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
