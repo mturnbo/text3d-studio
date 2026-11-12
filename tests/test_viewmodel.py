@@ -156,7 +156,7 @@ def test_an_object_the_new_ground_cannot_hold_keeps_its_place_while_others_move(
 
 def test_placement_snapshot_is_a_copy(vm):
     vm.add_object()
-    ground, transforms = vm.placement_snapshot()
+    ground, transforms, _wall = vm.placement_snapshot()
     vm.set("ground", "pitch", 5.0)
     assert ground.pitch == 0.0
     assert all(t.z != o.transform.z for t, o in zip(transforms, vm.scene.objects))
@@ -832,3 +832,125 @@ def test_later_edits_do_not_alter_recorded_states(uvm):
     uvm.undo()
     uvm.undo()
     assert uvm.scene.objects[0].transform == Document().scene.objects[0].transform
+
+
+# ----- Wall ---------------------------------------------------------------------------------------
+
+
+def mount_on_wall(vm, wall_x=1.0, wall_y=1.5):
+    vm.set("transform", "mount", "wall")
+    vm.set("transform", "wall_x", wall_x)
+    vm.set("transform", "wall_y", wall_y)
+
+
+def screen_anchor(vm, obj):
+    from text3d_studio import ground, math3d
+
+    position = ground.text_position(vm.scene.ground, obj.transform, vm.scene.wall)
+    return math3d.project_to_image(position, vm.scene.camera.fov, (800, 500))
+
+
+def test_ground_edits_keep_wall_text_and_floor_text_in_place_on_screen(vm):
+    from text3d_studio import ground
+
+    vm.set("wall", "offset", 15.0)
+    vm.add_object()
+    mount_on_wall(vm)
+    before = [screen_anchor(vm, o) for o in vm.scene.objects]
+    apparent = [o.transform.size / np.linalg.norm(ground.text_position(vm.scene.ground, o.transform, vm.scene.wall))
+                for o in vm.scene.objects]
+    vm.set("ground", "pitch", 8.0)
+    vm.set_ground_pose(roll=4.0, yaw=12.0, height=2.0)
+    for obj, old, size in zip(vm.scene.objects, before, apparent):
+        np.testing.assert_allclose(screen_anchor(vm, obj), old, atol=1e-6)
+        distance = np.linalg.norm(ground.text_position(vm.scene.ground, obj.transform, vm.scene.wall))
+        assert obj.transform.size / distance == pytest.approx(size)
+    wall_text = vm.scene.objects[1].transform
+    point = ground.text_position(vm.scene.ground, wall_text, vm.scene.wall)
+    plane = ground.wall_plane(vm.scene.ground, vm.scene.wall)
+    assert plane[:3] @ point + plane[3] == pytest.approx(0, abs=1e-9)  # still on the (re-placed) wall
+
+
+def test_ground_edits_keep_the_walls_base_line_on_screen(vm):
+    from text3d_studio import ground, math3d
+
+    vm.set("wall", "angle", 20.0)
+    old_ground, old_wall = dataclasses.replace(vm.scene.ground), dataclasses.replace(vm.scene.wall)
+    vm.set("ground", "pitch", 10.0)
+    assert vm.scene.wall != old_wall
+    for along in (-3.0, 4.0):
+        old = math3d.project_to_image(ground.wall_to_world(old_ground, old_wall, along, 0), 40, (800, 500))
+        ray = math3d.image_ray(old, 40, (800, 500))
+        hit = math3d.intersect_ray_plane((0, 0, 0), ray, ground.ground_plane(vm.scene.ground))
+        assert ground.world_to_wall(vm.scene.ground, vm.scene.wall, hit)[1] == pytest.approx(0, abs=1e-8)
+        plane = ground.wall_plane(vm.scene.ground, vm.scene.wall)
+        assert plane[:3] @ hit + plane[3] == pytest.approx(0, abs=1e-8)
+
+
+def test_wall_text_moves_with_the_wall(vm):
+    from text3d_studio import ground
+
+    mount_on_wall(vm, wall_x=2.0, wall_y=1.0)
+    vm.set("wall", "offset", 30.0)
+    t = vm.selected_object.transform
+    assert (t.wall_x, t.wall_y) == (2.0, 1.0)
+    assert ground.world_to_wall(vm.scene.ground, vm.scene.wall, ground.text_position(vm.scene.ground, t, vm.scene.wall)) \
+        == pytest.approx((2.0, 1.0))
+
+
+def test_a_ground_edit_with_wall_text_is_one_undo_step(vm):
+    mount_on_wall(vm)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    vm.set("ground", "pitch", 6.0)
+    assert vm.scene.wall != before.wall
+    assert vm.undo()
+    assert vm.scene == before and not vm.can_undo
+
+
+def test_placement_snapshot_copies_the_wall(vm):
+    _ground, _transforms, wall = vm.placement_snapshot()
+    vm.set("wall", "angle", 33.0)
+    assert wall.angle == 0.0
+
+
+def test_duplicating_wall_text_keeps_it_on_the_wall_without_overlap(vm):
+    mount_on_wall(vm, wall_y=5.0)
+    vm.duplicate_object()
+    copy_t, original = vm.selected_object.transform, vm.scene.objects[0].transform
+    assert copy_t.mount == "wall" and copy_t.wall_x == original.wall_x and copy_t.wall_y < original.wall_y
+
+
+def test_set_mount_moves_the_selected_object_onto_the_wall_and_back_in_one_step_each(vm):
+    from text3d_studio import ground
+
+    vm.set("transform", "z", -30.0)
+    vm.clear_history()
+    floor = dataclasses.replace(vm.selected_object.transform)
+    vm.set_mount("wall")
+    t = vm.selected_object.transform
+    assert t.mount == "wall"
+    assert (t.wall_x, t.wall_y, t.size) == pytest.approx(ground.mount_on_wall(vm.scene.ground, vm.scene.wall, floor))
+    vm.set_mount("floor")
+    assert vm.selected_object.transform.mount == "floor"
+    assert vm.undo() and vm.selected_object.transform.mount == "wall"
+    assert vm.undo() and vm.selected_object.transform == floor and not vm.can_undo
+
+
+def test_set_mount_to_the_current_mount_changes_nothing(vm):
+    vm.clear_history()
+    vm.set_mount("floor")
+    assert not vm.can_undo
+
+
+def test_set_mount_refuses_an_unknown_mount(vm):
+    with pytest.raises(ValueError):
+        vm.set_mount("ceiling")
+    assert vm.selected_object.transform.mount == "floor"
+
+
+def test_set_mount_only_moves_the_selected_object(vm):
+    vm.add_object()
+    first = dataclasses.replace(vm.scene.objects[0].transform)
+    vm.set_mount("wall")
+    assert vm.scene.objects[0].transform == first and vm.scene.objects[1].transform.mount == "wall"

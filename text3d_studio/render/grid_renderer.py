@@ -67,7 +67,7 @@ class GridRenderer:
         program.set_vec3("u_accent", grid.accent_color)
         program.set_float("u_opacity", grid.opacity)
         program.set_float("u_pixel_ratio", pixel_ratio)
-        program.set_int("u_has_text", int(raster is not None))
+        program.set_int("u_has_text", int(raster is not None and t.mount != "wall"))  # wall text has no floor footprint
         program.set_vec2("u_text_xz", (t.x, t.z))
         program.set_float("u_text_yaw", math.radians(t.rot_y))
         program.set_vec4("u_footprint", footprint(raster, t.size, t.depth))
@@ -76,7 +76,7 @@ class GridRenderer:
     def _draw_horizon(self, scene: Scene, obj: TextObject, viewport, pixel_ratio: float) -> None:
         x, y, width, height = viewport
         g, t = scene.ground, obj.transform
-        text_axes = ground_model.ground_rotation(g)[:3, :3] @ math3d.rotation_y(t.rot_y)[:3, :3]
+        text_axes = ground_model.text_model_matrix(g, t, scene.wall)[:3, :3] / t.size
         program = self.horizon
         program.use()
         program.set_vec3("u_up", ground_model.ground_up(g))

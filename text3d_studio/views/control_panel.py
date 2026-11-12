@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV
+from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
 from ..materials import KINDS
 from ..text_raster import ALIGNMENTS
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
@@ -42,6 +42,8 @@ SLIDERS = {
         ("size", "Size", 0.2, 30, 2),
         ("depth", "Extrude depth", 0, 2, 2),
         ("layers", "Layer count", 2, 256, 0),
+        ("wall_x", "Wall position", -30, 30, 2),
+        ("wall_y", "Wall height", 0, 30, 2),
     ],
     "ground": [
         ("pitch", "Tilt", -MAX_PITCH, MAX_PITCH, 1),
@@ -80,6 +82,10 @@ SLIDERS = {
         ("softness", "Softness", 0, 1, 2),
         ("falloff", "Falloff", 0, 3, 2),
     ],
+    "wall": [
+        ("angle", "Facing", -180, 180, 1),
+        ("offset", "Distance", 0, 150, 2),
+    ],
 }
 
 CHECKBOXES = {
@@ -95,6 +101,9 @@ COLORS = {
     "shadow": [("color", "Shadow color")],
 }
 
+# Colours that can be picked from the photo with an eyedropper button next to their colour button.
+EYEDROPPER_COLORS = {("light", "color"), ("light", "ambient_color")}
+
 # Material fields shown for each kind (the kind itself decides `metallic`, so that slider never shows).
 _SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength")
 MATERIAL_CONTROLS = {
@@ -108,6 +117,10 @@ MATERIAL_CONTROLS = {
     "wood": ("face_color", "secondary_color", "texture_scale", "texture_strength", "grain_angle", "varnish",
              "bump_strength", "roughness", "side_darkening", "bevel_strength"),
 }
+
+# Placement fields shown for each mount; the others don't apply to it.
+FLOOR_ONLY = ("x", "z", "rot_y")
+WALL_ONLY = ("wall_x", "wall_y")
 
 # Per-kind label overrides where the generic name would mislead.
 MATERIAL_LABELS = {
@@ -129,6 +142,7 @@ GROUP_TITLES = [
     ("light", "Lighting"),
     ("material", "Material"),
     ("shadow", "Shadow"),
+    ("wall", "Wall"),
 ]
 
 
@@ -264,11 +278,14 @@ class ColorButton(QPushButton):
 
 
 class ControlPanel(QScrollArea):
+    eyedropper_requested = pyqtSignal(str, str)  # (section, field): the next canvas click picks that colour
+
     def __init__(self, viewmodel: SceneViewModel):
         super().__init__()
         self.vm = viewmodel
         self._setters: dict[tuple[str, str], callable] = {}
         self._material_rows: dict[str, tuple[QFormLayout, QWidget, str]] = {}  # field -> (form, widget, label)
+        self._placement_rows: dict[str, tuple[QFormLayout, QWidget]] = {}  # floor- or wall-only field -> (form, row)
         self.setWidgetResizable(True)
         self.setMinimumWidth(340)
 
@@ -284,11 +301,15 @@ class ControlPanel(QScrollArea):
                 self._add_text_inputs(form)
             if section == "material":
                 self._add_material_picker(form)
+            if section == "transform":
+                self._add_mount_picker(form)
             for field, label in CHECKBOXES.get(section, []):
                 self._add_checkbox(form, section, field, label)
             for field, label, lo, hi, decimals in SLIDERS.get(section, []):
                 row = self._add_slider(form, section, field, label, lo, hi, decimals)
                 self._remember_material_row(section, field, label, form, row)
+                if section == "transform" and field in FLOOR_ONLY + WALL_ONLY:
+                    self._placement_rows[field] = (form, row)
             for field, label in COLORS.get(section, []):
                 button = self._add_color(form, section, field, label)
                 self._remember_material_row(section, field, label, form, button)
@@ -308,6 +329,7 @@ class ControlPanel(QScrollArea):
         for slider in content.findChildren(QSlider):
             slider.installEventFilter(self.slider_undo_groups)
         self._show_material_controls(self.vm.get("material", "kind"))
+        self._show_placement_controls(self.vm.get("transform", "mount"))
 
         self.vm.scene_changed.connect(self._refresh)
         self.vm.objects_changed.connect(self._rebuild_object_list)
@@ -355,6 +377,7 @@ class ControlPanel(QScrollArea):
             if section in OBJECT_SECTIONS:
                 setter(self.vm.get(section, field))
         self._show_material_controls(self.vm.get("material", "kind"))
+        self._show_placement_controls(self.vm.get("transform", "mount"))
 
     def _bind(self, section, field, setter, signal) -> None:
         setter(self.vm.get(section, field))
@@ -419,6 +442,25 @@ class ControlPanel(QScrollArea):
         combo.activated.connect(lambda index: self.vm.apply_material(combo.itemData(index)))
         form.addRow("Material", combo)
 
+    def _add_mount_picker(self, form: QFormLayout) -> None:
+        combo = QComboBox()
+        combo.setObjectName("transform.mount")
+        for mount in MOUNTS:
+            combo.addItem(mount.capitalize(), mount)
+
+        def set_mount(mount: str) -> None:
+            _set_quietly(combo, combo.setCurrentIndex, combo.findData(mount))
+
+        set_mount(self.vm.get("transform", "mount"))
+        self._setters[("transform", "mount")] = set_mount
+        combo.activated.connect(lambda index: self.vm.set_mount(combo.itemData(index)))
+        form.addRow("Mount", combo)
+
+    def _show_placement_controls(self, mount: str) -> None:
+        hidden = WALL_ONLY if mount == "floor" else FLOOR_ONLY
+        for field, (form, row) in self._placement_rows.items():
+            form.setRowVisible(row, field not in hidden)
+
     def _add_checkbox(self, form, section, field, label) -> None:
         box = QCheckBox(label)
         self._bind(section, field, lambda v: _set_quietly(box, box.setChecked, v), box.toggled)
@@ -435,8 +477,23 @@ class ControlPanel(QScrollArea):
         button = ColorButton()
         button.setObjectName(f"{section}.{field}")
         self._bind(section, field, button.set_color, button.color_changed)
-        form.addRow(label, button)
+        if (section, field) in EYEDROPPER_COLORS:
+            form.addRow(label, self._with_eyedropper(button, section, field))
+        else:
+            form.addRow(label, button)
         return button
+
+    def _with_eyedropper(self, button: ColorButton, section: str, field: str) -> QWidget:
+        pick = QPushButton("Pick")
+        pick.setObjectName(f"{section}.{field}.pick")
+        pick.setToolTip("Pick this colour from the photo: click here, then click the photo (Esc cancels)")
+        pick.clicked.connect(lambda: self.eyedropper_requested.emit(section, field))
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(button, 1)
+        layout.addWidget(pick)
+        return row
 
     def _remember_material_row(self, section, field, label, form, widget) -> None:
         if section == "material":
@@ -454,6 +511,8 @@ class ControlPanel(QScrollArea):
             setter(self.vm.get(section, field))
         if (section, field) == ("material", "kind"):
             self._show_material_controls(self.vm.get(section, field))
+        if (section, field) == ("transform", "mount"):
+            self._show_placement_controls(self.vm.get(section, field))
         if (section, field) == ("text", "content"):
             self.object_list.item(self.vm.selected).setText(_object_label(self.vm.get(section, field)))
 
