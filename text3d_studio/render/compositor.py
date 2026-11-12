@@ -1,9 +1,10 @@
 """Compositor: owns all GL resources and renders a full frame into any framebuffer.
 
 It is independent of Qt widgets, so the on-screen canvas and the offscreen exporter
-share exactly the same pipeline:  background -> soft shadow (multiply) -> layer-stacked text.
-Transmissive text (glass) first copies the background and shadow into a mipmapped backdrop texture,
-which it samples, refracted and blurred, to show what is behind it.
+share exactly the same pipeline:  background -> soft shadow (multiply) -> text layer (composited over).
+The text is drawn into its own multisampled layer, resolved, and composited over the target, so later
+passes can work on the text alone. Transmissive text (glass) first copies the background and shadow into
+a mipmapped backdrop texture, which it samples, refracted and blurred, to show what is behind it.
 """
 
 import numpy as np
@@ -15,11 +16,12 @@ from ..materials import TRANSMISSION
 from ..model import Scene
 from ..text_raster import GlyphRaster
 from . import shaders
-from .gl_utils import ColorTarget, ShaderProgram, Texture2D, UnitQuad
+from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
 from .shadow_renderer import ShadowRenderer
 from .text3d_renderer import Text3DRenderer
 
 NEAR, FAR = 0.1, 1000.0
+MIN_LAYER_SAMPLES = 4  # the text layer antialiases even when the target isn't multisampled
 
 
 class Compositor:
@@ -30,6 +32,8 @@ class Compositor:
         self.background.upload(np.zeros((1, 1, 4), np.uint8))  # keeps the sampler complete before a photo loads
         self.has_background = False
         self.backdrop = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA, mipmaps=True)
+        self.text_layer = LayerTarget()
+        self.layer_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.LAYER_COMPOSITE_FS)
         self.text = Text3DRenderer(self.quad)
         self.shadows = ShadowRenderer(self.quad)
         self.lighting = LightingEngine()
@@ -60,6 +64,8 @@ class Compositor:
             self.shadows.render_mask(self.text, scene, proj, lighting, viewport)
 
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+        target_samples = int(GL.glGetIntegerv(GL.GL_SAMPLES))
+        self.background_viewport = viewport
         GL.glViewport(x, y, width, height)
         GL.glEnable(GL.GL_SCISSOR_TEST)
         GL.glScissor(x, y, width, height)
@@ -75,17 +81,62 @@ class Compositor:
             if scene.material.kind in TRANSMISSION:
                 self._capture_backdrop(target_fbo, viewport)
                 backdrop = self.backdrop.texture
-            GL.glEnable(GL.GL_DEPTH_TEST)
-            GL.glDepthFunc(GL.GL_LESS)
-            GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
-            reflect = self.has_background and scene.light.reflect_photo
-            self.text.draw_beauty(
-                scene, proj, lighting, height, self.background if reflect else None, backdrop
-            )
-            GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
-            GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glDisable(GL.GL_SCISSOR_TEST)
+            self._draw_text_layer(scene, proj, lighting, backdrop, max(MIN_LAYER_SAMPLES, target_samples))
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+            GL.glViewport(x, y, width, height)
+            GL.glEnable(GL.GL_SCISSOR_TEST)
+            self._composite_text_layer(viewport)
 
         GL.glDisable(GL.GL_SCISSOR_TEST)
+
+    def _draw_text_layer(self, scene: Scene, proj, lighting, backdrop, samples: int) -> None:
+        """Draws the text alone into self.text_layer and resolves it."""
+        layer = self.text_layer
+        layer.resize(self.background_viewport[2], self.background_viewport[3], samples)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, layer.draw.fbo)
+        GL.glViewport(0, 0, layer.width, layer.height)
+        GL.glClearColor(0, 0, 0, 0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthFunc(GL.GL_LESS)
+        # Coverage picks the samples; each sample written is then fully opaque, so resolving averages the
+        # text over the transparent clear into premultiplied color and a coverage alpha.
+        GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
+        GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_ONE)
+        reflect = self.has_background and scene.light.reflect_photo
+        self.text.draw_beauty(
+            scene, proj, lighting, layer.height, self.background if reflect else None, backdrop
+        )
+        GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_ONE)
+        GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        layer.resolve()
+
+    def _composite_text_layer(self, viewport) -> None:
+        """Puts the resolved layer over the bound target, writing its depth for the grid overlay.
+
+        Alpha writes stay off: Qt composites the canvas as premultiplied color, so stored alpha below 1
+        would let bright pixels overflow into wrapped colors.
+        """
+        x, y, _, _ = viewport
+        program = self.layer_program
+        program.use()
+        self.text_layer.color.bind(0)
+        self.text_layer.depth.bind(1)
+        program.set_int("u_color", 0)
+        program.set_int("u_depth", 1)
+        program.set_vec2("u_origin", (x, y))
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthFunc(GL.GL_ALWAYS)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        self.quad.draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDisable(GL.GL_BLEND)
 
     def _capture_backdrop(self, target_fbo: int, viewport) -> None:
         """Copies the viewport (resolving any multisampling) into self.backdrop and builds its mipmaps."""
@@ -115,6 +166,8 @@ class Compositor:
         self.text.delete()
         self.shadows.delete()
         self.backdrop.delete()
+        self.text_layer.delete()
+        self.layer_program.delete()
         self.background_program.delete()
         self.background.delete()
         self.quad.delete()

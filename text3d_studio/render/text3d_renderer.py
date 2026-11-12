@@ -63,9 +63,7 @@ class Text3DRenderer:
             GL.glDepthFunc(GL.GL_EQUAL)
             GL.glDepthMask(GL.GL_FALSE)
 
-        # Coverage drives antialiasing but must not reach the stored alpha: Qt composites the canvas as
-        # premultiplied color, so alpha < 1 under bright pixels overflows into wrapped colors.
-        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         program = self.beauty
         self._bind_common(program, scene, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
@@ -99,7 +97,6 @@ class Text3DRenderer:
             program.set_float("u_environment_lod", environment.max_lod)
             program.set_float("u_environment_strength", scene.light.reflection_strength)
         self.quad.draw(layers)
-        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         GL.glDepthFunc(GL.GL_LESS)
         GL.glDepthMask(GL.GL_TRUE)
 
