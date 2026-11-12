@@ -86,6 +86,15 @@ scroll and pinch, and the grid's orange lanes then apply to that object. Clickin
 or on empty floor doesn't change the selection, so you can still drag the selected text from there. The
 ground, lighting, shadow and camera are shared, and adjusting the ground keeps every object in place.
 
+## Undo and redo
+
+**Edit → Undo** (⌘Z / Ctrl+Z) and **Edit → Redo** (⇧⌘Z / Ctrl+Shift+Z or Ctrl+Y) step through the last 100
+changes to the scene: any slider, colour or setting, adding, duplicating or deleting text, and every canvas
+drag. A whole drag (on the canvas or a slider) undoes in one step, and so does a quick burst on one setting:
+a scroll or pinch, holding a number field's arrows, or a run of typing in the Text field. Undo also brings
+back the object that was selected. Selecting alone isn't a step. ⌘Z works from the number fields too; inside
+the Text field it undoes your typing first. Opening a new photo starts a fresh history.
+
 ## Roadmap
 
 | Phase | Goal | Key work |
@@ -93,7 +102,7 @@ ground, lighting, shadow and camera are shared, and adjusting the ground keeps e
 | **1 – MVP (this repo)** | Credible composite + export | Layer-stack extrusion, system fonts, bevel, Blinn-Phong (physically based since v0.7), planar soft shadow, native-res MSAA export, 30+ FPS |
 | **2 – Integration quality** | Text "belongs" in the photo | Vanishing-point / horizon tool that solves Tilt+FOV from two drawn lines; light-direction picker from a shadow the user clicks; color grading (match black point, saturation, grain/noise, blur to the photo's depth of field); contact-hardening shadows (PCSS) |
 | **3 – Geometry fidelity** | Crisp at any size | MSDF glyph masks (sharp corners when magnified); true triangulated extrusion as an optional mode (`QPainterPath` → earcut), with the layer stack kept as the stylized mode; multi-line text, kerning and tracking controls |
-| **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (command pattern on the ViewModel), JSON project files, occlusion masks painted over the photo so the text can sit behind foreground objects |
+| **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (done), JSON project files, occlusion masks painted over the photo so the text can sit behind foreground objects |
 | **5 – Scale & ship** | Large photos, distribution | Tiled export beyond GPU limits (>16k px), 16-bit/HDR pipeline, PyInstaller / briefcase bundles with signing, CI on macOS/Windows/Linux |
 
 Known MVP limits:

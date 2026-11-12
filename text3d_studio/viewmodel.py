@@ -1,18 +1,21 @@
 """ViewModel: the single mutation point for the Document, exposing Qt signals to views."""
 
+import copy
 import dataclasses
+import time
 
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from . import ground as ground_model
+from .history import History
 from .materials import KINDS, PRESETS
-from .model import Document, TextObject, TransformParams
+from .model import Document, Scene, TextObject, TransformParams
 
 # Fields that change the rasterized glyph mask (expensive, CPU) rather than just uniforms (cheap, GPU).
 RASTER_FIELDS = {"content", "font_family", "bold", "italic", "bevel_width"}
 OBJECT_SECTIONS = ("text", "transform", "material")  # per-object sections; the rest are shared by the scene
-SHARED_SECTIONS = ("ground", "grid", "light", "shadow", "camera")
+SHARED_SECTIONS = tuple(f.name for f in dataclasses.fields(Scene) if f.name != "objects")
 
 
 class SceneViewModel(QObject):
@@ -23,11 +26,16 @@ class SceneViewModel(QObject):
     selection_changed = pyqtSignal(int)  # the selected object's index; its text, transform and material changed
     dirty_changed = pyqtSignal(bool)  # the document gained or lost unsaved changes
     document_loaded = pyqtSignal()  # load_document replaced the whole document
+    history_changed = pyqtSignal()  # can_undo or can_redo may have changed
 
-    def __init__(self, document: Document | None = None):
+    def __init__(self, document: Document | None = None, clock=time.monotonic):
         super().__init__()
         self.document = document or Document()
         self.selected = 0  # editor state: the object that "text", "transform" and "material" edits address
+        # Undo states are (deep copy of the scene, selected index). Every scene-changing entry point records one.
+        self.history = History(clock=clock)
+        self._edit_depth = 0
+        self._edit_start = None  # the state when the outermost edit began
         # Ids are never reused, so nothing keyed by a deleted object's id (a cached raster) can match a new one.
         self._next_object_id = max(o.id for o in self.scene.objects) + 1
         self.dirty = False  # unsaved changes since the last save or load
@@ -50,10 +58,12 @@ class SceneViewModel(QObject):
         target = self._section(section, name)
         if getattr(target, name) == value:
             return
+        self.begin_edit()
         base = self.placement_snapshot() if section == "ground" else None
         self._assign(target, section, name, value)
         if base is not None:
             self._place_objects_from(*base)
+        self.end_edit(merge_key=self._merge_key(section, name))
 
     def set_ground_pose(self, anchor=None, **values) -> None:
         """Sets several ground fields together and re-places the text once, against the final pose.
@@ -63,6 +73,7 @@ class SceneViewModel(QObject):
         drags pass the state from when they started, so a pose mid-drag that can't hold the text doesn't
         strand it for the rest of the drag.
         """
+        self.begin_edit()
         old_ground = dataclasses.replace(self.scene.ground)
         base = anchor if anchor is not None else self.placement_snapshot()
         for name, value in values.items():
@@ -71,6 +82,7 @@ class SceneViewModel(QObject):
                 self._assign(target, "ground", name, value)
         if self.scene.ground != old_ground:
             self._place_objects_from(*base)
+        self.end_edit()
 
     def placement_snapshot(self):
         """(ground, [each object's transform]): copies of everything a ground edit re-places the objects from."""
@@ -97,9 +109,11 @@ class SceneViewModel(QObject):
         """Switches the material kind and loads its preset values (replacing any adjustments)."""
         if kind not in KINDS:
             raise ValueError(f"Unknown material: {kind!r}")
+        self.begin_edit()
         self.set("material", "kind", kind)
         for name, value in PRESETS[kind].items():
             self.set("material", name, value)
+        self.end_edit()
 
     def select(self, index: int) -> None:
         if not 0 <= index < len(self.scene.objects):
@@ -112,26 +126,32 @@ class SceneViewModel(QObject):
         """Adds a default text object in front of the selected one and selects it."""
         base = ground_model.placement_in_front(self.scene.ground, self.selected_object.transform)
         transform = TransformParams(x=base.x, z=base.z, rot_y=base.rot_y, size=base.size)
+        self.begin_edit()
         self._insert(TextObject(id=self._next_id(), transform=transform))
+        self.end_edit()
 
     def duplicate_object(self) -> None:
         """Adds a copy of the selected object in front of it and selects the copy."""
         source = self.selected_object
+        self.begin_edit()
         self._insert(TextObject(
             id=self._next_id(),
             text=dataclasses.replace(source.text),
             transform=ground_model.placement_in_front(self.scene.ground, source.transform),
             material=dataclasses.replace(source.material),
         ))
+        self.end_edit()
 
     def delete_object(self) -> bool:
         """Deletes the selected object. Refuses (returns False) when it is the last one."""
         if len(self.scene.objects) == 1:
             return False
+        self.begin_edit()
         del self.scene.objects[self.selected]
         self.selected = min(self.selected, len(self.scene.objects) - 1)
         self.objects_changed.emit()
         self.selection_changed.emit(self.selected)
+        self.end_edit()
         return True
 
     def _insert(self, obj: TextObject) -> None:
@@ -147,9 +167,86 @@ class SceneViewModel(QObject):
         self.set(section, name, self.get(section, name) + delta)
 
     def set_background(self, pixels: np.ndarray, path: str | None = None) -> None:
+        """Not undoable: a new photo starts a fresh history, since undoing across photos would confuse."""
         self.document.background = pixels
         self.document.background_path = path
         self.background_changed.emit()
+        self.clear_history()
+
+    # ----- Undo -------------------------------------------------------------------------------------
+
+    @property
+    def can_undo(self) -> bool:
+        return self.history.can_undo
+
+    @property
+    def can_redo(self) -> bool:
+        return self.history.can_redo
+
+    def begin_edit(self) -> None:
+        """Starts grouping changes into one undo step (a drag, say). Edits nest; the outermost end records."""
+        if self._edit_depth == 0:
+            self._edit_start = self._state()
+        self._edit_depth += 1
+
+    def end_edit(self, merge_key=None) -> None:
+        """Ends an edit. The outermost one records a step if the scene changed since its begin_edit().
+
+        `merge_key` lets consecutive quick changes to the same field merge into one step (see History).
+        """
+        self._edit_depth -= 1
+        if self._edit_depth > 0:
+            return
+        start, self._edit_start = self._edit_start, None
+        if start[0] != self.scene:
+            self.history.record(start, merge_key)
+            self.history_changed.emit()
+
+    def undo(self) -> bool:
+        """Restores the state before the last step. False when there is nothing to undo or an edit is under way."""
+        if self._edit_depth > 0:
+            return False
+        state = self.history.undo(self._state())
+        return self._restore(state)
+
+    def redo(self) -> bool:
+        if self._edit_depth > 0:
+            return False
+        state = self.history.redo(self._state())
+        return self._restore(state)
+
+    def clear_history(self) -> None:
+        self.history.clear()
+        self.history_changed.emit()
+
+    def _merge_key(self, section: str, name: str):
+        if section in OBJECT_SECTIONS:
+            return (section, name, self.selected_object.id)
+        return (section, name)
+
+    def _state(self):
+        return (copy.deepcopy(self.scene), self.selected)
+
+    def _restore(self, state) -> bool:
+        """Puts a recorded state back in place (the Scene object stays the same) and refreshes every view."""
+        if state is None:
+            return False
+        scene, selected = state
+        old = copy.copy(self.scene)
+        for field in dataclasses.fields(Scene):
+            setattr(self.scene, field.name, getattr(scene, field.name))
+        self.selected = selected
+        self.objects_changed.emit()  # any object may have come back, gone or changed
+        self.selection_changed.emit(self.selected)  # refreshes every per-object control
+        for section in SHARED_SECTIONS:
+            before, after = getattr(old, section), getattr(self.scene, section)
+            for field in dataclasses.fields(after):
+                if getattr(before, field.name) != getattr(after, field.name):
+                    self.scene_changed.emit(section, field.name)
+        if [o.text for o in old.objects] != [o.text for o in self.scene.objects]:
+            self.text_changed.emit()
+        self.history_changed.emit()
+        return True
 
     def load_document(self, document: Document) -> None:
         """Replaces the document wholesale (opening a project), refreshes every view and leaves it clean.

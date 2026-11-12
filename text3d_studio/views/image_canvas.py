@@ -170,6 +170,7 @@ class ImageCanvas(QOpenGLWidget):
         self._drag_mode: str | None = None  # "move", "slide" or "yaw", chosen by the button and modifiers on press
         self._drag_ground_start: tuple[float, float] | None = None  # ground point grabbed on press
         self._drag_transform = None  # the text's placement on press
+        self._editing = False  # a press began an undo step (vm.begin_edit) that the release will end
         self.tool = TEXT_TOOL  # editor state, not part of the scene
         self._grid_drag: str | None = None  # "tilt", "roll", "shift" or "rotate" while dragging in the grid tool
         self._roll_pivot: tuple[float, float] | None = None
@@ -372,12 +373,19 @@ class ImageCanvas(QOpenGLWidget):
     def mousePressEvent(self, event) -> None:
         if self.tool == GRID_TOOL:
             self._grid_press(event)
-            return
-        if self.tool == FIT_TOOL:
+        elif self.tool == FIT_TOOL:
             self._fit_handle = self.fit_handle_at(event.position())
             if self._pose_snapshot() != self._fit_settled:
                 self._capture_pose_base()  # something else moved the ground or text since the last fit
-            return
+        else:
+            self._text_press(event)
+        # The whole press→release drag is one undo step. It begins after the press's selection, which isn't one,
+        # so undoing the drag shows the object it moved selected.
+        if not self._editing:
+            self._editing = True
+            self.vm.begin_edit()
+
+    def _text_press(self, event) -> None:
         # A press on an object selects it; elsewhere the selection stays, so the drag still moves it. With one
         # object there is nothing to choose, which also spares a raster for a canvas that never painted.
         if len(self.vm.scene.objects) > 1:
@@ -409,6 +417,10 @@ class ImageCanvas(QOpenGLWidget):
         self._fit_handle = None
         if self.tool == TEXT_TOOL:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+        # Ends with the last button up. A release with no press here (a dialog closed on the press) ends nothing.
+        if self._editing and not event.buttons():
+            self._editing = False
+            self.vm.end_edit()
 
     def mouseMoveEvent(self, event) -> None:
         if self.tool == FIT_TOOL:

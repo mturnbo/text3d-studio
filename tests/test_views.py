@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import os
 
@@ -1495,3 +1496,319 @@ def test_picking_on_the_canvas_updates_the_list(window):
     click(canvas, on_face(canvas, 0, ink_point(canvas, 0)))
     assert vm.selected == 0 and panel.object_list.currentRow() == 0
     assert panel.findChild(SliderRow, "transform.x").spin.value() == -3.5
+
+
+# ----- Undo -------------------------------------------------------------------------------------------
+
+
+def undo_steps(vm):
+    count = 0
+    while vm.undo():
+        count += 1
+    return count
+
+
+def long_drag(canvas, start, end, button=Qt.MouseButton.LeftButton, steps=10):
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, button)
+    for k in range(1, steps + 1):
+        point = (start[0] + (end[0] - start[0]) * k / steps, start[1] + (end[1] - start[1]) * k / steps)
+        mouse(canvas, QEvent.Type.MouseMove, point, Qt.MouseButton.NoButton, button)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, end, button, Qt.MouseButton.NoButton)
+
+
+@pytest.mark.parametrize("button", [Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton])
+def test_one_text_drag_is_one_undo_step(vm, button):
+    vm.set("ground", "pitch", 15.0)
+    vm.clear_history()
+    canvas = sized_canvas(vm)
+    before = copy.deepcopy(vm.scene)
+    start = text_anchor_on_screen(canvas)
+    long_drag(canvas, start, (start[0] + 120, start[1] + 40), button)
+    assert vm.scene != before
+    assert undo_steps(vm) == 1
+    assert vm.scene == before
+
+
+@pytest.mark.parametrize("start, end", [((400, 300), (400, 340)), ((400, 300), (480, 300))], ids=["shift", "rotate"])
+def test_one_grid_drag_is_one_undo_step(vm, start, end):
+    canvas = grid_canvas(vm, pitch=10.0)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    button = Qt.MouseButton.LeftButton if end[1] != start[1] else Qt.MouseButton.RightButton
+    long_drag(canvas, start, end, button)
+    assert vm.scene != before
+    assert undo_steps(vm) == 1
+    assert vm.scene == before
+
+
+def test_one_horizon_drag_that_re_places_the_text_is_one_undo_step(vm):
+    canvas = grid_canvas(vm, pitch=10.0)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    line = canvas._horizon_line()
+    start = (400, canvas._image_rect()[1] - (line[0] * (400 - canvas._image_rect()[0]) + line[2]) / line[1])
+    assert canvas.horizon_handle_at(QPointF(*start)) == "tilt"
+    long_drag(canvas, start, (start[0], start[1] - 40))
+    assert vm.scene.ground.pitch != before.ground.pitch
+    assert vm.scene.objects[0].transform != before.objects[0].transform
+    assert undo_steps(vm) == 1
+    assert vm.scene == before
+
+
+def test_each_fit_corner_drag_is_one_undo_step(vm):
+    from text3d_studio.model import GroundParams
+
+    canvas = fit_canvas(vm)
+    vm.clear_history()
+    before = copy.deepcopy(vm.scene)
+    truth = GroundParams(pitch=14.0, yaw=30.0, roll=-3.0, height=1.8)
+    for index, target in enumerate(true_rectangle_px(canvas, truth)):
+        drag_fit_corner(canvas, index, target)
+    assert undo_steps(vm) == 4
+    assert vm.scene == before
+
+
+def test_a_click_without_motion_records_nothing(vm):
+    canvas = sized_canvas(vm)
+    click(canvas, text_anchor_on_screen(canvas))
+    assert not vm.can_undo
+
+
+def test_clicking_another_object_then_dragging_it_undoes_the_move_but_keeps_it_selected(vm):
+    canvas = two_objects(vm)
+    vm.clear_history()
+    before = transforms(vm)
+    start = on_face(canvas, 1, ink_point(canvas, 1))
+    long_drag(canvas, start, (start[0], start[1] + 30))
+    assert vm.selected == 1
+    vm.undo()
+    assert transforms(vm) == before
+    assert vm.selected == 1
+    assert not vm.can_undo
+
+
+def test_a_second_button_during_a_drag_stays_in_the_same_step(vm):
+    canvas = sized_canvas(vm)
+    start = text_anchor_on_screen(canvas)
+    left, right = Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+    both = left | right
+    mouse(canvas, QEvent.Type.MouseButtonPress, start, left)
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 30, start[1]), Qt.MouseButton.NoButton, left)
+    mouse(canvas, QEvent.Type.MouseButtonPress, (start[0] + 30, start[1]), right, both)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (start[0] + 30, start[1]), right, left)
+    assert not vm.can_undo  # the left button is still down
+    mouse(canvas, QEvent.Type.MouseMove, (start[0] + 60, start[1]), Qt.MouseButton.NoButton, left)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (start[0] + 60, start[1]), left, Qt.MouseButton.NoButton)
+    assert undo_steps(vm) == 1
+
+
+def test_a_stray_release_without_a_press_does_not_break_undo(vm):
+    canvas = sized_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, (400, 300), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    vm.set("light", "azimuth", 10.0)
+    assert undo_steps(vm) == 1
+
+
+def test_wheel_scaling_burst_is_one_undo_step(qapp):
+    now = [0.0]
+    vm = SceneViewModel(Document(), clock=lambda: now[0])
+    canvas = sized_canvas(vm)
+    for _ in range(8):
+        wheel(canvas, 1)
+        now[0] += 0.05
+    assert vm.scene.objects[0].transform.size != 3.0
+    vm.undo()
+    assert vm.scene.objects[0].transform.size == 3.0
+    assert not vm.can_undo
+
+
+def slider_handle_center(slider):
+    from PyQt6.QtWidgets import QStyle, QStyleOptionSlider
+
+    option = QStyleOptionSlider()
+    slider.initStyleOption(option)
+    handle = slider.style().subControlRect(QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider)
+    return handle.center()
+
+
+def drag_slider(slider, dx, steps=10):
+    from PyQt6.QtWidgets import QApplication
+
+    start = QPointF(slider_handle_center(slider))
+    left = Qt.MouseButton.LeftButton
+
+    def send(kind, pos, button, buttons):
+        QApplication.sendEvent(slider, QMouseEvent(kind, pos, slider.mapToGlobal(pos), button, buttons,
+                                                   Qt.KeyboardModifier.NoModifier))
+
+    send(QEvent.Type.MouseButtonPress, start, left, left)
+    for k in range(1, steps + 1):
+        send(QEvent.Type.MouseMove, start + QPointF(dx * k / steps, 0), Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseButtonRelease, start + QPointF(dx, 0), left, Qt.MouseButton.NoButton)
+
+
+def test_one_slider_drag_is_one_undo_step(window, qapp):
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, "light.azimuth")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    values = []
+    window.vm.scene_changed.connect(lambda s, f: values.append(window.vm.scene.light.azimuth) if s == "light" else None)
+    drag_slider(row.slider, 80)
+    assert len(set(values)) > 2  # the drag passed through several values
+    assert undo_steps(window.vm) == 1
+    assert window.vm.scene.light.azimuth == 35.0
+    assert row.spin.value() == 35.0
+
+
+
+def test_a_slider_click_is_one_undo_step(window, qapp):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, "light.azimuth")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    QTest.mouseClick(row.slider, Qt.MouseButton.LeftButton, pos=QPoint(row.slider.width() - 4, row.slider.height() // 2))
+    assert window.vm.scene.light.azimuth != 35.0
+    assert undo_steps(window.vm) == 1
+    assert window.vm.scene.light.azimuth == 35.0
+
+
+def edit_menu(window):
+    return next(a.menu() for a in window.menuBar().actions() if a.text() == "&Edit")
+
+
+def test_edit_menu_sits_after_file_and_holds_undo_and_redo(window):
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert titles[:3] == ["&File", "&Edit", "&View"]
+    assert edit_menu(window).actions() == [window.undo_action, window.redo_action]
+    assert window.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
+    assert window.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
+
+
+def test_undo_and_redo_actions_follow_the_history(window):
+    vm = window.vm
+    assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+    vm.set("light", "azimuth", 10.0)
+    assert window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+    window.undo_action.trigger()
+    assert vm.scene.light.azimuth == 35.0
+    assert not window.undo_action.isEnabled() and window.redo_action.isEnabled()
+    window.redo_action.trigger()
+    assert vm.scene.light.azimuth == 10.0
+    vm.set_background(background(), "photo.png")
+    assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+
+
+def test_undo_refreshes_the_panel_list_and_grid_action(window):
+    from PyQt6.QtWidgets import QLineEdit
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    vm, panel = window.vm, window.panel
+    vm.set("grid", "visible", True)
+    vm.add_object()
+    vm.set("text", "content", "SIGN")
+    vm.set("transform", "size", 7.0)
+    vm.apply_material("glass")
+    for _ in range(5):
+        vm.undo()
+    assert object_rows(panel) == ["HELLO"]
+    assert panel.findChild(SliderRow, "transform.size").spin.value() == 3.0
+    assert panel.findChild(QLineEdit, "text.content").text() == "HELLO"
+    assert material_combo(panel).currentData() == "metal"
+    assert not window.grid_action.isChecked()
+    for _ in range(5):
+        vm.redo()
+    assert object_rows(panel) == ["HELLO", "SIGN"]
+    assert panel.object_list.currentRow() == 1
+    assert panel.findChild(SliderRow, "transform.size").spin.value() == 7.0
+    assert material_combo(panel).currentData() == "glass"
+    assert material_row_visible(panel, "absorption")
+
+
+def test_undo_re_rasterizes_the_text_it_restores(vm):
+    canvas = sized_canvas(vm)
+    canvas._update_rasters()
+    vm.set("text", "content", "WORLD")
+    canvas._update_rasters()
+    vm.undo()
+    canvas._update_rasters()
+    assert canvas._rasters[vm.scene.objects[0].id][0].content == "HELLO"
+
+
+def press_undo(widget, redo=False):
+    from PyQt6.QtTest import QTest
+
+    modifiers = Qt.KeyboardModifier.ControlModifier  # Qt's name for macOS's Command key
+    if redo:
+        modifiers |= Qt.KeyboardModifier.ShiftModifier
+    QTest.keyClick(widget, Qt.Key.Key_Z, modifiers)
+
+
+def test_cmd_z_on_the_canvas_undoes_and_shift_cmd_z_redoes(window, qapp):
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    window.canvas.setFocus()
+    qapp.processEvents()
+    press_undo(window.canvas)
+    assert window.vm.scene.light.azimuth == 35.0
+    press_undo(window.canvas, redo=True)
+    assert window.vm.scene.light.azimuth == 10.0
+
+
+@pytest.mark.parametrize("field", ["transform.size", "ground.pitch"])
+def test_cmd_z_in_a_number_field_undoes_the_scene(window, qapp, field):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    spin = window.panel.findChild(SliderRow, field).spin
+    spin.setFocus()
+    spin.selectAll()
+    qapp.processEvents()
+    before = copy.deepcopy(window.vm.scene)
+    QTest.keyClicks(spin, "5")
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert window.vm.scene != before
+    press_undo(spin)
+    assert window.vm.scene == before
+    assert spin.value() == window.vm.get(*field.split("."))
+    press_undo(spin, redo=True)
+    assert window.vm.scene != before
+
+
+def test_cmd_z_in_the_font_field_undoes_the_scene(window, qapp):
+    from PyQt6.QtWidgets import QFontComboBox
+
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    fonts = window.panel.findChild(QFontComboBox)
+    fonts.setFocus()
+    qapp.processEvents()
+    press_undo(fonts)
+    assert window.vm.scene.light.azimuth == 35.0
+
+
+def test_cmd_z_in_the_text_field_undoes_typing_not_the_scene(window, qapp):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit
+
+    activate(window, qapp)
+    window.vm.set("light", "azimuth", 10.0)
+    edit = window.panel.findChild(QLineEdit, "text.content")
+    edit.setFocus()
+    edit.end(False)
+    qapp.processEvents()
+    QTest.keyClicks(edit, "XY")
+    assert window.vm.scene.objects[0].text.content == "HELLOXY"
+    press_undo(edit)
+    assert edit.text() == "HELLO"  # QLineEdit's own undo took the whole typed run back
+    assert window.vm.scene.objects[0].text.content == "HELLO"
+    assert window.vm.scene.light.azimuth == 10.0  # the scene's undo didn't run
