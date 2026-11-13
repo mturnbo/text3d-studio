@@ -1041,7 +1041,7 @@ def test_material_dropdown_lists_every_kind(vm):
 
     combo = material_combo(ControlPanel(vm))
     assert [combo.itemData(i) for i in range(combo.count())] == list(KINDS)
-    assert [combo.itemText(i) for i in range(combo.count())] == ["Metal", "Plastic", "Stone", "Wood", "Glass"]
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Metal", "Plastic", "Stone", "Wood", "Glass", "Neon"]
     assert combo.currentData() == "metal"
 
 
@@ -1069,7 +1069,7 @@ def material_row_visible(panel, field):
     return panel.findChild(QWidget, f"material.{field}").isVisibleTo(panel)
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_each_material_shows_its_controls_and_hides_metallic(vm, kind):
     from text3d_studio.views.control_panel import MATERIAL_CONTROLS, ControlPanel
 
@@ -1144,7 +1144,7 @@ def test_choosing_sides_with_the_keyboard_sets_them_undoably(vm):
     QTest.keyClick(combo, Qt.Key.Key_Down)
     assert vm.scene.objects[0].material.side_kind == "metal"
     QTest.keyClick(combo, Qt.Key.Key_End)
-    assert vm.scene.objects[0].material.side_kind == "glass"
+    assert vm.scene.objects[0].material.side_kind == "neon"
     vm.undo()  # quick successive picks merge into one step, like other quick edits of one field
     assert vm.scene.objects[0].material.side_kind == "same"
     assert combo.currentData() == "same"  # the picker follows the model
@@ -1164,7 +1164,7 @@ def test_sides_of_another_kind_hide_the_side_color_and_a_new_material_resets_the
     assert material_row_visible(panel, "side_color")
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_every_kind_shows_the_outline_controls_and_typing_a_width_sets_it(vm, kind):
     from PyQt6.QtTest import QTest
 
@@ -1183,6 +1183,29 @@ def test_every_kind_shows_the_outline_controls_and_typing_a_width_sets_it(vm, ki
     QTest.keyClicks(spin, "7")  # beyond the range: the field keeps the value in range
     QTest.keyClick(spin, Qt.Key.Key_Return)
     assert 0.0 <= vm.scene.objects[0].material.outline_width <= 1.0
+
+
+def test_only_neon_shows_the_glow_controls_and_typing_a_glow_sets_it(vm):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    combo = material_combo(panel)
+    QTest.keyClick(combo, Qt.Key.Key_End)  # the last kind
+    assert vm.scene.objects[0].material.kind == "neon"
+    assert vm.scene.objects[0].material.emission_strength == 1.5  # its preset
+    for field in ("emission_color", "emission_strength"):
+        assert material_row_visible(panel, field), field
+    spin = panel.findChild(SliderRow, "material.emission_strength").spin
+    spin.selectAll()
+    QTest.keyClicks(spin, "3")
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert vm.scene.objects[0].material.emission_strength == 3.0
+    for kind in ("metal", "plastic", "stone", "wood", "glass"):
+        vm.apply_material(kind)
+        assert not material_row_visible(panel, "emission_strength"), kind
+        assert not material_row_visible(panel, "emission_color"), kind
 
 
 def test_selecting_another_object_shows_its_sides(vm):

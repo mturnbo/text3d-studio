@@ -92,6 +92,9 @@ class MaterialParams:
     outline_width: float = 0.0  # in bevel widths: 1 covers the whole beveled rim, 0 = no outline
     outline_color: Color = (0.08, 0.08, 0.08)
     outline_metallic: float = 0.0
+    # Unlit glow (neon), added on top of the shading; the side walls and back cap glow dimmer.
+    emission_color: Color = (1.0, 0.25, 0.75)
+    emission_strength: float = 0.0
 
 
 @dataclass

@@ -18,6 +18,7 @@ IDENTITY_GL = math3d.to_gl(math3d.identity())
 PATTERNS = {"stone": 1, "wood": 2}  # material kinds with a procedural texture (see LAYER_STACK_FS)
 MAX_LAYERS = 2048
 LAYERS_PER_PIXEL = 1.5  # oversample so neighbouring slices always overlap on screen
+SIDE_GLOW = 0.35  # the side walls and back cap glow with this fraction of their material's emission
 
 # Depth pre-pass: draw the stack once into depth only, then shade with GL_EQUAL so each pixel is shaded for
 # its visible slice rather than every slice behind it. Measured gain is modest on Apple GPUs, which already
@@ -82,12 +83,12 @@ class Text3DRenderer:
         program.set_float("u_side_darkening", m.side_darkening)
         program.set_float("u_bevel_strength", m.bevel_strength)
         has_backdrop = backdrop is not None
-        _set_surface(program, "u_face", m.kind, vars(m), m.face_color, has_backdrop)
+        _set_surface(program, "u_face", m.kind, vars(m), m.face_color, has_backdrop, 1.0)
         if m.side_kind in PRESETS:
             side = PRESETS[m.side_kind]
-            _set_surface(program, "u_side", m.side_kind, side, side["side_color"], has_backdrop)
+            _set_surface(program, "u_side", m.side_kind, side, side["side_color"], has_backdrop, SIDE_GLOW)
         else:
-            _set_surface(program, "u_side", m.kind, vars(m), m.side_color, has_backdrop)
+            _set_surface(program, "u_side", m.kind, vars(m), m.side_color, has_backdrop, SIDE_GLOW)
         program.set_float("u_outline_width", m.outline_width)
         program.set_vec3("u_outline_color", srgb_to_linear(m.outline_color))
         program.set_float("u_outline_metallic", m.outline_metallic)
@@ -165,10 +166,12 @@ class Text3DRenderer:
         self.wall_shadow.delete()
 
 
-def _set_surface(program: ShaderProgram, name: str, kind: str, values, color, has_backdrop: bool) -> None:
+def _set_surface(
+    program: ShaderProgram, name: str, kind: str, values, color, has_backdrop: bool, glow: float
+) -> None:
     """Sets one `Surface` uniform of LAYER_STACK_FS from a kind and its material values (a MaterialParams' fields
     or a preset). `color` is the plain albedo: the face color for the face, the side color for the walls. A
-    transmissive kind needs the backdrop to show through."""
+    transmissive kind needs the backdrop to show through. `glow` scales the emission (dimmer on the sides)."""
     program.set_vec3(f"{name}.color", srgb_to_linear(color))
     program.set_vec3(f"{name}.pattern_color", srgb_to_linear(values["face_color"]))
     program.set_vec3(f"{name}.secondary_color", srgb_to_linear(values["secondary_color"]))
@@ -182,3 +185,5 @@ def _set_surface(program: ShaderProgram, name: str, kind: str, values, color, ha
     program.set_float(f"{name}.varnish", values["varnish"])
     program.set_int(f"{name}.transmissive", int(kind in TRANSMISSION and has_backdrop))
     program.set_float(f"{name}.absorption", values["absorption"])
+    emission = np.asarray(srgb_to_linear(values["emission_color"])) * values["emission_strength"] * glow
+    program.set_vec3(f"{name}.emission", emission)

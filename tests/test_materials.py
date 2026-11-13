@@ -36,6 +36,8 @@ def test_preset_values_are_in_range(kind):
     assert preset["outline_width"] == 0.0  # no kind starts with an outline
     assert 0.0 <= preset["outline_metallic"] <= 1.0
     assert len(preset["outline_color"]) == 3 and all(0.0 <= c <= 1.0 for c in preset["outline_color"])
+    assert len(preset["emission_color"]) == 3 and all(0.0 <= c <= 1.0 for c in preset["emission_color"])
+    assert 0.0 <= preset["emission_strength"] <= 5.0
 
 
 def test_only_stone_and_wood_carry_a_texture():
@@ -50,6 +52,20 @@ def test_only_glass_transmits_and_absorbs():
     assert set(TRANSMISSION) == {"glass"}
     assert all(0.0 < amount < 1.0 for amount in TRANSMISSION.values())
     assert [kind for kind in KINDS if PRESETS[kind]["absorption"] > 0] == ["glass"]
+
+
+def test_only_neon_glows_and_its_tube_is_dark():
+    assert [kind for kind in KINDS if PRESETS[kind]["emission_strength"] > 0] == ["neon"]
+    assert max(PRESETS["neon"]["face_color"]) < 0.5  # with the glow off it is a dark plastic
+
+
+def test_sanitizing_clamps_the_glow():
+    from text3d_studio.materials import sanitized_material_params
+
+    for value, expected in ((2.5, 2.5), (50.0, 5.0), (-1.0, 0.0), (float("nan"), 0.0), ("bright", 0.0)):
+        params = sanitized_material_params(MaterialParams(emission_strength=value, emission_color=(1.5, 0.5, -1)))
+        assert params.emission_strength == expected
+        assert params.emission_color == (1.0, 0.5, 0.0)
 
 
 def test_side_kinds_are_same_or_any_kind_and_presets_keep_their_own_sides():

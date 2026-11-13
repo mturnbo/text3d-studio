@@ -81,6 +81,7 @@ SLIDERS = {
         ("absorption", "Absorption", 0, 5, 2),
         ("outline_width", "Outline", *SHADING_RANGES["outline_width"], 2),
         ("outline_metallic", "Outline metallic", *SHADING_RANGES["outline_metallic"], 2),
+        ("emission_strength", "Glow", *SHADING_RANGES["emission_strength"], 2),
     ],
     "shadow": [
         ("opacity", "Opacity", 0, 1, 2),
@@ -102,7 +103,7 @@ CHECKBOXES = {
 COLORS = {
     "grid": [("color", "Grid color"), ("accent_color", "Path color")],
     "material": [("face_color", "Face color"), ("side_color", "Side color"), ("secondary_color", "Secondary color"),
-                 ("outline_color", "Outline color")],
+                 ("outline_color", "Outline color"), ("emission_color", "Glow color")],
     "light": [("color", "Light color"), ("ambient_color", "Ambient color")],
     "shadow": [("color", "Shadow color")],
 }
@@ -123,6 +124,8 @@ MATERIAL_CONTROLS = {
               "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
     "wood": ("face_color", "secondary_color", "texture_scale", "texture_strength", "grain_angle", "varnish",
              "bump_strength", "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
+    "neon": ("emission_color", "emission_strength", "face_color", "side_color", "roughness", "side_darkening",
+             "bevel_strength") + _OUTLINE,
 }
 
 # Placement fields shown for each mount; the others don't apply to it.
@@ -136,6 +139,7 @@ MATERIAL_LABELS = {
               "texture_strength": "Veining"},
     "wood": {"face_color": "Light wood", "secondary_color": "Dark wood", "texture_scale": "Ring spacing",
              "texture_strength": "Grain contrast"},
+    "neon": {"face_color": "Tube color"},
 }
 
 TEXT_EDITOR_LINES = 3  # visible lines in the Text field; more scroll

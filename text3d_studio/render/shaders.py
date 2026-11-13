@@ -164,6 +164,7 @@ struct Surface {
     float varnish;
     bool transmissive;       // glass: shows the backdrop, refracted
     float absorption;
+    vec3 emission;           // linear, unlit glow (neon), already scaled by its strength; may exceed 1
 };
 uniform Surface u_face;
 uniform Surface u_side;
@@ -435,6 +436,8 @@ void main() {
     } else {
         color = opaque(s, n, coat_local, v, l, h, base, metallic, roughness);
     }
+    // Glow adds in linear light and may pass 1; linear_to_srgb clips it (the outline doesn't glow).
+    color += s.emission * (1.0 - outline);
     frag = vec4(linear_to_srgb(color), coverage);
 }
 """

@@ -428,3 +428,17 @@ def test_outline_round_trips_and_crafted_values_are_clamped(qapp, tmp_path):
     crafted = project_dict(scene={"objects": [{"material": {"outline_width": "wide", "outline_color": [1, 2]}}]})
     material = load_project(write_json(tmp_path / "crafted.t3d", crafted)).document.scene.objects[0].material
     assert (material.outline_width, material.outline_color) == (0.0, model.MaterialParams().outline_color)
+
+
+def test_neon_glow_round_trips_and_crafted_values_are_clamped(qapp, tmp_path):
+    scene = Scene()
+    scene.objects[0].material = dataclasses.replace(
+        scene.objects[0].material, kind="neon", emission_color=(0.1, 1.0, 0.3), emission_strength=2.5
+    )
+    path = str(tmp_path / "neon.t3d")
+    save_project(path, Document(scene=scene))
+    assert load_project(path).document.scene.objects[0].material == scene.objects[0].material
+    crafted = project_dict(scene={"objects": [{"material": {"kind": "neon", "emission_strength": 1e9,
+                                                             "emission_color": [0.5, 9, -3]}}]})
+    material = load_project(write_json(tmp_path / "crafted.t3d", crafted)).document.scene.objects[0].material
+    assert (material.emission_strength, material.emission_color) == (5.0, (0.5, 1.0, 0.0))

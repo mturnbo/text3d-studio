@@ -370,7 +370,7 @@ def test_neutral_materials_stay_neutral_at_grazing_angles(compositor, kind):
 
 
 
-@pytest.mark.parametrize("kind", ["glass", "metal"])
+@pytest.mark.parametrize("kind", ["glass", "metal", "neon"])
 def test_preview_framebuffer_stays_opaque(compositor, kind):
     # Qt composites the canvas as premultiplied color: any alpha below 1 lets bright channels overflow and
     # wrap (e.g. a 245 blue becoming 9). The text's coverage and the grid's blending must not touch alpha.
@@ -392,7 +392,7 @@ def compositor_with_prepass(monkeypatch, enabled):
     return Compositor()
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, kind):
     from text3d_studio.materials import PRESETS
 
@@ -405,7 +405,7 @@ def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, ki
         prepass.delete()
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
     from OpenGL import GL
 
@@ -639,7 +639,7 @@ def read_text_layer(compositor):
     return np.frombuffer(data, np.uint8).reshape(layer.height, layer.width, 4)[::-1].astype(float)
 
 
-@pytest.mark.parametrize("kind", ["metal", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "glass", "neon"])
 def test_text_layer_is_premultiplied_with_coverage_alpha(compositor, kind):
     from text3d_studio.materials import PRESETS
 
@@ -1116,3 +1116,78 @@ def test_depth_prepass_matches_single_pass_with_an_outline(gl_context, monkeypat
     finally:
         single.delete()
         prepass.delete()
+
+
+# ----- Neon (emission) ----------------------------------------------------------------------------
+
+
+def neon_document(kind="neon", **material):
+    """Text in the dark: the light is off, so only ambient light and the glow show."""
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS["neon"], "kind": kind, **material})
+    doc.scene.objects[0].transform.rot_y = 0.0
+    doc.scene.objects[0].transform.size = 4.0
+    doc.scene.light.reflect_photo = False
+    doc.scene.light.intensity = 0.0
+    return doc
+
+
+def test_neon_is_brighter_than_plastic_of_the_same_color_in_the_dark(compositor):
+    neon = text_pixels(compositor, neon_document()).mean()
+    plastic = text_pixels(compositor, neon_document("plastic", emission_strength=0.0)).mean()
+    assert neon > plastic + 60
+
+
+@pytest.mark.parametrize("emission, channel", [((0.1, 1.0, 0.2), 1), ((1.0, 0.15, 0.1), 0), ((0.1, 0.3, 1.0), 2)])
+def test_emission_color_sets_the_hue(compositor, emission, channel):
+    gray = (0.2, 0.2, 0.2)
+    pixels = text_pixels(compositor, neon_document(emission_color=emission, face_color=gray, side_color=gray))
+    mean = pixels.mean(axis=0)
+    assert mean.argmax() == channel
+    assert mean[channel] > mean.min() + 60
+
+
+def test_zero_glow_neon_is_a_dark_plastic(compositor):
+    off = render(compositor, neon_document(emission_strength=0.0))
+    np.testing.assert_array_equal(off, render(compositor, neon_document("plastic", emission_strength=0.0)))
+    assert text_pixels(compositor, neon_document(emission_strength=0.0)).mean() < 0.5 * text_pixels(
+        compositor, neon_document()).mean()
+
+
+def test_stronger_glow_is_brighter_and_the_sides_glow_dimmer_than_the_face(compositor):
+    face, walls = face_and_wall_masks(compositor)
+
+    def glow(strength):
+        doc = sided_document(kind="neon", emission_strength=strength)
+        doc.scene.light.intensity = 0.0
+        pixels = render(compositor, doc)[..., :3].astype(float).mean(-1)
+        return pixels[face].mean(), pixels[walls].mean()
+
+    (dark_face, dark_walls), (face_glow, wall_glow), (bright_face, _) = glow(0.0), glow(1.0), glow(3.0)
+    assert dark_face < face_glow < bright_face
+    assert face_glow - dark_face > 1.5 * (wall_glow - dark_walls) > 0
+
+
+def test_glow_past_one_clips_in_the_stored_layer(compositor):
+    # Emission adds in linear light and can pass 1, but the 8-bit layer stores linear_to_srgb's clamped value.
+    render(compositor, neon_document(emission_strength=5.0, emission_color=(1.0, 0.25, 0.75)))
+    layer = read_text_layer(compositor)
+    solid = layer[..., 3] == 255
+    assert solid.sum() > 1000
+    assert np.mean(layer[solid][:, 0] == 255) > 0.5  # red is saturated over most of the face
+    assert np.all(layer[..., :3] <= layer[..., 3:] + 1)
+
+
+def test_a_neon_face_can_have_stone_sides_and_an_unlit_outline(compositor):
+    face, walls = face_and_wall_masks(compositor)
+    doc = sided_document("stone", kind="neon")
+    doc.scene.light.intensity = 0.0
+    pixels = render(compositor, doc)[..., :3].astype(float)
+    same = sided_document("same", kind="neon")
+    same.scene.light.intensity = 0.0
+    glowing = render(compositor, same)[..., :3].astype(float)
+    np.testing.assert_array_equal(pixels[face], glowing[face])
+    assert saturation_of(pixels[walls]).mean() < 0.5 * saturation_of(glowing[walls]).mean()  # gray stone walls
+    outlined = text_pixels(compositor, neon_document(outline_width=1.0, outline_color=(0.05, 0.05, 0.05))).mean()
+    assert outlined < text_pixels(compositor, neon_document()).mean()  # the dark outline band doesn't glow
