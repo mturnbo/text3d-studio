@@ -1164,6 +1164,27 @@ def test_sides_of_another_kind_hide_the_side_color_and_a_new_material_resets_the
     assert material_row_visible(panel, "side_color")
 
 
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+def test_every_kind_shows_the_outline_controls_and_typing_a_width_sets_it(vm, kind):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import ControlPanel, SliderRow
+
+    panel = ControlPanel(vm)
+    vm.apply_material(kind)
+    for field in ("outline_width", "outline_color", "outline_metallic"):
+        assert material_row_visible(panel, field), field
+    spin = panel.findChild(SliderRow, "material.outline_width").spin
+    spin.selectAll()
+    QTest.keyClicks(spin, "0.45")
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert vm.scene.objects[0].material.outline_width == 0.45
+    spin.selectAll()
+    QTest.keyClicks(spin, "7")  # beyond the range: the field keeps the value in range
+    QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert 0.0 <= vm.scene.objects[0].material.outline_width <= 1.0
+
+
 def test_selecting_another_object_shows_its_sides(vm):
     from text3d_studio.views.control_panel import ControlPanel
 

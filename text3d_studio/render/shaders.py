@@ -175,6 +175,9 @@ uniform float u_environment_lod;   // smallest mip level
 uniform float u_environment_strength;
 uniform sampler2D u_backdrop;        // the viewport behind the text (background and shadow), with mipmaps
 uniform float u_backdrop_lod;        // smallest mip level
+uniform float u_outline_width;       // in bevel widths; 0 = no outline
+uniform vec3 u_outline_color;        // linear
+uniform float u_outline_metallic;
 uniform mat4 u_proj;
 uniform float u_depth;
 uniform float u_world_size;
@@ -375,6 +378,7 @@ vec3 opaque(Surface s, vec3 n, vec3 coat_local, vec3 v, vec3 l, vec3 h, vec3 bas
 void main() {
     vec4 m;
     float coverage = mask_coverage(u_mask, v_uv, m);
+    float bevel_step = max(fwidth(m.b), 1e-4);  // before the discard, so neighbouring pixels still take part
     if (coverage <= 0.0) discard;
 
     vec2 dir = m.rg * 2.0 - 1.0;
@@ -406,6 +410,15 @@ void main() {
     } else if (s.pattern == PATTERN_WOOD) {
         wood_surface(s, v_local, relief, albedo, roughness, n_local);
     }
+    float metallic = s.metallic;
+    float outline = 0.0;
+    if (v_layer == 0 && u_outline_width > 0.0) {
+        // The mask's bevel factor is 1 at the silhouette and falls to 0 one bevel width inside, so its level
+        // sets follow the glyph's contour: the band is the outer `width` of the rim, antialiased over a pixel.
+        outline = clamp((m.b - (1.0 - u_outline_width)) / bevel_step, 0.0, 1.0);
+        albedo = mix(albedo, u_outline_color, outline);
+        metallic = mix(metallic, u_outline_metallic, outline);
+    }
     vec3 base = albedo * shade;
 
     vec3 n = normalize(mat3(u_model) * n_local);
@@ -416,8 +429,11 @@ void main() {
     vec3 color;
     if (s.transmissive) {
         color = glass(s, n, v, l, h, base, roughness);
+        if (outline > 0.0) {  // the outline is opaque, even on glass
+            color = mix(color, opaque(s, n, coat_local, v, l, h, base, metallic, roughness), outline);
+        }
     } else {
-        color = opaque(s, n, coat_local, v, l, h, base, s.metallic, roughness);
+        color = opaque(s, n, coat_local, v, l, h, base, metallic, roughness);
     }
     frag = vec4(linear_to_srgb(color), coverage);
 }

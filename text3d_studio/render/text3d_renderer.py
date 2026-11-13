@@ -88,6 +88,9 @@ class Text3DRenderer:
             _set_surface(program, "u_side", m.side_kind, side, side["side_color"], has_backdrop)
         else:
             _set_surface(program, "u_side", m.kind, vars(m), m.side_color, has_backdrop)
+        program.set_float("u_outline_width", m.outline_width)
+        program.set_vec3("u_outline_color", srgb_to_linear(m.outline_color))
+        program.set_float("u_outline_metallic", m.outline_metallic)
         if backdrop is not None:
             backdrop.bind(2)
             program.set_int("u_backdrop", 2)

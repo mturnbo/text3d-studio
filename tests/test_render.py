@@ -1038,3 +1038,81 @@ def test_depth_prepass_matches_single_pass_with_other_sides(gl_context, monkeypa
     finally:
         single.delete()
         prepass.delete()
+
+
+# ----- Outline ------------------------------------------------------------------------------------
+
+GREEN = (0.1, 0.8, 0.1)
+
+
+def outlined_document(kind="plastic", **material):
+    """Flat text (only a face) facing the camera, with a wide bevel so the outline band spans several pixels."""
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, "face_color": RED, "outline_color": GREEN, **material})
+    doc.scene.objects[0].transform.rot_y = 0.0
+    doc.scene.objects[0].transform.size = 4.0
+    doc.scene.objects[0].transform.depth = 0.0
+    doc.scene.objects[0].text.bevel_width = 16.0
+    doc.scene.light.reflect_photo = False
+    return doc
+
+
+def outline_change(compositor, width, **material):
+    """Pixels the outline changes, the text's coverage, and the outlined render."""
+    plain = render(compositor, outlined_document(**material))
+    outlined = render(compositor, outlined_document(outline_width=width, **material))
+    _, covered = text_image(compositor, outlined_document(**material), erode=0)
+    return np.any(plain != outlined, axis=-1), covered, outlined
+
+
+def test_zero_outline_width_renders_exactly_as_without_an_outline(compositor):
+    for kind in ("plastic", "glass", "stone"):
+        np.testing.assert_array_equal(
+            render(compositor, outlined_document(kind, outline_width=0.0, outline_metallic=1.0)),
+            render(compositor, outlined_document(kind, outline_color=(0.08, 0.08, 0.08))),
+        )
+
+
+def test_outline_colors_the_faces_edge_and_leaves_its_center_alone(compositor):
+    changed, covered, outlined = outline_change(compositor, 0.8)
+    rim = covered & ~eroded(covered, 3)
+    center = covered.copy()  # at least 12 px from the silhouette in every direction, diagonals included
+    for axis in (0, 1):
+        source = center.copy()
+        for shift in range(1, 13):
+            center &= np.roll(source, shift, axis) & np.roll(source, -shift, axis)
+    assert center.sum() > 500
+    assert not changed[center].any()
+    assert changed[rim].mean() > 0.4  # side walls and the antialiased silhouette make up the rest of the rim
+    colors = outlined[changed & covered][:, :3].astype(float)
+    assert np.mean(colors[:, 1] > colors[:, 0]) > 0.8  # green, not the red face
+
+
+def test_thicker_outlines_cover_more_of_the_face(compositor):
+    thin = outline_change(compositor, 0.3)[0].sum()
+    thick = outline_change(compositor, 0.9)[0].sum()
+    assert thin > 0 and thick > 1.5 * thin
+
+
+def test_metallic_outline_shades_differently_from_a_dielectric_one(compositor):
+    white = (0.9, 0.9, 0.9)
+    changed, covered, metal = outline_change(compositor, 0.9, outline_metallic=1.0, outline_color=white)
+    _, _, dielectric = outline_change(compositor, 0.9, outline_metallic=0.0, outline_color=white)
+    band = changed & eroded(covered, 1)
+    assert band.sum() > 200
+    assert np.abs(metal[band].astype(float) - dielectric[band].astype(float)).mean() > 10
+
+
+@pytest.mark.parametrize("kind", ["metal", "glass", "wood"])
+def test_depth_prepass_matches_single_pass_with_an_outline(gl_context, monkeypatch, kind):
+    from text3d_studio.materials import PRESETS
+
+    material = {**PRESETS[kind], "kind": kind, "outline_width": 0.7, "outline_color": GREEN}
+    doc = make_document(material=material, transform={"depth": 0.8, "rot_y": -45})
+    single, prepass = compositor_with_prepass(monkeypatch, False), compositor_with_prepass(monkeypatch, True)
+    try:
+        np.testing.assert_array_equal(render(prepass, doc), render(single, doc))
+    finally:
+        single.delete()
+        prepass.delete()

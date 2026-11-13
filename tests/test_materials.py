@@ -33,6 +33,9 @@ def test_preset_values_are_in_range(kind):
         assert 0.0 <= preset[name] <= 1.0, name
     assert -90.0 <= preset["grain_angle"] <= 90.0
     assert 0.0 <= preset["absorption"] <= 5.0
+    assert preset["outline_width"] == 0.0  # no kind starts with an outline
+    assert 0.0 <= preset["outline_metallic"] <= 1.0
+    assert len(preset["outline_color"]) == 3 and all(0.0 <= c <= 1.0 for c in preset["outline_color"])
 
 
 def test_only_stone_and_wood_carry_a_texture():
@@ -74,3 +77,33 @@ def test_sanitizing_keeps_known_side_kinds_only(value, expected):
     from text3d_studio.materials import sanitized_material_params
 
     assert sanitized_material_params(MaterialParams(side_kind=value)).side_kind == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    (0.5, 0.5), (0.0, 0.0), (1.0, 1.0), (5.0, 1.0), (-2.0, 0.0), (1, 1), (float("nan"), 0.0), (float("inf"), 0.0),
+    ("wide", 0.0), (True, 0.0), (None, 0.0),
+])
+def test_sanitizing_clamps_the_outline_width_and_metallic(value, expected):
+    from text3d_studio.materials import sanitized_material_params
+
+    params = sanitized_material_params(MaterialParams(outline_width=value, outline_metallic=value))
+    assert params.outline_width == expected and params.outline_metallic == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    ((0.2, 0.4, 0.6), (0.2, 0.4, 0.6)), ((2.0, -1.0, 0.5), (1.0, 0.0, 0.5)), ((1, 0, 0), (1.0, 0.0, 0.0)),
+    ((0.1, 0.2), None), ((0.1, float("nan"), 0.3), None), (("red", 0.0, 0.0), None), (0.5, None), ("red", None),
+])
+def test_sanitizing_repairs_the_outline_color(value, expected):
+    from text3d_studio.materials import sanitized_material_params
+
+    params = sanitized_material_params(MaterialParams(outline_color=value))
+    assert params.outline_color == (expected if expected is not None else MaterialParams().outline_color)
+
+
+def test_sanitizing_leaves_valid_materials_unchanged():
+    from text3d_studio.materials import sanitized_material_params
+
+    for kind in KINDS:
+        params = MaterialParams(kind=kind, **{**PRESETS[kind], "outline_width": 0.4, "side_kind": "stone"})
+        assert sanitized_material_params(params) == params

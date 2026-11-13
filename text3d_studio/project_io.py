@@ -39,7 +39,7 @@ FORMAT_VERSION = 1
 # Colour fields are tuples in the model but lists in JSON; these are turned back into tuples on load.
 COLOR_FIELDS = {
     GridParams: ("color", "accent_color"),
-    MaterialParams: ("face_color", "side_color", "secondary_color"),
+    MaterialParams: ("face_color", "side_color", "secondary_color", "outline_color"),
     LightParams: ("color", "ambient_color"),
     ShadowParams: ("color",),
 }

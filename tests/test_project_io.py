@@ -411,3 +411,20 @@ def test_side_material_round_trips_and_an_unknown_one_loads_as_same(qapp, tmp_pa
         crafted = project_dict(scene={"objects": [{"material": {"kind": "metal", "side_kind": value}}]})
         loaded = load_project(write_json(tmp_path / "crafted.t3d", crafted))
         assert loaded.document.scene.objects[0].material.side_kind == "same", value
+
+
+def test_outline_round_trips_and_crafted_values_are_clamped(qapp, tmp_path):
+    scene = Scene()
+    scene.objects[0].material = dataclasses.replace(
+        scene.objects[0].material, outline_width=0.6, outline_color=(0.2, 0.9, 0.4), outline_metallic=1.0
+    )
+    path = str(tmp_path / "outline.t3d")
+    save_project(path, Document(scene=scene))
+    assert load_project(path).document.scene.objects[0].material == scene.objects[0].material
+    crafted = project_dict(scene={"objects": [{"material": {
+        "outline_width": 1e300, "outline_metallic": -4, "outline_color": [3.0, -1.0, 0.5]}}]})
+    material = load_project(write_json(tmp_path / "crafted.t3d", crafted)).document.scene.objects[0].material
+    assert (material.outline_width, material.outline_metallic, material.outline_color) == (1.0, 0.0, (1.0, 0.0, 0.5))
+    crafted = project_dict(scene={"objects": [{"material": {"outline_width": "wide", "outline_color": [1, 2]}}]})
+    material = load_project(write_json(tmp_path / "crafted.t3d", crafted)).document.scene.objects[0].material
+    assert (material.outline_width, material.outline_color) == (0.0, model.MaterialParams().outline_color)

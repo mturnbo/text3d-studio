@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
-from ..materials import KINDS, SIDE_KINDS
+from ..materials import KINDS, SHADING_RANGES, SIDE_KINDS
 from ..text_raster import ALIGNMENTS
 from ..text_raster import LAYOUT_RANGES
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
@@ -79,6 +79,8 @@ SLIDERS = {
         ("bump_strength", "Bump", 0, 1, 2),
         ("varnish", "Varnish", 0, 1, 2),
         ("absorption", "Absorption", 0, 5, 2),
+        ("outline_width", "Outline", *SHADING_RANGES["outline_width"], 2),
+        ("outline_metallic", "Outline metallic", *SHADING_RANGES["outline_metallic"], 2),
     ],
     "shadow": [
         ("opacity", "Opacity", 0, 1, 2),
@@ -99,7 +101,8 @@ CHECKBOXES = {
 
 COLORS = {
     "grid": [("color", "Grid color"), ("accent_color", "Path color")],
-    "material": [("face_color", "Face color"), ("side_color", "Side color"), ("secondary_color", "Secondary color")],
+    "material": [("face_color", "Face color"), ("side_color", "Side color"), ("secondary_color", "Secondary color"),
+                 ("outline_color", "Outline color")],
     "light": [("color", "Light color"), ("ambient_color", "Ambient color")],
     "shadow": [("color", "Shadow color")],
 }
@@ -108,17 +111,18 @@ COLORS = {
 EYEDROPPER_COLORS = {("light", "color"), ("light", "ambient_color")}
 
 # Material fields shown for each kind (the kind itself decides `metallic`, so that slider never shows).
-_SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength")
+_OUTLINE = ("outline_width", "outline_color", "outline_metallic")  # every kind can have an outline
+_SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength") + _OUTLINE
 MATERIAL_CONTROLS = {
     "metal": _SOLID_COLOR,
     "plastic": _SOLID_COLOR,
     # Glass shows its roughness as frost and its thickness through the absorption tint.
-    "glass": ("face_color", "side_color", "absorption", "roughness", "side_darkening", "bevel_strength"),
+    "glass": ("face_color", "side_color", "absorption", "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
     # Textured materials color their side walls from the pattern too, so they have no side color.
     "stone": ("face_color", "secondary_color", "texture_scale", "texture_strength", "bump_strength",
-              "roughness", "side_darkening", "bevel_strength"),
+              "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
     "wood": ("face_color", "secondary_color", "texture_scale", "texture_strength", "grain_angle", "varnish",
-             "bump_strength", "roughness", "side_darkening", "bevel_strength"),
+             "bump_strength", "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
 }
 
 # Placement fields shown for each mount; the others don't apply to it.
