@@ -370,7 +370,7 @@ def test_neutral_materials_stay_neutral_at_grazing_angles(compositor, kind):
 
 
 
-@pytest.mark.parametrize("kind", ["glass", "metal"])
+@pytest.mark.parametrize("kind", ["glass", "metal", "neon"])
 def test_preview_framebuffer_stays_opaque(compositor, kind):
     # Qt composites the canvas as premultiplied color: any alpha below 1 lets bright channels overflow and
     # wrap (e.g. a 245 blue becoming 9). The text's coverage and the grid's blending must not touch alpha.
@@ -392,7 +392,7 @@ def compositor_with_prepass(monkeypatch, enabled):
     return Compositor()
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, kind):
     from text3d_studio.materials import PRESETS
 
@@ -405,7 +405,7 @@ def test_depth_prepass_matches_single_pass_rendering(gl_context, monkeypatch, ki
         prepass.delete()
 
 
-@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_deep_text_stays_above_30_fps_for_every_material(compositor, kind):
     from OpenGL import GL
 
@@ -473,6 +473,25 @@ def test_stone_bump_adds_detail(compositor):
     flat = sum(directional_detail(compositor, textured_document("stone", bump_strength=0.0)))
     bumpy = sum(directional_detail(compositor, textured_document("stone", bump_strength=1.0)))
     assert bumpy > 1.2 * flat
+
+
+@pytest.mark.parametrize("kind", ["stone", "wood"])
+def test_procedural_and_baked_noise_give_the_same_kind_of_texture(gl_context, monkeypatch, kind):
+    import text3d_studio.render.text3d_renderer as text3d_renderer
+
+    details = {}
+    for baked in (False, True):
+        monkeypatch.setattr(text3d_renderer, "BAKED_NOISE", baked)
+        compositor = Compositor()
+        try:
+            assert (compositor.text.noise is not None) is baked
+            details[baked] = directional_detail(compositor, textured_document(kind))
+            plain = directional_detail(compositor, textured_document(kind, texture_strength=0.0, bump_strength=0.0))
+        finally:
+            compositor.delete()
+        assert sum(details[baked]) > 1.5 * sum(plain)
+    for procedural, baked in zip(details[False], details[True]):
+        assert baked == pytest.approx(procedural, rel=0.25)  # as fine and as directional, though not identical
 
 
 @pytest.mark.parametrize("angle, across", [(0.0, "vertical"), (90.0, "horizontal")])
@@ -639,7 +658,7 @@ def read_text_layer(compositor):
     return np.frombuffer(data, np.uint8).reshape(layer.height, layer.width, 4)[::-1].astype(float)
 
 
-@pytest.mark.parametrize("kind", ["metal", "glass"])
+@pytest.mark.parametrize("kind", ["metal", "glass", "neon"])
 def test_text_layer_is_premultiplied_with_coverage_alpha(compositor, kind):
     from text3d_studio.materials import PRESETS
 
@@ -938,3 +957,356 @@ def test_arced_text_casts_a_shadow_at_grazing_light(compositor):
     unlit = make_document(text=text, transform={"rot_y": 0}, light=light, shadow={"enabled": False})
     darker = render(compositor, unlit)[..., :3].astype(int).sum(-1) - render(compositor, lit)[..., :3].astype(int).sum(-1)
     assert (darker > 30).sum() > 500
+
+
+# ----- Side materials -----------------------------------------------------------------------------
+
+
+def sided_document(side_kind="same", kind="metal", **material):
+    """Deep text turned well away from the camera, so its side walls cover plenty of pixels."""
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, "side_kind": side_kind, **material})
+    doc.scene.objects[0].transform.rot_y = -60.0
+    doc.scene.objects[0].transform.depth = 0.8
+    doc.scene.objects[0].transform.size = 4.0
+    doc.scene.light.reflect_photo = False
+    return doc
+
+
+def face_and_wall_masks(compositor, erode=2):
+    """Pixels well inside the face and well inside the side walls and back cap: plastic whose walls are a
+    different color from its face, compared with plastic whose walls match it."""
+    same = render(compositor, sided_document(kind="plastic", side_color=RED, face_color=RED))
+    other = render(compositor, sided_document(kind="plastic", side_color=(0.1, 0.8, 0.1), face_color=RED))
+    _, interior = text_image(compositor, sided_document(kind="plastic"), erode=0)
+    walls = np.any(same != other, axis=-1) & interior
+    return eroded(interior & ~walls, erode), eroded(walls, erode)
+
+
+def masked_detail(pixels, mask):
+    """Mean luminance change between neighbouring pixels that are both inside `mask`."""
+    luminance = pixels[..., :3].astype(float).mean(-1)
+    vertical = np.abs(np.diff(luminance, axis=0))[mask[1:] & mask[:-1]].mean()
+    horizontal = np.abs(np.diff(luminance, axis=1))[mask[:, 1:] & mask[:, :-1]].mean()
+    return vertical + horizontal
+
+
+def saturation_of(colors):
+    colors = colors[..., :3].astype(float)
+    return (colors.max(-1) - colors.min(-1)) / np.maximum(colors.max(-1), 1)
+
+
+def test_stone_sides_keep_a_gold_face_and_texture_the_walls(compositor):
+    face, walls = face_and_wall_masks(compositor)
+    assert face.sum() > 2000 and walls.sum() > 2000
+    gold = render(compositor, sided_document("same"))
+    stone_sides = render(compositor, sided_document("stone"))
+    np.testing.assert_array_equal(stone_sides[face], gold[face])  # the face is untouched
+    assert masked_detail(stone_sides, walls) > 2 * masked_detail(gold, walls)  # the walls show stone grain
+    assert saturation_of(stone_sides[walls]).mean() < 0.5 * saturation_of(gold[walls]).mean()  # gray, not gold
+
+
+def test_same_sides_render_like_naming_the_objects_own_kind(compositor):
+    # The material is the unchanged preset, so its own values and the preset's are the same look.
+    for kind in ("metal", "stone", "wood"):
+        np.testing.assert_array_equal(
+            render(compositor, sided_document("same", kind=kind)), render(compositor, sided_document(kind, kind=kind))
+        )
+
+
+def test_same_sides_follow_the_materials_side_color_but_other_kinds_ignore_it(compositor):
+    _, walls = face_and_wall_masks(compositor)
+    green = (0.1, 0.8, 0.1)
+
+    def wall_mean(side_kind, side_color):
+        pixels = render(compositor, sided_document(side_kind, kind="plastic", side_color=side_color))
+        return pixels[walls][:, :3].astype(float).mean(axis=0)
+
+    assert wall_mean("same", green)[1] > wall_mean("same", RED)[1] + 40
+    np.testing.assert_array_equal(wall_mean("plastic", green), wall_mean("plastic", RED))
+
+
+def test_glass_sides_show_the_photo_through_an_opaque_face(compositor):
+    face, walls = face_and_wall_masks(compositor)
+
+    def colors(side_kind, rgb):
+        doc = sided_document(side_kind, kind="plastic")
+        doc.background[..., :3] = rgb
+        return render(compositor, doc)[..., :3].astype(float)
+
+    warm, cool = colors("glass", (220, 160, 60)), colors("glass", (60, 120, 230))
+    assert (warm - cool)[walls][:, 0].mean() > 15  # the walls show what is behind them (through tinted glass)
+    np.testing.assert_array_equal(warm[face], cool[face])  # the plastic face doesn't
+    np.testing.assert_array_equal(colors("same", (220, 160, 60))[walls], colors("same", (60, 120, 230))[walls])
+
+
+def test_an_unknown_side_kind_renders_like_same(compositor):
+    np.testing.assert_array_equal(render(compositor, sided_document("cheese")), render(compositor, sided_document("same")))
+
+
+@pytest.mark.parametrize("kind, side_kind", [("metal", "stone"), ("glass", "wood"), ("plastic", "glass")])
+def test_depth_prepass_matches_single_pass_with_other_sides(gl_context, monkeypatch, kind, side_kind):
+    from text3d_studio.materials import PRESETS
+
+    material = {**PRESETS[kind], "kind": kind, "side_kind": side_kind}
+    doc = make_document(material=material, transform={"depth": 0.8, "rot_y": -45})
+    single, prepass = compositor_with_prepass(monkeypatch, False), compositor_with_prepass(monkeypatch, True)
+    try:
+        np.testing.assert_array_equal(render(prepass, doc), render(single, doc))
+    finally:
+        single.delete()
+        prepass.delete()
+
+
+# ----- Outline ------------------------------------------------------------------------------------
+
+GREEN = (0.1, 0.8, 0.1)
+
+
+def outlined_document(kind="plastic", **material):
+    """Flat text (only a face) facing the camera, with a wide bevel so the outline band spans several pixels."""
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, "face_color": RED, "outline_color": GREEN, **material})
+    doc.scene.objects[0].transform.rot_y = 0.0
+    doc.scene.objects[0].transform.size = 4.0
+    doc.scene.objects[0].transform.depth = 0.0
+    doc.scene.objects[0].text.bevel_width = 16.0
+    doc.scene.light.reflect_photo = False
+    return doc
+
+
+def outline_change(compositor, width, **material):
+    """Pixels the outline changes, the text's coverage, and the outlined render."""
+    plain = render(compositor, outlined_document(**material))
+    outlined = render(compositor, outlined_document(outline_width=width, **material))
+    _, covered = text_image(compositor, outlined_document(**material), erode=0)
+    return np.any(plain != outlined, axis=-1), covered, outlined
+
+
+def test_zero_outline_width_renders_exactly_as_without_an_outline(compositor):
+    for kind in ("plastic", "glass", "stone"):
+        np.testing.assert_array_equal(
+            render(compositor, outlined_document(kind, outline_width=0.0, outline_metallic=1.0)),
+            render(compositor, outlined_document(kind, outline_color=(0.08, 0.08, 0.08))),
+        )
+
+
+def test_outline_colors_the_faces_edge_and_leaves_its_center_alone(compositor):
+    changed, covered, outlined = outline_change(compositor, 0.8)
+    rim = covered & ~eroded(covered, 3)
+    center = covered.copy()  # at least 12 px from the silhouette in every direction, diagonals included
+    for axis in (0, 1):
+        source = center.copy()
+        for shift in range(1, 13):
+            center &= np.roll(source, shift, axis) & np.roll(source, -shift, axis)
+    assert center.sum() > 500
+    assert not changed[center].any()
+    assert changed[rim].mean() > 0.4  # side walls and the antialiased silhouette make up the rest of the rim
+    colors = outlined[changed & covered][:, :3].astype(float)
+    assert np.mean(colors[:, 1] > colors[:, 0]) > 0.8  # green, not the red face
+
+
+def test_thicker_outlines_cover_more_of_the_face(compositor):
+    thin = outline_change(compositor, 0.3)[0].sum()
+    thick = outline_change(compositor, 0.9)[0].sum()
+    assert thin > 0 and thick > 1.5 * thin
+
+
+def test_metallic_outline_shades_differently_from_a_dielectric_one(compositor):
+    white = (0.9, 0.9, 0.9)
+    changed, covered, metal = outline_change(compositor, 0.9, outline_metallic=1.0, outline_color=white)
+    _, _, dielectric = outline_change(compositor, 0.9, outline_metallic=0.0, outline_color=white)
+    band = changed & eroded(covered, 1)
+    assert band.sum() > 200
+    assert np.abs(metal[band].astype(float) - dielectric[band].astype(float)).mean() > 10
+
+
+@pytest.mark.parametrize("kind", ["metal", "glass", "wood"])
+def test_depth_prepass_matches_single_pass_with_an_outline(gl_context, monkeypatch, kind):
+    from text3d_studio.materials import PRESETS
+
+    material = {**PRESETS[kind], "kind": kind, "outline_width": 0.7, "outline_color": GREEN}
+    doc = make_document(material=material, transform={"depth": 0.8, "rot_y": -45})
+    single, prepass = compositor_with_prepass(monkeypatch, False), compositor_with_prepass(monkeypatch, True)
+    try:
+        np.testing.assert_array_equal(render(prepass, doc), render(single, doc))
+    finally:
+        single.delete()
+        prepass.delete()
+
+
+# ----- Neon (emission) ----------------------------------------------------------------------------
+
+
+def neon_document(kind="neon", **material):
+    """Text in the dark: the light is off, so only ambient light and the glow show."""
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS["neon"], "kind": kind, **material})
+    doc.scene.objects[0].transform.rot_y = 0.0
+    doc.scene.objects[0].transform.size = 4.0
+    doc.scene.light.reflect_photo = False
+    doc.scene.light.intensity = 0.0
+    return doc
+
+
+def test_neon_is_brighter_than_plastic_of_the_same_color_in_the_dark(compositor):
+    neon = text_pixels(compositor, neon_document()).mean()
+    plastic = text_pixels(compositor, neon_document("plastic", emission_strength=0.0)).mean()
+    assert neon > plastic + 60
+
+
+@pytest.mark.parametrize("emission, channel", [((0.1, 1.0, 0.2), 1), ((1.0, 0.15, 0.1), 0), ((0.1, 0.3, 1.0), 2)])
+def test_emission_color_sets_the_hue(compositor, emission, channel):
+    gray = (0.2, 0.2, 0.2)
+    pixels = text_pixels(compositor, neon_document(emission_color=emission, face_color=gray, side_color=gray))
+    mean = pixels.mean(axis=0)
+    assert mean.argmax() == channel
+    assert mean[channel] > mean.min() + 60
+
+
+def test_zero_glow_neon_is_a_dark_plastic(compositor):
+    off = render(compositor, neon_document(emission_strength=0.0))
+    np.testing.assert_array_equal(off, render(compositor, neon_document("plastic", emission_strength=0.0)))
+    assert text_pixels(compositor, neon_document(emission_strength=0.0)).mean() < 0.5 * text_pixels(
+        compositor, neon_document()).mean()
+
+
+def test_stronger_glow_is_brighter_and_the_sides_glow_dimmer_than_the_face(compositor):
+    face, walls = face_and_wall_masks(compositor)
+
+    def glow(strength):
+        doc = sided_document(kind="neon", emission_strength=strength)
+        doc.scene.light.intensity = 0.0
+        pixels = render(compositor, doc)[..., :3].astype(float).mean(-1)
+        return pixels[face].mean(), pixels[walls].mean()
+
+    (dark_face, dark_walls), (face_glow, wall_glow), (bright_face, _) = glow(0.0), glow(1.0), glow(3.0)
+    assert dark_face < face_glow < bright_face
+    assert face_glow - dark_face > 1.5 * (wall_glow - dark_walls) > 0
+
+
+def test_glow_past_one_clips_in_the_stored_layer(compositor):
+    # Emission adds in linear light and can pass 1, but the 8-bit layer stores linear_to_srgb's clamped value.
+    render(compositor, neon_document(emission_strength=5.0, emission_color=(1.0, 0.25, 0.75)))
+    layer = read_text_layer(compositor)
+    solid = layer[..., 3] == 255
+    assert solid.sum() > 1000
+    assert np.mean(layer[solid][:, 0] == 255) > 0.5  # red is saturated over most of the face
+    assert np.all(layer[..., :3] <= layer[..., 3:] + 1)
+
+
+def test_a_neon_face_can_have_stone_sides_and_an_unlit_outline(compositor):
+    face, walls = face_and_wall_masks(compositor)
+    doc = sided_document("stone", kind="neon")
+    doc.scene.light.intensity = 0.0
+    pixels = render(compositor, doc)[..., :3].astype(float)
+    same = sided_document("same", kind="neon")
+    same.scene.light.intensity = 0.0
+    glowing = render(compositor, same)[..., :3].astype(float)
+    np.testing.assert_array_equal(pixels[face], glowing[face])
+    assert saturation_of(pixels[walls]).mean() < 0.5 * saturation_of(glowing[walls]).mean()  # gray stone walls
+    outlined = text_pixels(compositor, neon_document(outline_width=1.0, outline_color=(0.05, 0.05, 0.05))).mean()
+    assert outlined < text_pixels(compositor, neon_document()).mean()  # the dark outline band doesn't glow
+
+
+# ----- Glass far walls ----------------------------------------------------------------------------
+
+
+def compositor_with_far_walls(monkeypatch, enabled):
+    import text3d_studio.render.text3d_renderer as text3d_renderer
+
+    monkeypatch.setattr(text3d_renderer, "GLASS_FAR_WALLS", enabled)
+    return Compositor()
+
+
+def thick_glass_document(kind="glass", **material):
+    doc = glass_document(kind, **material)
+    doc.scene.objects[0].transform.depth = 0.8
+    doc.scene.objects[0].transform.rot_y = -30.0
+    return doc
+
+
+def render_with_far_walls(monkeypatch, doc, enabled):
+    compositor = compositor_with_far_walls(monkeypatch, enabled)
+    try:
+        return render(compositor, doc)
+    finally:
+        compositor.delete()
+
+
+def test_thick_glass_shows_its_far_walls_on_a_flat_background(gl_context, monkeypatch):
+    doc = thick_glass_document()
+    with_walls = render_with_far_walls(monkeypatch, doc, True)
+    without = render_with_far_walls(monkeypatch, doc, False)
+    compositor = Compositor()
+    try:
+        _, interior = text_image(compositor, thick_glass_document("plastic"), erode=3)
+    finally:
+        compositor.delete()
+    # The flat photo seen through the glass is nearly uniform; the far walls behind the front break it up.
+    assert luminance(with_walls)[interior].std() > 1.3 * luminance(without)[interior].std()
+    assert np.mean(np.any(with_walls != without, axis=-1)[interior]) > 0.3
+
+
+def test_far_walls_take_the_side_tint(gl_context, monkeypatch):
+    blue = (0.3, 0.5, 1.0)
+
+    def mean_color(enabled):
+        doc = thick_glass_document(side_color=blue, face_color=(1.0, 1.0, 1.0), absorption=0.5)
+        doc.background[..., :3] = 255
+        return render_with_far_walls(monkeypatch, doc, enabled)[..., :3].astype(float)
+
+    compositor = Compositor()
+    try:
+        _, interior = text_image(compositor, thick_glass_document("plastic"), erode=3)
+    finally:
+        compositor.delete()
+    with_walls, without = mean_color(True)[interior].mean(axis=0), mean_color(False)[interior].mean(axis=0)
+    assert (with_walls[2] - with_walls[0]) > (without[2] - without[0]) + 10  # bluer through the tinted walls
+
+
+def test_glass_face_shows_opaque_sides_through_it_only_with_far_walls(gl_context, monkeypatch):
+    def interior_pixels(side_kind, enabled):
+        compositor = compositor_with_far_walls(monkeypatch, enabled)
+        try:
+            _, interior = text_image(compositor, thick_glass_document("plastic"), erode=3)
+            doc = thick_glass_document(side_kind=side_kind)
+            return render(compositor, doc)[interior].astype(float)
+        finally:
+            compositor.delete()
+
+    # Without far walls the face only refracts the photo, whatever the sides are made of.
+    assert np.abs(interior_pixels("wood", False) - interior_pixels("same", False)).mean() < 15
+    assert np.abs(interior_pixels("wood", True) - interior_pixels("same", True)).mean() > 15
+
+
+def test_opaque_objects_are_unaffected_by_far_walls(gl_context, monkeypatch):
+    plastic, glass = text_object(0, material="plastic", x=-3.0), text_object(1, material="glass", x=3.0)
+    for obj in (plastic, glass):
+        obj.transform.depth = 0.8
+    doc = scene_of(plastic, glass)
+    with_walls = render_with_far_walls(monkeypatch, doc, True)
+    without = render_with_far_walls(monkeypatch, doc, False)
+    glass_only = scene_of(text_object(1, material="plastic", x=3.0, depth=0.8))
+    compositor = Compositor()
+    try:
+        _, glass_area = text_image(compositor, glass_only, erode=0)
+    finally:
+        compositor.delete()
+    changed = np.any(with_walls != without, axis=-1)
+    assert changed.any()
+    assert not changed[~glass_area].any()  # the plastic object and the photo are untouched
+    for kind in ("metal", "stone", "neon"):
+        opaque = make_document(material={"kind": kind}, transform={"depth": 0.8, "rot_y": -40})
+        np.testing.assert_array_equal(
+            render_with_far_walls(monkeypatch, opaque, True), render_with_far_walls(monkeypatch, opaque, False)
+        )
+
+
+def test_flat_glass_has_no_far_walls_to_show(gl_context, monkeypatch):
+    doc = thick_glass_document()
+    doc.scene.objects[0].transform.depth = 0.0
+    np.testing.assert_array_equal(render_with_far_walls(monkeypatch, doc, True), render_with_far_walls(monkeypatch, doc, False))

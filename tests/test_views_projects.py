@@ -512,6 +512,89 @@ def test_oversized_and_non_finite_values_open_safely_and_show_in_range(window, t
     window.canvas.grab()  # paints, rasterizing the loaded text
 
 
+def test_a_painted_mask_saves_reopens_and_covers_the_text_in_the_export(window, tmp_path, monkeypatch, qapp):
+    window.show()
+    window.load_image_path(image_file(tmp_path))
+    plain = window.canvas.render_export()
+    window.vm.set("mask", "brush_size", 0.5)
+    window.vm.paint_mask((0, 20), (60, 20))  # most of the 60 x 40 photo
+    painted = window.vm.document.mask.copy()
+    covered = window.canvas.render_export()
+    photo = np.zeros((40, 60, 3), np.uint8)
+    photo[:, :30, 0] = 200
+    assert np.array_equal(covered[painted == 255][:, :3], photo[painted == 255])
+    assert not np.array_equal(covered, plain)
+    path = str(tmp_path / "masked.t3d")
+    save_dialog(monkeypatch, path)
+    assert window.save_project_as()
+    window.vm.clear_mask()
+    window.open_project_path(path)
+    qapp.processEvents()
+    assert np.array_equal(window.vm.document.mask, painted)
+    assert np.array_equal(window.canvas.render_export(), covered)
+    window.vm.mark_saved()
+
+
+def test_hostile_shading_values_open_safely_and_show_in_range(window, tmp_path, qapp):
+    from PyQt6.QtWidgets import QComboBox
+
+    path = write_project_text(tmp_path / "hostile-shading.t3d", """{
+        "objects": [{"id": 0, "material": {"kind": "neon", "side_kind": "cheese", "outline_width": NaN,
+                                           "outline_metallic": 1e300, "outline_color": [9, -1, 0.5],
+                                           "emission_strength": Infinity, "emission_color": [0.5, "x", 1]}},
+                    {"id": 1, "material": {"kind": "glass", "side_kind": 12, "outline_width": 1e300,
+                                           "emission_strength": -5}}]
+    }""")
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    first, second = (obj.material for obj in window.vm.scene.objects)
+    assert (first.side_kind, first.outline_width, first.outline_metallic) == ("same", 0.0, 1.0)
+    assert first.outline_color == (1.0, 0.0, 0.5)
+    assert first.emission_strength == 0.0 and first.emission_color == (1.0, 0.25, 0.75)  # defaults
+    assert (second.side_kind, second.outline_width, second.emission_strength) == ("same", 1.0, 0.0)
+    assert window.panel.findChild(QComboBox, "material.side_kind").currentData() == "same"
+    assert slider_value(window, "material.outline_metallic") == 1.0
+    window.canvas.grab()  # paints every object
+
+
+def test_hostile_effect_values_open_safely_and_paint(window, tmp_path, qapp):
+    path = write_project_text(tmp_path / "hostile-effects.t3d", """{
+        "shadow": {"contact_strength": Infinity, "contact_size": -1e300},
+        "effects": {"bloom_strength": 1e300, "bloom_radius": NaN, "grain_amount": -Infinity, "grain_size": 0,
+                    "blur_radius": 1e9, "grade_contrast": "high", "grade_warmth": -1e9, "dof_focus": 0,
+                    "dof_aperture": Infinity, "reflection_fade": -3}
+    }""")
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    effects = window.vm.scene.effects
+    assert (effects.bloom_strength, effects.bloom_radius, effects.grain_amount, effects.grain_size) == (2.0, 0.3, 0.0, 0.5)
+    assert (effects.blur_radius, effects.grade_contrast, effects.grade_warmth) == (1.0, 1.0, -1.0)
+    assert (effects.dof_focus, effects.dof_aperture, effects.reflection_fade) == (0.5, 0.0, 0.1)
+    shadow = window.vm.scene.shadow
+    assert (shadow.contact_strength, shadow.contact_size) == (0.0, 0.02)
+    assert slider_value(window, "effects.bloom_strength") == 2.0
+    assert slider_value(window, "effects.dof_focus") == 0.5
+    window.canvas.grab()  # paints with every effect at its limit
+
+
+@pytest.mark.parametrize("kind", ["cheese", 12, None])
+def test_an_unknown_material_kind_opens_as_the_default_kind(window, tmp_path, qapp, kind):
+    import json
+
+    from PyQt6.QtWidgets import QComboBox
+
+    path = write_project_text(tmp_path / "unknown-kind.t3d", '{"objects": [{"id": 0, "material": {"kind": %s}}]}'
+                              % json.dumps(kind))
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    assert window.vm.scene.objects[0].material.kind == "metal"
+    assert window.panel.findChild(QComboBox, "material.kind").currentData() == "metal"
+    window.canvas.grab()
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1e12, 1e12])
 def test_sliders_show_the_nearest_value_in_range(window, value):
     row = window.panel.findChild(SliderRow, "light.intensity")

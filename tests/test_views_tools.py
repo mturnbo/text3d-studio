@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QMessageBox
 
 from text3d_studio import ground as ground_model
 from text3d_studio import math3d
-from text3d_studio.model import Document
+from text3d_studio.model import FIELD_RANGES, Document, EffectsParams, ShadowParams
 from text3d_studio.preferences import Preferences
 from text3d_studio.viewmodel import SceneViewModel
 from text3d_studio.views.image_canvas import TEXT_TOOL, WALL_TOOL
@@ -610,3 +610,198 @@ def test_wall_preview_is_clipped_to_the_photo(vm):
     inside = (rows >= rect_y) & (rows < rect_y + rect_h)
     assert alpha[inside].any()
     assert not alpha[~inside].any()
+
+
+# ----- Mask tool --------------------------------------------------------------------------------
+
+
+def mask_canvas(vm):
+    from text3d_studio.views.image_canvas import MASK_TOOL
+
+    canvas, _ = picking_canvas(vm)  # 160 x 100 photo at 5 widget pixels per photo pixel
+    vm.set("mask", "brush_size", 0.1)  # 10 photo pixels across
+    vm.set("mask", "feather", 0.0)
+    vm.clear_history()
+    canvas.set_tool(MASK_TOOL)
+    return canvas
+
+
+def test_dragging_with_the_mask_tool_paints_along_the_path_in_photo_pixels(vm):
+    canvas = mask_canvas(vm)
+    drag(canvas, widget_position(canvas, 50, 20), widget_position(canvas, 50, 120))
+    mask = vm.document.mask
+    assert mask.shape == (100, 160)
+    assert (mask[50, 20:121] == 255).all()
+    assert mask[50, 140] == 0 and mask[20, 70] == 0
+
+
+def test_a_mask_stroke_is_one_undo_step_however_long(vm):
+    canvas = mask_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseButtonPress, widget_position(canvas, 20, 20), Qt.MouseButton.LeftButton)
+    for column in range(30, 140, 10):
+        mouse(canvas, QEvent.Type.MouseMove, widget_position(canvas, 20 + column // 4, column), Qt.MouseButton.NoButton,
+              Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, widget_position(canvas, 50, 130), Qt.MouseButton.LeftButton,
+          Qt.MouseButton.NoButton)
+    assert vm.document.mask[20, 20] == 255
+    assert vm.undo() and vm.document.mask is None and not vm.can_undo
+    assert vm.redo() and vm.document.mask[20, 20] == 255
+
+
+def test_option_drag_erases_and_the_text_never_moves(vm):
+    canvas = mask_canvas(vm)
+    transform = dataclasses.replace(vm.selected_object.transform)
+    drag(canvas, widget_position(canvas, 50, 20), widget_position(canvas, 50, 120))
+    drag(canvas, widget_position(canvas, 50, 70), widget_position(canvas, 50, 70), modifiers=Qt.KeyboardModifier.AltModifier)
+    assert vm.document.mask[50, 70] == 0 and vm.document.mask[50, 30] == 255
+    assert vm.selected_object.transform == transform
+    vm.undo()
+    assert vm.document.mask[50, 70] == 255
+
+
+def test_the_mask_tool_without_a_photo_paints_nothing(vm):
+    from text3d_studio.views.image_canvas import MASK_TOOL
+
+    canvas = sized_canvas(vm)
+    canvas.set_tool(MASK_TOOL)
+    drag(canvas, (100, 100), (300, 200))
+    assert vm.document.mask is None and not vm.can_undo
+
+
+def test_the_brush_outline_follows_the_cursor_and_the_brush_size(vm):
+    canvas = mask_canvas(vm)
+    assert canvas.tool_overlay.isVisibleTo(canvas)
+    mouse(canvas, QEvent.Type.MouseMove, (300, 200), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    center, radius = canvas.brush_outline_px()
+    assert center == (300, 200) and radius == pytest.approx(0.1 * 500 / 2)
+    vm.set("mask", "brush_size", 0.2)
+    assert canvas.brush_outline_px()[1] == pytest.approx(0.2 * 500 / 2)
+    canvas.set_show_original(True)
+    assert not canvas.tool_overlay.isVisibleTo(canvas)
+
+
+def test_mask_tool_is_in_the_tools_menu_with_shortcut_m(window):
+    from text3d_studio.views.image_canvas import MASK_TOOL
+
+    action = window.tool_actions[MASK_TOOL]
+    assert action.shortcut() == QKeySequence("M")
+    assert action in window.toolbar.actions()
+    action.trigger()
+    assert window.canvas.tool == MASK_TOOL
+    assert "erase" in window.hint_label.text().lower()
+
+
+def test_the_panel_sets_the_brush_and_clears_the_mask(window):
+    from PyQt6.QtWidgets import QPushButton
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    vm = window.vm
+    vm.set_background(photo())
+    button = window.panel.findChild(QPushButton, "mask.clear")
+    assert not button.isEnabled()
+    window.panel.findChild(SliderRow, "mask.brush_size").spin.setValue(0.2)
+    assert vm.scene.mask.brush_size == pytest.approx(0.2)
+    vm.paint_mask((50, 50), (50, 50))
+    assert button.isEnabled()
+    button.click()
+    assert vm.document.mask is None and not button.isEnabled()
+    vm.undo()
+    assert vm.document.mask is not None and button.isEnabled()
+
+
+def test_a_mask_the_gpu_cannot_hold_is_reported_not_raised_while_painting(vm):
+    canvas = sized_canvas(vm)
+    errors = []
+    canvas.error.connect(errors.append)
+    canvas.show()
+    canvas.grab()  # creates the GL context
+    vm.document.mask = np.zeros((1, canvas.compositor.max_texture_size + 1), np.uint8)
+    vm.mask_changed.emit(None)
+    canvas.grab()  # paints; the upload's error goes to the signal
+    assert errors and "Mask is" in errors[0]
+    canvas.close()
+
+
+def test_setting_the_wall_says_the_photo_shows_one_in_the_same_undo_step(vm):
+    canvas = wall_canvas(vm)
+    vm.clear_history()
+    drag(canvas, (200, 400), (600, 350))
+    assert vm.scene.wall.enabled
+    assert vm.undo() and not vm.scene.wall.enabled and not vm.can_undo
+
+
+def test_the_wall_group_has_a_checkbox_for_a_wall_in_the_photo(window):
+    from PyQt6.QtWidgets import QCheckBox
+
+    box = next(b for b in window.panel.findChildren(QCheckBox) if "Wall in the photo" in b.text())
+    assert not box.isChecked()
+    box.setChecked(True)
+    assert window.vm.scene.wall.enabled
+    window.vm.undo()
+    assert not box.isChecked()
+
+
+# ----- Effects and contact shadow controls --------------------------------------------------------
+
+EFFECT_SLIDERS = [("effects", f.name) for f in dataclasses.fields(EffectsParams)] + [
+    ("shadow", "contact_strength"), ("shadow", "contact_size")]
+
+
+def test_every_effect_and_the_contact_shadow_have_a_slider_over_their_range(window):
+    from text3d_studio.views.control_panel import SliderRow
+
+    for section, name in EFFECT_SLIDERS:
+        row = window.panel.findChild(SliderRow, f"{section}.{name}")
+        assert row is not None, name
+        owner = EffectsParams if section == "effects" else ShadowParams
+        assert (row.spin.minimum(), row.spin.maximum()) == FIELD_RANGES[owner][name]
+        assert row.spin.value() == pytest.approx(getattr(getattr(window.vm.scene, section), name))
+
+
+def test_the_effects_group_holds_the_effects_and_the_shadow_group_the_contact_shadow(window):
+    from PyQt6.QtWidgets import QGroupBox
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    groups = {box.title(): box for box in window.panel.findChildren(QGroupBox)}
+    effects = {row.objectName() for row in groups["Effects"].findChildren(SliderRow)}
+    assert effects == {f"effects.{f.name}" for f in dataclasses.fields(EffectsParams)}
+    shadow = {row.objectName() for row in groups["Shadow"].findChildren(SliderRow)}
+    assert {"shadow.contact_strength", "shadow.contact_size"} <= shadow
+
+
+@pytest.mark.parametrize("section, name", EFFECT_SLIDERS)
+def test_dragging_an_effect_slider_sets_the_model_as_one_undo_step(window, qapp, section, name):
+    from test_views import activate, drag_slider, undo_steps
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, f"{section}.{name}")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    before = getattr(getattr(window.vm.scene, section), name)
+    values = []
+    window.vm.scene_changed.connect(
+        lambda s, f: values.append(getattr(getattr(window.vm.scene, s), f)) if (s, f) == (section, name) else None)
+    drag_slider(row.slider, 80)
+    after = getattr(getattr(window.vm.scene, section), name)
+    assert after > before
+    assert row.spin.value() == pytest.approx(after)
+    assert len(set(values)) > 2  # the drag passed through several values
+    assert undo_steps(window.vm) == 1
+    assert getattr(getattr(window.vm.scene, section), name) == before
+
+
+def test_the_effects_typed_into_the_panel_reach_the_render(window, qapp):
+    from text3d_studio.views.control_panel import SliderRow
+
+    window.show()
+    window.vm.set_background(photo())
+    plain = window.canvas.render_export()
+    window.panel.findChild(SliderRow, "effects.grade_saturation").spin.setValue(0.0)
+    window.panel.findChild(SliderRow, "effects.grain_amount").spin.setValue(0.5)
+    assert (window.vm.scene.effects.grade_saturation, window.vm.scene.effects.grain_amount) == (0.0, 0.5)
+    assert not np.array_equal(window.canvas.render_export(), plain)
+    window.vm.mark_saved()

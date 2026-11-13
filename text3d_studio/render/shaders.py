@@ -70,11 +70,21 @@ void main() {
 # 3D gradient noise (Perlin-style, arithmetic hash, no lookup textures) and fractional Brownian motion.
 # Procedural materials sample these at the text-local position, so patterns run continuously across the
 # face and around the side walls of the layer stack.
-NOISE_GLSL = """
+GRADIENT_NOISE_GLSL = """
 vec3 hash33(vec3 p) {
     p = fract(p * vec3(0.1031, 0.1030, 0.0973));
     p += dot(p, p.yxz + 33.33);
     return -1.0 + 2.0 * fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// The lattice cell a corner's gradient comes from. Baking wraps it, so the baked noise tiles every
+// NOISE_PERIOD cells.
+vec3 lattice_cell(vec3 c) {
+#ifdef WRAP_LATTICE
+    return mod(c, NOISE_PERIOD);
+#else
+    return c;
+#endif
 }
 
 // Roughly in [-1, 1], zero at integer lattice points, smooth (quintic fade) everywhere.
@@ -82,25 +92,64 @@ float gradient_noise(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
     vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    float n000 = dot(hash33(i), f);
-    float n100 = dot(hash33(i + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));
-    float n010 = dot(hash33(i + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));
-    float n110 = dot(hash33(i + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));
-    float n001 = dot(hash33(i + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));
-    float n101 = dot(hash33(i + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));
-    float n011 = dot(hash33(i + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));
-    float n111 = dot(hash33(i + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));
+    float n000 = dot(hash33(lattice_cell(i)), f);
+    float n100 = dot(hash33(lattice_cell(i + vec3(1.0, 0.0, 0.0))), f - vec3(1.0, 0.0, 0.0));
+    float n010 = dot(hash33(lattice_cell(i + vec3(0.0, 1.0, 0.0))), f - vec3(0.0, 1.0, 0.0));
+    float n110 = dot(hash33(lattice_cell(i + vec3(1.0, 1.0, 0.0))), f - vec3(1.0, 1.0, 0.0));
+    float n001 = dot(hash33(lattice_cell(i + vec3(0.0, 0.0, 1.0))), f - vec3(0.0, 0.0, 1.0));
+    float n101 = dot(hash33(lattice_cell(i + vec3(1.0, 0.0, 1.0))), f - vec3(1.0, 0.0, 1.0));
+    float n011 = dot(hash33(lattice_cell(i + vec3(0.0, 1.0, 1.0))), f - vec3(0.0, 1.0, 1.0));
+    float n111 = dot(hash33(lattice_cell(i + vec3(1.0, 1.0, 1.0))), f - vec3(1.0, 1.0, 1.0));
     return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
                mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
 }
+"""
 
+# fbm's octaves read their noise through octave_noise. The precomputed alternative (text3d_renderer.BAKED_NOISE)
+# bakes gradient_noise once into a tiling 3D texture of NOISE_PERIOD lattice cells per side, NOISE_TEXELS_PER_CELL
+# texels per cell, read with trilinear filtering: one fetch instead of eight hashes. Only fbm uses it (stone
+# about 24 calls per pixel, wood 12); the direct gradient_noise calls stay procedural, because they draw the fine
+# speckle and grain whose finite-difference bump would show the texture's trilinear facets as a grid.
+NOISE_PERIOD = 16
+NOISE_TEXELS_PER_CELL = 8
+
+PROCEDURAL_OCTAVE_GLSL = """
+float octave_noise(vec3 p) {
+    return gradient_noise(p);
+}
+"""
+
+BAKED_OCTAVE_GLSL = f"""
+uniform sampler3D u_noise;
+// Texel k holds the noise at (k + 0.5) / NOISE_TEXELS_PER_CELL cells: exactly where trilinear filtering
+// returns it unblended, so the texture reproduces the noise at texel centers and interpolates between them.
+float octave_noise(vec3 p) {{
+    return texture(u_noise, p * {1.0 / NOISE_PERIOD!r}).r;
+}}
+"""
+
+# Renders one z slice of the baked noise volume (see BAKED_OCTAVE_GLSL).
+NOISE_BAKE_FS = f"""
+#version 410 core
+#define WRAP_LATTICE
+const float NOISE_PERIOD = {float(NOISE_PERIOD)!r};
+uniform float u_slice;
+out vec4 frag;
+""" + GRADIENT_NOISE_GLSL + f"""
+void main() {{
+    vec3 texel = vec3(gl_FragCoord.xy, u_slice + 0.5);
+    frag = vec4(gradient_noise(texel / {float(NOISE_TEXELS_PER_CELL)!r}), 0.0, 0.0, 1.0);
+}}
+"""
+
+FBM_GLSL = """
 // Octaves of noise at doubling frequency and halving amplitude, normalized back to roughly [-1, 1].
 float fbm(vec3 p, int octaves) {
     float sum = 0.0;
     float amplitude = 1.0;
     float total = 0.0;
     for (int i = 0; i < octaves; ++i) {
-        sum += amplitude * gradient_noise(p);
+        sum += amplitude * octave_noise(p);
         total += amplitude;
         p = p * 2.03 + vec3(17.1, 31.7, 7.3);  // offset so octaves don't share lattice zeros
         amplitude *= 0.5;
@@ -108,6 +157,20 @@ float fbm(vec3 p, int octaves) {
     return sum / total;
 }
 """
+
+NOISE_GLSL = GRADIENT_NOISE_GLSL + PROCEDURAL_OCTAVE_GLSL + FBM_GLSL
+BAKED_NOISE_GLSL = GRADIENT_NOISE_GLSL + BAKED_OCTAVE_GLSL + FBM_GLSL
+# The materials' noise: fbm baked when the shader is built with BAKED_NOISE defined (see with_define).
+MATERIAL_NOISE_GLSL = (
+    GRADIENT_NOISE_GLSL + "#ifdef BAKED_NOISE\n" + BAKED_OCTAVE_GLSL + "#else\n" + PROCEDURAL_OCTAVE_GLSL + "#endif\n"
+    + FBM_GLSL
+)
+
+
+def with_define(source: str, name: str) -> str:
+    """The GLSL source with `#define name` right after its #version line."""
+    version, rest = source.lstrip("\n").split("\n", 1)
+    return f"{version}\n#define {name}\n{rest}"
 
 # Shared by the depth pre-pass and the shading pass so both derive exactly the same coverage.
 MASK_COVERAGE = """
@@ -148,27 +211,38 @@ uniform int u_layers;
 uniform vec3 u_light_dir;
 uniform vec3 u_light_color;   // linear
 uniform vec3 u_ambient;       // linear
-uniform vec3 u_face_color;    // linear
-uniform vec3 u_side_color;    // linear
+// One material's look. The face uses the object's material; the side walls and back cap use either the same
+// values (with the side color) or another kind's preset (MaterialParams.side_kind).
+struct Surface {
+    vec3 color;              // linear: the plain albedo (face color on the face, side color on the walls)
+    vec3 pattern_color;      // linear: the base color patterns start from
+    vec3 secondary_color;    // linear: stone veins, wood's dark rings
+    float metallic;
+    float roughness;
+    int pattern;             // 0 none, 1 stone, 2 wood
+    float texture_scale;     // em
+    float texture_strength;
+    float bump_strength;
+    float grain_angle;       // radians
+    float varnish;
+    bool transmissive;       // glass: shows the backdrop, refracted
+    float absorption;
+    vec3 emission;           // linear, unlit glow (neon), already scaled by its strength; may exceed 1
+};
+uniform Surface u_face;
+uniform Surface u_side;
 uniform float u_side_darkening;
 uniform float u_bevel_strength;
-uniform float u_metallic;
-uniform float u_roughness;
 uniform sampler2D u_environment;   // the background photo (sRGB), with mipmaps
 uniform bool u_has_environment;
 uniform float u_environment_lod;   // smallest mip level
 uniform float u_environment_strength;
-uniform int u_pattern;               // 0 none, 1 stone, 2 wood
-uniform vec3 u_secondary_color;      // linear
-uniform float u_texture_scale;       // em
-uniform float u_texture_strength;
-uniform float u_bump_strength;
-uniform float u_grain_angle;         // radians
-uniform float u_varnish;
-uniform bool u_transmissive;         // glass: shows the backdrop, refracted
 uniform sampler2D u_backdrop;        // the viewport behind the text (background and shadow), with mipmaps
 uniform float u_backdrop_lod;        // smallest mip level
-uniform float u_absorption;
+uniform float u_outline_width;       // in bevel widths; 0 = no outline
+uniform vec3 u_outline_color;        // linear
+uniform float u_outline_metallic;
+uniform bool u_far_walls;            // draws the inside of the back cap and side walls, for glass to look through
 uniform mat4 u_proj;
 uniform float u_depth;
 uniform float u_world_size;
@@ -222,7 +296,7 @@ vec2 environment_brdf(float n_dot_v, float roughness) {
     float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
-""" + MASK_COVERAGE + NOISE_GLSL + """
+""" + MASK_COVERAGE + MATERIAL_NOISE_GLSL + """
 // Tilts a normal against a height field's gradient (both in the text's own space).
 vec3 perturb(vec3 n, vec3 gradient, float strength) {
     return normalize(n - strength * (gradient - dot(gradient, n) * n));
@@ -235,15 +309,15 @@ float stone_height(vec3 p) {
 
 // Granite/marble-like stone: subtle mottling, fine speckle, and thin veins in the secondary color along the
 // zero lines of a turbulent, domain-warped field. `p` is in pattern units. `relief` adds bump (see main).
-void stone_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
+void stone_surface(Surface s, vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
     float mottling = fbm(p * 0.8, 3);
     float speckle = gradient_noise(p * 22.0) + 0.5 * gradient_noise(p * 47.0);
     vec3 warp = vec3(fbm(p * 0.5 + 3.1, 3), fbm(p * 0.5 + 7.7, 3), fbm(p * 0.5 + 1.3, 3));
     float turbulence = fbm(p * 0.6 + 2.0 * warp, 4);
     float vein = 1.0 - smoothstep(0.0, 0.035, abs(turbulence));
-    float strength = u_texture_strength;
-    albedo = u_face_color * (1.0 + 0.12 * mottling * strength + 0.18 * speckle * strength);
-    albedo = mix(albedo, u_secondary_color, clamp(vein * strength + max(-speckle - 0.6, 0.0) * strength, 0.0, 1.0));
+    float strength = s.texture_strength;
+    albedo = s.pattern_color * (1.0 + 0.12 * mottling * strength + 0.18 * speckle * strength);
+    albedo = mix(albedo, s.secondary_color, clamp(vein * strength + max(-speckle - 0.6, 0.0) * strength, 0.0, 1.0));
     roughness = clamp(roughness + 0.08 * speckle, 0.02, 1.0);
     if (!relief) return;
 
@@ -252,43 +326,43 @@ void stone_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness
     vec3 gradient = vec3(stone_height(p + vec3(e, 0.0, 0.0)) - h,
                          stone_height(p + vec3(0.0, e, 0.0)) - h,
                          stone_height(p + vec3(0.0, 0.0, e)) - h) / e;
-    n = perturb(n, gradient, 0.06 * u_bump_strength);
+    n = perturb(n, gradient, 0.06 * s.bump_strength);
 }
 
 // Growth rings: distance from a trunk axis that runs along the grain, slightly below and behind the text, so
 // the face shows gentle arcs. Returns the dark latewood amount; `streak` is the fine fibre grain. `p` in em.
-float wood_latewood(vec3 p, out float streak) {
-    vec3 axis = vec3(cos(u_grain_angle), sin(u_grain_angle), 0.0);
+float wood_latewood(Surface s, vec3 p, out float streak) {
+    vec3 axis = vec3(cos(s.grain_angle), sin(s.grain_angle), 0.0);
     vec3 side = vec3(-axis.y, axis.x, 0.0);
     vec3 q = p - (side * -2.5 + vec3(0.0, 0.0, -1.2));
     float along = dot(q, axis);
     vec2 across = vec2(dot(q, side), q.z);
     float distortion = fbm(vec3(along * 0.2, across * 1.2), 3);
-    float rings = (length(across) + 0.12 * distortion) / u_texture_scale;
+    float rings = (length(across) + 0.12 * distortion) / s.texture_scale;
     float ring = fract(rings);
-    streak = gradient_noise(vec3(along * 2.0, across * (14.0 / u_texture_scale)))
-        + 0.5 * gradient_noise(vec3(along * 5.0, across * (40.0 / u_texture_scale)));
+    streak = gradient_noise(vec3(along * 2.0, across * (14.0 / s.texture_scale)))
+        + 0.5 * gradient_noise(vec3(along * 5.0, across * (40.0 / s.texture_scale)));
     // Each year differs a little in tone; within a year, earlywood darkens gradually into a thin latewood band.
     float year_tone = 0.25 * gradient_noise(vec3(floor(rings) * 0.37, 0.5, 0.5));
     float latewood = 0.35 * smoothstep(0.2, 0.75, ring) + 0.65 * smoothstep(0.75, 0.9, ring) * (1.0 - smoothstep(0.93, 1.0, ring));
     return clamp(latewood + year_tone, 0.0, 1.0);
 }
 
-void wood_surface(vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
+void wood_surface(Surface s, vec3 p, bool relief, inout vec3 albedo, inout float roughness, inout vec3 n) {
     float streak;
-    float latewood = wood_latewood(p, streak);
-    float strength = u_texture_strength;
-    albedo = mix(u_face_color, u_secondary_color, clamp(latewood * strength + 0.22 * streak * strength, 0.0, 1.0));
+    float latewood = wood_latewood(s, p, streak);
+    float strength = s.texture_strength;
+    albedo = mix(s.pattern_color, s.secondary_color, clamp(latewood * strength + 0.22 * streak * strength, 0.0, 1.0));
     roughness = clamp(roughness + 0.15 * latewood, 0.02, 1.0);
     if (!relief) return;
 
     // Latewood stands slightly proud of the softer earlywood.
     const float e = 0.002;
     float unused;
-    vec3 gradient = vec3(wood_latewood(p + vec3(e, 0.0, 0.0), unused) - latewood,
-                         wood_latewood(p + vec3(0.0, e, 0.0), unused) - latewood,
-                         wood_latewood(p + vec3(0.0, 0.0, e), unused) - latewood) / e;
-    n = perturb(n, gradient, 0.01 * u_bump_strength);
+    vec3 gradient = vec3(wood_latewood(s, p + vec3(e, 0.0, 0.0), unused) - latewood,
+                         wood_latewood(s, p + vec3(0.0, e, 0.0), unused) - latewood,
+                         wood_latewood(s, p + vec3(0.0, 0.0, e), unused) - latewood) / e;
+    n = perturb(n, gradient, 0.01 * s.bump_strength);
 }
 
 // Reflection off the glass surface: the photo (or ambient) and the light's highlight, both weighted by
@@ -309,7 +383,7 @@ vec3 dielectric_reflection(vec3 n, vec3 v, vec3 l, vec3 h, float roughness) {
 // Glass: the backdrop seen along the refracted ray, blurred by roughness (frost) and tinted by Beer-Lambert
 // absorption over the thickness the ray crosses, plus the surface reflection. Fresnel splits the two, so
 // grazing angles reflect more and transmit less.
-vec3 glass(vec3 n, vec3 v, vec3 l, vec3 h, vec3 tint, float roughness) {
+vec3 glass(Surface s, vec3 n, vec3 v, vec3 l, vec3 h, vec3 tint, float roughness) {
     vec3 refracted = refract(-v, n, 1.0 / GLASS_IOR);
     vec4 clip = u_proj * vec4(v_pos + refracted * (REFRACTION_DEPTH * u_world_size), 1.0);
     vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, 0.0, 1.0);
@@ -318,65 +392,23 @@ vec3 glass(vec3 n, vec3 v, vec3 l, vec3 h, vec3 tint, float roughness) {
     // Thickness along the view: the extrusion depth, longer when looking through the slab at an angle.
     vec3 view_local = normalize(transpose(mat3(u_model)) * v);
     float path = u_depth / max(abs(view_local.z), 0.3);
-    vec3 transmittance = pow(max(tint, vec3(1e-3)), vec3(path * u_absorption));
+    vec3 transmittance = pow(max(tint, vec3(1e-3)), vec3(path * s.absorption));
 
     float fresnel = fresnel_schlick(max(dot(n, v), 0.0), vec3(0.04)).x;
     return behind * transmittance * (1.0 - fresnel) + dielectric_reflection(n, v, l, h, roughness);
 }
 
-void main() {
-    vec4 m;
-    float coverage = mask_coverage(u_mask, v_uv, m);
-    if (coverage <= 0.0) discard;
-
-    vec2 dir = m.rg * 2.0 - 1.0;
-    vec3 n_local;
-    vec3 albedo;
-    float shade;  // the layer stack's depth darkening, applied on top of any texture
-    if (v_layer == 0) {
-        n_local = normalize(vec3(dir * m.b * u_bevel_strength, 1.0));
-        albedo = u_face_color;
-        shade = 1.0;
-    } else if (v_layer == u_layers - 1) {
-        n_local = vec3(0.0, 0.0, -1.0);
-        albedo = u_side_color;
-        shade = 1.0 - u_side_darkening;
-    } else {
-        n_local = length(dir) > 0.01 ? normalize(vec3(dir, 0.0)) : vec3(0.0, 0.0, 1.0);
-        albedo = u_side_color;
-        shade = 1.0 - u_side_darkening * v_t;
-    }
-
-    float roughness = u_roughness;
-    vec3 coat_local = n_local;  // varnish fills the texture's relief, so the coat uses the smooth normal
-    // Relief only on the front and back faces: side walls are seen nearly edge-on, where bump barely shows,
-    // and with multisampling each wall pixel is shaded for several slices, so skipping it there saves ~22%.
-    bool relief = v_layer == 0 || v_layer == u_layers - 1;
-    if (u_pattern == PATTERN_STONE) {
-        stone_surface(v_local / u_texture_scale, relief, albedo, roughness, n_local);
-    } else if (u_pattern == PATTERN_WOOD) {
-        wood_surface(v_local, relief, albedo, roughness, n_local);
-    }
-    vec3 base = albedo * shade;
-
-    vec3 n = normalize(mat3(u_model) * n_local);
-    vec3 l = normalize(u_light_dir);
-    vec3 v = normalize(-v_pos);
-    vec3 h = normalize(l + v);
+// Metallic-roughness shading of an opaque surface, with the optional clear coat (varnish) on the smooth
+// text-space normal `coat_local`.
+vec3 opaque(Surface s, vec3 n, vec3 coat_local, vec3 v, vec3 l, vec3 h, vec3 base, float metallic, float roughness) {
     float n_dot_l = max(dot(n, l), 0.0);
     float n_dot_v = max(dot(n, v), 1e-4);
     float alpha = max(roughness * roughness, 1e-3);
-
-    if (u_transmissive) {
-        frag = vec4(linear_to_srgb(glass(n, v, l, h, base, roughness)), coverage);
-        return;
-    }
-
-    vec3 f0 = mix(vec3(0.04), base, u_metallic);  // metals tint their reflection; dielectrics reflect ~4% white
+    vec3 f0 = mix(vec3(0.04), base, metallic);  // metals tint their reflection; dielectrics reflect ~4% white
     vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
     vec3 specular = distribution_ggx(max(dot(n, h), 0.0), alpha) * geometry_smith(n_dot_v, n_dot_l, roughness)
         * f / (4.0 * n_dot_v * n_dot_l + 1e-4);
-    vec3 diffuse = (1.0 - f) * (1.0 - u_metallic) * base;
+    vec3 diffuse = (1.0 - f) * (1.0 - metallic) * base;
     // Light intensity is scaled by PI so a white matte surface facing the light reaches exactly 1.
     vec3 direct = (diffuse + specular * PI) * u_light_color * n_dot_l;
 
@@ -384,10 +416,10 @@ void main() {
     vec3 reflected = u_has_environment
         ? environment(reflect(-v, n), roughness) * u_environment_strength
         : u_ambient;
-    vec3 ambient = u_ambient * (1.0 - u_metallic) * base + reflected * (f0 * env.x + env.y);
+    vec3 ambient = u_ambient * (1.0 - metallic) * base + reflected * (f0 * env.x + env.y);
     vec3 color = direct + ambient;
 
-    if (u_varnish > 0.0) {
+    if (s.varnish > 0.0) {
         // Clear coat: a smooth dielectric layer over the base. It reflects light and the photo, and dims
         // the base by what it reflects.
         const float coat_roughness = 0.08;
@@ -403,8 +435,97 @@ void main() {
             ? environment(reflect(-v, nc), coat_roughness) * u_environment_strength
             : u_ambient;
         vec3 coat = coat_specular * PI * u_light_color * nc_dot_l + coat_reflected * (0.04 * coat_env.x + coat_env.y);
-        color = mix(color, color * (1.0 - coat_fresnel) + coat, u_varnish);
+        color = mix(color, color * (1.0 - coat_fresnel) + coat, s.varnish);
     }
+    return color;
+}
+
+// The inside of a glass wall, seen through the text's front: the scene behind, along the ray bent out of the
+// glass or, past the critical angle, reflected back into it (that light too comes from the scene, further
+// along). The front already tints the view by the slab's thickness; a wall seen at a slant adds the extra glass
+// the view runs along it, tinted the wall's color.
+vec3 glass_far_wall(Surface s, vec3 n_in, vec3 v, vec3 tint) {
+    float facing = max(dot(n_in, v), 0.3);
+    vec3 transmittance = pow(max(tint, vec3(1e-3)), vec3(s.absorption * u_depth * (1.0 / facing - 1.0)));
+    vec3 out_dir = refract(-v, n_in, GLASS_IOR);  // glass to air
+    if (dot(out_dir, out_dir) == 0.0) out_dir = reflect(-v, n_in);  // total internal reflection
+    vec4 clip = u_proj * vec4(v_pos + out_dir * (REFRACTION_DEPTH * u_world_size), 1.0);
+    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, 0.0, 1.0);
+    return srgb_to_linear(textureLod(u_backdrop, uv, 0.0).rgb) * transmittance;
+}
+
+void main() {
+    vec4 m;
+    float coverage = mask_coverage(u_mask, v_uv, m);
+    float bevel_step = max(fwidth(m.b), 1e-4);  // before the discard, so neighbouring pixels still take part
+    if (coverage <= 0.0) discard;
+    // The far walls are drawn without multisampling, into the backdrop; the front is never a far wall.
+    if (u_far_walls && (coverage < 0.5 || v_layer == 0)) discard;
+
+    vec2 dir = m.rg * 2.0 - 1.0;
+    Surface s;
+    vec3 n_local;
+    float shade;  // the layer stack's depth darkening, applied on top of any texture
+    if (v_layer == 0) {
+        s = u_face;
+        n_local = normalize(vec3(dir * m.b * u_bevel_strength, 1.0));
+        shade = 1.0;
+    } else if (v_layer == u_layers - 1) {
+        s = u_side;
+        n_local = vec3(0.0, 0.0, -1.0);
+        shade = 1.0 - u_side_darkening;
+    } else {
+        s = u_side;
+        n_local = length(dir) > 0.01 ? normalize(vec3(dir, 0.0)) : vec3(0.0, 0.0, 1.0);
+        shade = 1.0 - u_side_darkening * v_t;
+    }
+
+    vec3 albedo = s.color;
+    float roughness = s.roughness;
+    vec3 coat_local = n_local;  // varnish fills the texture's relief, so the coat uses the smooth normal
+    // Relief only on the front and back faces: side walls are seen nearly edge-on, where bump barely shows,
+    // and with multisampling each wall pixel is shaded for several slices, so skipping it there saves ~22%.
+    bool relief = v_layer == 0 || v_layer == u_layers - 1;
+    if (s.pattern == PATTERN_STONE) {
+        stone_surface(s, v_local / s.texture_scale, relief, albedo, roughness, n_local);
+    } else if (s.pattern == PATTERN_WOOD) {
+        wood_surface(s, v_local, relief, albedo, roughness, n_local);
+    }
+    float metallic = s.metallic;
+    float outline = 0.0;
+    if (v_layer == 0 && u_outline_width > 0.0) {
+        // The mask's bevel factor is 1 at the silhouette and falls to 0 one bevel width inside, so its level
+        // sets follow the glyph's contour: the band is the outer `width` of the rim, antialiased over a pixel.
+        outline = clamp((m.b - (1.0 - u_outline_width)) / bevel_step, 0.0, 1.0);
+        albedo = mix(albedo, u_outline_color, outline);
+        metallic = mix(metallic, u_outline_metallic, outline);
+    }
+    vec3 base = albedo * shade;
+
+    vec3 n = normalize(mat3(u_model) * n_local);
+    vec3 l = normalize(u_light_dir);
+    vec3 v = normalize(-v_pos);
+    vec3 h = normalize(l + v);
+
+    vec3 color;
+    if (u_far_walls) {
+        // Seen from inside the text, every far surface faces back toward the camera.
+        color = s.transmissive
+            ? glass_far_wall(s, -n, v, base)
+            : opaque(s, -n, -coat_local, v, l, h, base, metallic, roughness);
+        frag = vec4(linear_to_srgb(color + s.emission), 1.0);
+        return;
+    }
+    if (s.transmissive) {
+        color = glass(s, n, v, l, h, base, roughness);
+        if (outline > 0.0) {  // the outline is opaque, even on glass
+            color = mix(color, opaque(s, n, coat_local, v, l, h, base, metallic, roughness), outline);
+        }
+    } else {
+        color = opaque(s, n, coat_local, v, l, h, base, metallic, roughness);
+    }
+    // Glow adds in linear light and may pass 1; linear_to_srgb clips it (the outline doesn't glow).
+    color += s.emission * (1.0 - outline);
     frag = vec4(linear_to_srgb(color), coverage);
 }
 """
@@ -621,3 +742,272 @@ void main() {
 }
 """
 
+# ----- Compositing passes ---------------------------------------------------------------------------
+
+# Occlusion: redraws the photo (sampled exactly as BACKGROUND_FS does) over everything drawn so far, with the
+# mask as alpha, so photo pixels marked as in front of the text cover the text, its shadow and its effects.
+OCCLUSION_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform sampler2D u_mask;
+out vec4 frag;
+void main() {
+    float cover = texture(u_mask, v_uv).r;
+    if (cover <= 0.0) discard;
+    frag = vec4(texture(u_image, v_uv).rgb, cover);
+}
+"""
+
+# Editor overlay (preview only): the mask, tinted.
+MASK_OVERLAY_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+uniform vec4 u_tint;  // color, and opacity where the mask is full
+out vec4 frag;
+void main() {
+    float cover = texture(u_mask, v_uv).r;
+    if (cover <= 0.0) discard;
+    frag = vec4(u_tint.rgb, cover * u_tint.a);
+}
+"""
+
+# Multiplies the shadows onto the surfaces that catch them. Each pixel's camera ray finds what it shows: the floor
+# when it meets the floor in front of the wall, else the wall. The floor shadow and the contact shadow darken only
+# the floor and the wall's shadow only the wall, so a floor shadow stops at the wall's base instead of carrying
+# on behind it. Without a wall everything is floor. Masks hold each channel's darkening (see SHADOW_FS).
+SHADOW_SURFACES_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_floor;
+uniform sampler2D u_wall;
+uniform sampler2D u_contact;
+uniform float u_opacity;
+uniform float u_contact_strength;
+uniform bool u_has_wall;
+uniform vec2 u_tan_half;      // tan(fov / 2) * aspect, tan(fov / 2): turns the viewport into camera rays
+uniform vec4 u_ground_plane;
+uniform vec4 u_wall_plane;    // normal toward the camera's side
+out vec4 frag;
+void main() {
+    vec3 floor_dark = texture(u_floor, v_uv).rgb * u_opacity;
+    vec3 contact_dark = texture(u_contact, v_uv).rgb * u_contact_strength;
+    vec3 wall_dark = vec3(0.0);
+    if (u_has_wall) {
+        vec3 dir = vec3((v_uv * 2.0 - 1.0) * u_tan_half, -1.0);
+        float toward_floor = dot(u_ground_plane.xyz, dir);
+        bool on_floor = false;
+        if (toward_floor < 0.0) {
+            vec3 hit = dir * (-u_ground_plane.w / toward_floor);
+            on_floor = dot(u_wall_plane.xyz, hit) + u_wall_plane.w >= 0.0;
+        }
+        if (!on_floor) {
+            floor_dark = vec3(0.0);
+            contact_dark = vec3(0.0);
+            if (dot(u_wall_plane.xyz, dir) < 0.0) wall_dark = texture(u_wall, v_uv).rgb * u_opacity;
+        }
+    }
+    frag = vec4((1.0 - floor_dark) * (1.0 - contact_dark) * (1.0 - wall_dark), 1.0);
+}
+"""
+
+# The mask resampled to a target (the transparent export reads it back).
+MASK_VALUE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+out vec4 frag;
+void main() {
+    frag = vec4(texture(u_mask, v_uv).r, 0.0, 0.0, 1.0);
+}
+"""
+
+# Gaussian blur of a premultiplied RGBA image along u_step, alpha included (BLUR_FS keeps only color).
+BLUR_RGBA_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform vec2 u_step;
+out vec4 frag;
+void main() {
+    vec4 total = vec4(0.0);
+    float weights = 0.0;
+    for (int i = -12; i <= 12; ++i) {
+        float x = float(i) / 6.0;
+        float w = exp(-0.5 * x * x);
+        total += texture(u_image, v_uv + u_step * float(i)) * w;
+        weights += w;
+    }
+    frag = total / weights;
+}
+"""
+
+# A texture stretched over the viewport, scaled: composites premultiplied layers and adds glows.
+SCALED_TEXTURE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform float u_scale;
+out vec4 frag;
+void main() {
+    frag = texture(u_image, v_uv) * u_scale;
+}
+"""
+
+# Ground reflection: the mirrored text layer, faded by how far below the ground each pixel's mirrored surface lies
+# (the height above the ground of what it mirrors). Positions come back from the layer's depth.
+REFLECTION_FADE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+uniform mat4 u_inverse_proj;
+uniform vec4 u_ground_plane;
+uniform float u_fade;   // world units below the ground where the reflection has faded out
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    vec4 color = texelFetch(u_color, texel, 0);
+    if (color.a <= 0.0) {
+        frag = vec4(0.0);
+        return;
+    }
+    float depth = texelFetch(u_depth, texel, 0).r;
+    vec4 view = u_inverse_proj * vec4(v_uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec3 position = view.xyz / view.w;
+    float below = -(dot(u_ground_plane.xyz, position) + u_ground_plane.w);
+    frag = color * clamp(1.0 - below / u_fade, 0.0, 1.0);
+}
+"""
+
+
+# Bloom: the part of the (premultiplied) text layer brighter than the threshold, per channel, rescaled to 0-1.
+BLOOM_EXTRACT_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform float u_threshold;
+out vec4 frag;
+void main() {
+    vec4 color = texture(u_image, v_uv);
+    vec3 bright = max(color.rgb - vec3(u_threshold) * color.a, 0.0) / max(1.0 - u_threshold, 1e-3);
+    frag = vec4(bright, 0.0);
+}
+"""
+
+
+# Passes on the text itself, over the resolved text layer (premultiplied), one texel per pixel: colour grade, then
+# film grain, both on the straight (un-premultiplied) colour. The grain is value noise on a fixed lattice of
+# u_grain_cell pixels, seeded, so it is the same in every frame.
+TEXT_FINISH_FS = """
+#version 410 core
+uniform sampler2D u_image;
+uniform float u_brightness;
+uniform float u_contrast;
+uniform float u_saturation;
+uniform vec3 u_warmth;     // per-channel gain
+uniform float u_grain_amount;
+uniform float u_grain_cell;
+uniform uint u_seed;
+out vec4 frag;
+
+float lattice(ivec2 p) {
+    uint n = uint(p.x) * 1597334677u ^ uint(p.y) * 3812015801u ^ u_seed;
+    n = (n ^ (n >> 16)) * 0x7feb352du;
+    n = (n ^ (n >> 15)) * 0x846ca68bu;
+    n ^= n >> 16;
+    return float(n) / 4294967295.0 * 2.0 - 1.0;
+}
+
+float grain(vec2 position) {
+    vec2 cell = position / u_grain_cell;
+    ivec2 i = ivec2(floor(cell));
+    vec2 f = smoothstep(0.0, 1.0, fract(cell));
+    return mix(mix(lattice(i), lattice(i + ivec2(1, 0)), f.x),
+               mix(lattice(i + ivec2(0, 1)), lattice(i + ivec2(1, 1)), f.x), f.y);
+}
+
+void main() {
+    vec4 color = texelFetch(u_image, ivec2(gl_FragCoord.xy), 0);
+    if (color.a <= 0.0) {
+        frag = color;
+        return;
+    }
+    vec3 rgb = color.rgb / color.a;
+    rgb = (rgb * (1.0 + u_brightness) - 0.5) * u_contrast + 0.5;
+    rgb = mix(vec3(dot(rgb, vec3(0.2126, 0.7152, 0.0722))), rgb, u_saturation);
+    rgb = clamp(rgb * u_warmth, 0.0, 1.0);
+    rgb = clamp(rgb + u_grain_amount * grain(gl_FragCoord.xy), 0.0, 1.0);
+    frag = vec4(rgb * color.a, color.a);
+}
+"""
+
+
+# Depth of field, step 1: each pixel's blur radius in pixels (its circle of confusion), from the text layer's depth.
+# A pixel takes the largest radius of any text whose blur reaches it (a sample's radius covers the distance) and
+# isn't behind its own text, so blurred text spreads past its outline and over farther text, never over nearer.
+DOF_COC_FS = """
+#version 410 core
+uniform sampler2D u_depth;
+uniform float u_near;
+uniform float u_far;
+uniform float u_focus;
+uniform float u_max_coc;   // pixels, for text infinitely far from the focus
+out vec4 frag;
+const int SAMPLES = 48;
+const float GOLDEN_ANGLE = 2.39996323;
+
+float coc_of(float depth) {
+    float ndc = depth * 2.0 - 1.0;
+    float distance = 2.0 * u_near * u_far / (u_far + u_near - ndc * (u_far - u_near));
+    return u_max_coc * min(abs(1.0 - u_focus / distance), 1.0);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    ivec2 last = textureSize(u_depth, 0) - 1;
+    float depth = texelFetch(u_depth, texel, 0).r;
+    bool text = depth < 1.0;  // the layer's depth is cleared to 1 where there is no text
+    float coc = text ? coc_of(depth) : 0.0;
+    for (int i = 1; i <= SAMPLES; ++i) {
+        float angle = float(i) * GOLDEN_ANGLE;
+        vec2 offset = u_max_coc * sqrt(float(i) / float(SAMPLES)) * vec2(cos(angle), sin(angle));
+        float other = texelFetch(u_depth, clamp(texel + ivec2(round(offset)), ivec2(0), last), 0).r;
+        if (other >= 1.0 || (text && other > depth)) continue;
+        float reach = coc_of(other);
+        if (reach >= length(offset)) coc = max(coc, reach);
+    }
+    frag = vec4(coc, 0.0, 0.0, 1.0);
+}
+"""
+
+# Depth of field, step 2: BLUR_RGBA_FS with each pixel's own radius (u_coc, pixels) instead of a fixed step.
+DOF_BLUR_FS = """
+#version 410 core
+uniform sampler2D u_image;
+uniform sampler2D u_coc;
+uniform vec2 u_direction;  // (1, 0) or (0, 1)
+uniform float u_step;      // tap spacing per pixel of radius
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    float radius = texelFetch(u_coc, texel, 0).r;
+    if (radius < 0.5) {
+        frag = texelFetch(u_image, texel, 0);
+        return;
+    }
+    vec2 size = vec2(textureSize(u_image, 0));
+    vec2 uv = gl_FragCoord.xy / size;
+    vec2 step = u_direction * radius * u_step / size;
+    vec4 total = vec4(0.0);
+    float weights = 0.0;
+    for (int i = -12; i <= 12; ++i) {
+        float x = float(i) / 6.0;
+        float w = exp(-0.5 * x * x);
+        total += texture(u_image, uv + step * float(i)) * w;
+        weights += w;
+    }
+    frag = total / weights;
+}
+"""

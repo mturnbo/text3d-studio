@@ -62,12 +62,24 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
     only) into a float target, and combines them."""
     scene = document.scene
     if any(obj.id in compositor.glyphs for obj in scene.objects):
-        compositor.text_layer.color.bind(0)
+        compositor.text_color.bind(0)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         data = GL.glGetTexImage(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
         text = np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1]
     else:
         text = np.zeros((height, width, 4), np.uint8)
+    reflection = compositor.read_reflection(scene, width, height)
+    if reflection is not None:  # the text over its reflection, premultiplied
+        alpha = text[..., 3:].astype(np.float32) / 255.0
+        text = np.round(text + reflection * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+    glow = compositor.read_bloom(scene, width, height)
+    if glow is not None:  # added light: over transparency, its brightest channel becomes its alpha
+        alpha = text[..., 3:].astype(np.float32) / 255.0
+        glow_alpha = glow.max(axis=-1, keepdims=True).astype(np.float32)
+        text = text.astype(np.float32)
+        text[..., :3] += glow
+        text[..., 3:] += glow_alpha * (1.0 - alpha)
+        text = np.round(text).clip(0, 255).astype(np.uint8)
 
     factors = []
     target = ColorTarget(GL.GL_RGBA16F, GL.GL_RGBA)
@@ -83,7 +95,11 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
         target.delete()
     if not factors:
         factors = [np.ones((height, width, 3), np.float32)] * 2
-    return compose_transparent(text, factors[0], factors[1][..., :1])
+    pixels = compose_transparent(text, factors[0], factors[1][..., :1])
+    occlusion = compositor.read_occlusion(width, height)
+    if occlusion is not None:  # the photo is in front there: the text and shadow are hidden
+        pixels[..., 3] = np.round(pixels[..., 3] * (1.0 - occlusion)).astype(np.uint8)
+    return pixels
 
 
 def compose_transparent(text: np.ndarray, shadow_factor: np.ndarray, strength_factor: np.ndarray) -> np.ndarray:

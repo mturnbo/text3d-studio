@@ -11,7 +11,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 
-from .materials import KINDS, PRESETS
+from .materials import KINDS, PRESETS, SIDE_KINDS
 from .model import LightParams, MaterialParams, ShadowParams
 
 FORMAT_NAME = "text3d-studio-look"
@@ -143,6 +143,8 @@ def _read_look(path: str) -> Look:
     sections = {section: _section_from_dict(cls, data.get(section)) for section, cls in SECTIONS.items()}
     if sections["material"].get("kind", "metal") not in KINDS:
         raise ValueError(f"unknown material {sections['material']['kind']!r}")
+    if sections["material"].get("side_kind", "same") not in SIDE_KINDS:
+        raise ValueError(f"unknown side material {sections['material']['side_kind']!r}")
     return Look(name=name.strip(), path=path, **sections)
 
 

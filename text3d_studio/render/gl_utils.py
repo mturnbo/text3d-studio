@@ -40,6 +40,9 @@ class ShaderProgram:
     def set_int(self, name: str, value: int) -> None:
         GL.glUniform1i(self._loc(name), int(value))
 
+    def set_uint(self, name: str, value: int) -> None:
+        GL.glUniform1ui(self._loc(name), value)
+
     def set_float(self, name: str, value: float) -> None:
         GL.glUniform1f(self._loc(name), float(value))
 
@@ -143,6 +146,14 @@ class Texture2D:
         )
         if self.mipmaps:
             GL.glGenerateMipmap(GL.GL_TEXTURE_2D)
+
+    def upload_region(self, pixels: np.ndarray, x: int, y: int) -> None:
+        """Replaces the texels from (x, y) (row y = texture v row y) with `pixels`, uint8 rows in the texture's format."""
+        pixels = np.ascontiguousarray(pixels, dtype=np.uint8)
+        height, width = pixels.shape[:2]
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.handle)
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, x, y, width, height, self.pixel_format, GL.GL_UNSIGNED_BYTE, pixels)
 
     def allocate(self, width: int, height: int) -> None:
         self.width, self.height = width, height

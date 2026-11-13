@@ -88,7 +88,8 @@ def sanitized_text_params(params: TextParams) -> TextParams:
     values = {}
     for name, (low, high) in LAYOUT_RANGES.items():
         value = getattr(params, name)
-        values[name] = min(max(value, low), high) if math.isfinite(value) else getattr(defaults, name)
+        finite = isinstance(value, int) or math.isfinite(value)  # math.isfinite overflows on a huge int
+        values[name] = min(max(value, low), high) if finite else getattr(defaults, name)
     if abs(values["arc"]) < MIN_ARC_DEGREES:
         values["arc"] = 0.0  # a vanishing bend would put the arc's center at infinity (or divide by zero)
     align = params.align if params.align in ALIGNMENTS else defaults.align

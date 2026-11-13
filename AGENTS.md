@@ -24,7 +24,9 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 
 ```
 model.py            Pure dataclasses: Scene{objects: [TextObject{id, text, transform, material}], ground, grid,
-                    light, shadow, camera, wall}, Document. No Qt, no OpenGL. Document.native_size is the export size.
+                    light, shadow, camera, wall, mask, effects}, Document (+ the occlusion mask). No Qt, no OpenGL.
+                    Document.native_size is the export size. FIELD_RANGES: numeric ranges shared by the panel's
+                    sliders and project loading (clamped; non-finite → default)
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
                       "text", "transform" and "material" (OBJECT_SECTIONS) address the SELECTED object
@@ -55,9 +57,11 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shaders.py          all GLSL 4.10 sources as strings
   text3d_renderer.py  instanced layer stack (beauty) + shadow casters (caps + side walls), one object at a time;
                       Glyph = one object's mask texture + wall triangles
-  shadow_renderer.py  half-res shadow mask (all objects) → separable Gaussian blur → multiply composite
-  compositor.py       frame orchestration: background → shadow → text layer (every object, composited over).
-                      Holds a Glyph per object id: set_glyph(id, raster|None), retain_glyphs(ids)
+  shadow_renderer.py  half-res shadow masks (floor, wall, contact; all objects) → separable Gaussian blur →
+                      multiply composite
+  effects.py          EffectsRenderer: ground reflection, text finishing (depth of field, blur, grade, grain), bloom
+  compositor.py       frame orchestration (see *Compositing*). Holds a Glyph per object id: set_glyph(id, raster|None),
+                      retain_glyphs(ids); the occlusion mask: set_mask(mask, rect)
   exporter.py         offscreen 8× MSAA render at native size (× scale) → resolve → glReadPixels;
                       transparent export (compose_transparent); batch naming (batch_jobs)
   grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
@@ -66,14 +70,16 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
                     Also image-space perspective: project_to_image / image_ray (pixels, origin
                     top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
                     focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
-materials.py        Material KINDS (metal, plastic, stone, wood, glass) and their PRESETS (every MaterialParams
-                    field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset
+materials.py        Material KINDS (metal, plastic, stone, wood, glass, neon) and their PRESETS (every MaterialParams
+                    field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset.
+                    SIDE_KINDS, transmits(material), sanitized_material_params (project loading)
 ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
                     placement on it (text_position, text_model_matrix, world_to_ground, text_distance);
                     the wall (wall_rotation, wall_to_world, world_to_wall, wall_plane, wall_through,
                     reanchor_wall, reanchor_wall_text, mount_on_wall, mount_on_floor, wall_grid_lines)
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix;
                     solve_sun: azimuth and elevation from a vertical object's top, base and shadow tip
+occlusion.py        Occlusion masks: paint_segment (soft round brush, paint or erase), encode/decode (compressed undo snapshots)
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles. Lays out
                     multi-line text (align, letter spacing, line height) and bends it along arcs
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
@@ -103,6 +109,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
    the beveled face, the middle instances are side walls (normal = outward edge direction, darkening
    with depth) and the last instance is the back cap. All objects share the text layer's depth buffer, so
    nearer objects hide farther ones whatever their order. Alpha-to-coverage is on.
+
+The full order, with the compositing passes, is under *Compositing*.
 
 ### Coordinate conventions
 
@@ -155,14 +163,52 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   is reflected instead. The split-sum environment BRDF uses Karis's analytic fit (`environment_brdf`).
 - **Procedural textures** (stone, wood) sample `NOISE_GLSL` at `v_local` (text space, em units), so
   patterns are continuous from face to side walls and stick to the text. Relief (bump) only runs on the
-  front and back slices. `u_pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
+  front and back slices. A surface's `pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
+- **Surfaces.** `LAYER_STACK_FS` shades from two `Surface` uniforms: `u_face` (the object's material, face color)
+  and `u_side` (side walls and back cap). With `material.side_kind == "same"` the side surface is the material
+  with its side color, exactly as before; with another kind (`materials.SIDE_KINDS`) it is that kind's preset
+  (colors, roughness, metallic, pattern, transmission, glow), so the side color doesn't apply (the panel hides
+  it). `text3d_renderer._set_surface` fills one. A preset covers every field, so picking a material resets
+  `side_kind`. `materials.transmits` (face or sides glass) decides whether an object needs the backdrop; the
+  object's shadow still follows its face kind.
+- **Outline** (`outline_width` in bevel widths, 0 = off; `outline_color`, `outline_metallic`). Face only: the
+  band is where the mask's bevel factor (B: 1 at the silhouette, 0 one bevel width in) exceeds
+  `1 − width`, antialiased with `fwidth(B)` (taken before the discard). So it follows the glyph contour, can't
+  be wider than the bevel rim (raise `text.bevel_width`), and widens a little at concave corners, where the
+  blurred mask spreads. It mixes albedo and metallic, keeps roughness and the pattern underneath, is opaque
+  on glass, and doesn't glow. Width 0 skips the branch, so it renders exactly as without.
+- **Emission** (`emission_color`, `emission_strength`; the `neon` kind's preset glows, every other preset has
+  strength 0, but any kind honours it). Unlit, added in linear light after shading; the side surface glows
+  `text3d_renderer.SIDE_GLOW` (0.35) as strongly. Values above 1 are **not preserved**: `linear_to_srgb`
+  clamps per channel and the text layer is RGBA8, so a strong glow saturates (and drifts toward white) in
+  `text_layer.color`. A bloom pass can only find glow as near-saturated layer pixels; keeping HDR values would
+  need a float text layer or a separate emission output.
+- **Baked noise** (`text3d_renderer.BAKED_NOISE`, on). `NoiseVolume` renders `gradient_noise` once per renderer
+  into a 128³ R16F `GL_REPEAT` 3D texture (`shaders.NOISE_PERIOD` 16 cells, `NOISE_TEXELS_PER_CELL` 8; the
+  bake wraps lattice cells with `WRAP_LATTICE`, so it tiles; ~8 ms). Texel k holds the noise at its center,
+  (k + 0.5)/8 cells, so trilinear filtering reproduces it there. Only `fbm`'s octaves read it (`octave_noise`);
+  direct `gradient_noise` calls (stone speckle and fine bump, wood streaks) stay procedural, because a
+  finite-difference bump over trilinear texels shows the texels as a grid. The shader picks the version
+  through `shaders.with_define(LAYER_STACK_FS, "BAKED_NOISE")`; the procedural build is unchanged bit for bit.
+  Patterns differ in detail (wrapped lattice) but not in character. Deep stone ~11.1 → ~6.1 ms per 1600×1000
+  4× MSAA frame, wood ~8.6 → ~7.1 ms (Apple GPU). Keep it bound on unit 3 for every beauty draw: an unbound
+  sampler3D triggers macOS "unloadable texture" warnings.
 - **Glass** (kinds in `materials.TRANSMISSION`). Before drawing any text, the compositor blits the
   viewport (background + shadow, MSAA resolved) into the mipmapped `backdrop` texture, once per frame for
   all glass objects. So glass doesn't show the other text objects behind it. The shader samples
   it along the refracted ray (IOR 1.5, `REFRACTION_DEPTH` em behind the surface, projected back to the
   screen), blurs it by roughness (shown as **Frost**), tints it by Beer-Lambert absorption
   (`tint^(path × absorption)`, path = depth along the view), and splits it from the surface reflection by
-  Fresnel. The output is still opaque. Glass only shows the backdrop, not the text's own far walls.
+  Fresnel. The output is still opaque.
+- **Glass far walls** (`text3d_renderer.GLASS_FAR_WALLS`, on). After the backdrop is captured,
+  `Text3DRenderer.draw_far_walls` copies it into a single-sample target, draws each transmissive object's
+  stack there with `u_far_walls` and `GL_GREATER` against depth cleared to 0 (the farthest slice: where the
+  view leaves the text; the face is skipped), copies the result back and rebuilds the mipmaps. A glass far
+  wall shows the backdrop along the ray bent out of the glass (or reflected, past the critical angle), tinted
+  by `tint^(absorption × depth × (1/facing − 1))`: the extra glass a slanted wall adds, nothing for a back cap
+  facing the camera (the front already tints by the full thickness). An opaque side kind is shaded normally
+  with its normal flipped, so a glass face with stone sides shows stone through it. All glass objects share the
+  backdrop, so where two overlap the nearer one can show the farther one's walls.
   `shadow_renderer.shadow_color(shadow, material)` lightens and tints that object's shadow by the transmission
   fraction.
 - **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
@@ -172,6 +218,54 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   this), a slider/colour entry, and the kinds that show it.
 - Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
   using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
+
+### Compositing (wave 2F)
+
+`Compositor.render` runs every pass, in this order, for the preview and every export alike:
+
+| # | Pass | Where | Off when | Transparent export |
+|---|---|---|---|---|
+| 1 | Shadow masks: floor; wall (`wall.enabled`, casters flattened onto the wall's plane); contact (floor text flattened straight down, fading within `contact_size` em) | `ShadowRenderer.render_mask`, half res | shadow off, or opacity and contact strength 0 | rendered again by `render_shadow_factor` |
+| 2 | Reflection layer: floor text mirrored across the ground (light mirrored too), faded by depth below the ground, blurred by roughness | `EffectsRenderer.render_reflection`, half res | `reflection_strength` 0, no floor text | — |
+| 3 | Background | `_draw_background` | — | left out |
+| 4 | Shadow composite: each pixel multiplied by the shadow of the surface it shows (floor or wall), plus the contact shadow | `ShadowRenderer.composite_onto` | as 1 | alpha = opacity × strength, colour recovered (`compose_transparent`); wall and contact included |
+| 5 | Reflection composite, premultiplied over | `composite_reflection` | as 2 | under the text (`read_reflection`) |
+| 6 | Glass backdrop capture + far walls | `_capture_backdrop`, `draw_far_walls` | no transmissive object | glass still refracts the photo |
+| 7 | Text layer, resolved (premultiplied, coverage alpha) | `_draw_text_layer` | no text | the text |
+| 8 | Text finishing: depth of field → blur → grade + grain, into `Compositor.text_color` | `EffectsRenderer.finish_text_layer` | each pass skipped at its neutral value; all off → `text_color` *is* `text_layer.color` | included (the export reads `text_color`) |
+| 9 | Text composite (alpha writes off) | `_composite_text_layer` | no text | — |
+| 10 | Bloom: `text_color` above the threshold, half res, blurred, **added** | `render_bloom`, `composite_bloom` | `bloom_strength` 0, no text | added to the text's colour, with its brightest channel as alpha (`read_bloom`): over a photo it is an *over*, not an add, so it darkens the photo under the glow slightly |
+| 11 | Occlusion: the photo put back where the mask says it is in front | `_draw_occlusion` | no mask, or one not at the photo's size | alpha × (1 − mask): hides text, shadows, reflection and glow alike |
+
+- **Settings** live in `scene.effects` (`EffectsParams`; reflection, bloom, grain, blur, grade, depth of field) and
+  `scene.shadow` (`contact_strength`, `contact_size`). Every one is in `model.FIELD_RANGES`, which the panel's
+  sliders and project loading share, and defaults to off or neutral, where the pass is skipped and the frame is
+  bit-identical to before (tests guard each).
+- **Resolution independence.** Every radius is a fraction of the image height (`REFLECTION_BLUR`, `BLOOM_SPREAD`,
+  `TEXT_BLUR`, `DOF_BLUR`, grain size in thousandths), so a scaled export matches the preview.
+- **Text finishing** ping-pongs between two full-size RGBA8 targets (`EffectsRenderer.finished`) and never touches
+  `text_layer` itself; the layer's depth still goes to the composite (the grid overlay tests against it), so a
+  blurred edge beyond the text's own pixels has far depth there.
+  - **Depth of field.** `DOF_COC_FS` turns the layer's depth into a blur radius (circle of confusion):
+    `aperture × DOF_BLUR × height × min(|1 − focus / distance|, 1)`, distance along the view. Pixels without
+    text (depth cleared to 1, which includes a sharp edge's partly covered pixels) take the largest radius of
+    text whose blur reaches them, from a 48-sample spiral, but never from text behind them, so out-of-focus
+    text spreads past its outline and over farther text, not over nearer text. `DOF_BLUR_FS` is then the
+    separable Gaussian with each pixel's own radius. An in-focus object keeps its own sharp edge.
+  - **Blur** is the shared separable Gaussian (`_blur`) on the premultiplied layer, so the edge softens into
+    transparency (alpha included).
+  - **Grade and grain** are one pass (`TEXT_FINISH_FS`) on the straight colour: brightness (gain), contrast
+    around mid grey, saturation (Rec. 709 luma), warmth (red/blue gains, `WARMTH_SHIFT`), then monochrome value
+    noise on a fixed `GRAIN_SEED` lattice in image pixels. It never changes alpha, and the grain is fixed to the
+    image (no shimmer while dragging; exports are reproducible).
+- **Bloom** extracts per channel `max(c − threshold · a, 0) / (1 − threshold)` from the finished layer, so it finds
+  near-saturated pixels: highlights, and neon, whose glow saturates in the RGBA8 layer (see *Emission*). It glows
+  over the photo and the text alike.
+- **The occlusion mask** (`Document.mask`, (H, W) uint8 at the photo's size, saved in projects) is painted with
+  the Mask tool (**M**; Option/Alt erases; `vm.paint_mask`, one undo step per stroke; `scene.mask` is the brush).
+  The canvas uploads only the changed rect. `render_mask_overlay` tints it in the preview only.
+- **Cost** (1600×1000, 4× MSAA, Apple GPU): about 2.5 ms with nothing on, about 5 ms with every effect on (depth
+  of field is the most expensive, ~1 ms). `test_every_effect_on_stays_above_30_fps` guards it.
 
 ### Workflow features (wave 1A)
 
@@ -248,7 +342,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   alpha-to-coverage *and* alpha-to-one, then resolved: color comes out premultiplied and alpha is coverage.
   `LAYER_COMPOSITE_FS` puts it over the target with (ONE, ONE_MINUS_SRC_ALPHA), fetching texels 1:1 with
   the viewport. Exports match the old direct render to within one level. Passes that work on the text
-  alone (occlusion, grading, bloom, transparent export) read `text_layer.color` / `.depth`.
+  alone read `text_layer.color` / `.depth`; what comes after the finishing passes (the composite, bloom, the
+  transparent export) reads `Compositor.text_color` instead.
 - **Depth pre-pass** (`text3d_renderer.DEPTH_PREPASS`). The stack is drawn once into depth only
   (`LAYER_DEPTH_FS`), then shaded with `GL_EQUAL` and depth writes off, so expensive shading runs about
   once per pixel instead of once per slice. Real gains are modest on Apple GPUs (~11% without MSAA, ~0
@@ -509,7 +604,8 @@ layout (looks, transparent/batch export, zoom, multi-line and arc text, wall mou
 
 - The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
-- Multiple text objects (wave 0.2): glass doesn't refract other text objects. New and
+- Multiple text objects (wave 0.2): glass doesn't refract other text objects (only other glass objects' far
+  walls, where they overlap). New and
   duplicated objects are placed in front of the selected one (`ground.placement_in_front`), assuming a
   cap-height ink; very tall or descending text can still overlap a little, and near the image's bottom edge
   the new object may be partly cut off.

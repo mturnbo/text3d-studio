@@ -25,9 +25,10 @@ from PyQt6.QtWidgets import (
 )
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
-from ..materials import KINDS
+from ..materials import KINDS, SHADING_RANGES, SIDE_KINDS
 from ..text_raster import ALIGNMENTS
 from ..text_raster import LAYOUT_RANGES
+from ..model import FIELD_RANGES, EffectsParams, MaskParams, ShadowParams
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
@@ -79,15 +80,41 @@ SLIDERS = {
         ("bump_strength", "Bump", 0, 1, 2),
         ("varnish", "Varnish", 0, 1, 2),
         ("absorption", "Absorption", 0, 5, 2),
+        ("outline_width", "Outline", *SHADING_RANGES["outline_width"], 2),
+        ("outline_metallic", "Outline metallic", *SHADING_RANGES["outline_metallic"], 2),
+        ("emission_strength", "Glow", *SHADING_RANGES["emission_strength"], 2),
     ],
     "shadow": [
         ("opacity", "Opacity", 0, 1, 2),
         ("softness", "Softness", 0, 1, 2),
         ("falloff", "Falloff", 0, 3, 2),
+        ("contact_strength", "Contact shadow", *FIELD_RANGES[ShadowParams]["contact_strength"], 2),
+        ("contact_size", "Contact size", *FIELD_RANGES[ShadowParams]["contact_size"], 2),
     ],
     "wall": [
         ("angle", "Facing", -180, 180, 1),
         ("offset", "Distance", 0, 150, 2),
+    ],
+    "mask": [
+        ("brush_size", "Brush size", *FIELD_RANGES[MaskParams]["brush_size"], 3),
+        ("feather", "Feather", *FIELD_RANGES[MaskParams]["feather"], 2),
+    ],
+    "effects": [
+        ("reflection_strength", "Reflection", *FIELD_RANGES[EffectsParams]["reflection_strength"], 2),
+        ("reflection_roughness", "Reflection blur", *FIELD_RANGES[EffectsParams]["reflection_roughness"], 2),
+        ("reflection_fade", "Reflection fade", *FIELD_RANGES[EffectsParams]["reflection_fade"], 1),
+        ("bloom_strength", "Bloom", *FIELD_RANGES[EffectsParams]["bloom_strength"], 2),
+        ("bloom_threshold", "Bloom threshold", *FIELD_RANGES[EffectsParams]["bloom_threshold"], 2),
+        ("bloom_radius", "Bloom radius", *FIELD_RANGES[EffectsParams]["bloom_radius"], 2),
+        ("grain_amount", "Grain", *FIELD_RANGES[EffectsParams]["grain_amount"], 2),
+        ("grain_size", "Grain size", *FIELD_RANGES[EffectsParams]["grain_size"], 1),
+        ("blur_radius", "Blur", *FIELD_RANGES[EffectsParams]["blur_radius"], 2),
+        ("grade_brightness", "Brightness", *FIELD_RANGES[EffectsParams]["grade_brightness"], 2),
+        ("grade_contrast", "Contrast", *FIELD_RANGES[EffectsParams]["grade_contrast"], 2),
+        ("grade_saturation", "Saturation", *FIELD_RANGES[EffectsParams]["grade_saturation"], 2),
+        ("grade_warmth", "Warmth", *FIELD_RANGES[EffectsParams]["grade_warmth"], 2),
+        ("dof_focus", "Focus distance", *FIELD_RANGES[EffectsParams]["dof_focus"], 1),
+        ("dof_aperture", "Aperture", *FIELD_RANGES[EffectsParams]["dof_aperture"], 2),
     ],
 }
 
@@ -95,11 +122,13 @@ CHECKBOXES = {
     "grid": [("visible", "Show grid"), ("fit_estimate_fov", "Fit: estimate field of view")],
     "light": [("reflect_photo", "Reflect the photo")],
     "shadow": [("enabled", "Cast shadow")],
+    "wall": [("enabled", "Wall in the photo (catches shadows)")],
 }
 
 COLORS = {
     "grid": [("color", "Grid color"), ("accent_color", "Path color")],
-    "material": [("face_color", "Face color"), ("side_color", "Side color"), ("secondary_color", "Secondary color")],
+    "material": [("face_color", "Face color"), ("side_color", "Side color"), ("secondary_color", "Secondary color"),
+                 ("outline_color", "Outline color"), ("emission_color", "Glow color")],
     "light": [("color", "Light color"), ("ambient_color", "Ambient color")],
     "shadow": [("color", "Shadow color")],
 }
@@ -108,17 +137,20 @@ COLORS = {
 EYEDROPPER_COLORS = {("light", "color"), ("light", "ambient_color")}
 
 # Material fields shown for each kind (the kind itself decides `metallic`, so that slider never shows).
-_SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength")
+_OUTLINE = ("outline_width", "outline_color", "outline_metallic")  # every kind can have an outline
+_SOLID_COLOR = ("face_color", "side_color", "roughness", "side_darkening", "bevel_strength") + _OUTLINE
 MATERIAL_CONTROLS = {
     "metal": _SOLID_COLOR,
     "plastic": _SOLID_COLOR,
     # Glass shows its roughness as frost and its thickness through the absorption tint.
-    "glass": ("face_color", "side_color", "absorption", "roughness", "side_darkening", "bevel_strength"),
+    "glass": ("face_color", "side_color", "absorption", "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
     # Textured materials color their side walls from the pattern too, so they have no side color.
     "stone": ("face_color", "secondary_color", "texture_scale", "texture_strength", "bump_strength",
-              "roughness", "side_darkening", "bevel_strength"),
+              "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
     "wood": ("face_color", "secondary_color", "texture_scale", "texture_strength", "grain_angle", "varnish",
-             "bump_strength", "roughness", "side_darkening", "bevel_strength"),
+             "bump_strength", "roughness", "side_darkening", "bevel_strength") + _OUTLINE,
+    "neon": ("emission_color", "emission_strength", "face_color", "side_color", "roughness", "side_darkening",
+             "bevel_strength") + _OUTLINE,
 }
 
 # Placement fields shown for each mount; the others don't apply to it.
@@ -132,6 +164,7 @@ MATERIAL_LABELS = {
               "texture_strength": "Veining"},
     "wood": {"face_color": "Light wood", "secondary_color": "Dark wood", "texture_scale": "Ring spacing",
              "texture_strength": "Grain contrast"},
+    "neon": {"face_color": "Tube color"},
 }
 
 TEXT_EDITOR_LINES = 3  # visible lines in the Text field; more scroll
@@ -146,6 +179,8 @@ GROUP_TITLES = [
     ("material", "Material"),
     ("shadow", "Shadow"),
     ("wall", "Wall"),
+    ("mask", "Mask"),
+    ("effects", "Effects"),
 ]
 
 
@@ -309,6 +344,7 @@ class ControlPanel(QScrollArea):
                 self._add_text_inputs(form)
             if section == "material":
                 self._add_material_picker(form)
+                self._add_side_picker(form)
             if section == "transform":
                 self._add_mount_picker(form)
             for field, label in CHECKBOXES.get(section, []):
@@ -321,6 +357,8 @@ class ControlPanel(QScrollArea):
             for field, label in COLORS.get(section, []):
                 button = self._add_color(form, section, field, label)
                 self._remember_material_row(section, field, label, form, button)
+            if section == "mask":
+                self._add_clear_mask_button(form)
             column.addWidget(group)
         column.addStretch(1)
         self.setWidget(content)
@@ -450,6 +488,20 @@ class ControlPanel(QScrollArea):
         combo.activated.connect(lambda index: self.vm.apply_material(combo.itemData(index)))
         form.addRow("Material", combo)
 
+    def _add_side_picker(self, form: QFormLayout) -> None:
+        combo = QComboBox()
+        combo.setObjectName("material.side_kind")
+        for kind in SIDE_KINDS:
+            combo.addItem(kind.capitalize(), kind)
+
+        def set_side_kind(kind: str) -> None:
+            _set_quietly(combo, combo.setCurrentIndex, combo.findData(kind))
+
+        set_side_kind(self.vm.get("material", "side_kind"))
+        self._setters[("material", "side_kind")] = set_side_kind
+        combo.activated.connect(lambda index: self.vm.set("material", "side_kind", combo.itemData(index)))
+        form.addRow("Sides", combo)
+
     def _add_mount_picker(self, form: QFormLayout) -> None:
         combo = QComboBox()
         combo.setObjectName("transform.mount")
@@ -463,6 +515,15 @@ class ControlPanel(QScrollArea):
         self._setters[("transform", "mount")] = set_mount
         combo.activated.connect(lambda index: self.vm.set_mount(combo.itemData(index)))
         form.addRow("Mount", combo)
+
+    def _add_clear_mask_button(self, form: QFormLayout) -> None:
+        self.clear_mask_button = QPushButton("Clear Mask")
+        self.clear_mask_button.setObjectName("mask.clear")
+        self.clear_mask_button.clicked.connect(lambda: self.vm.clear_mask())
+        update = lambda *_: self.clear_mask_button.setEnabled(self.vm.document.mask is not None)
+        update()
+        self.vm.mask_changed.connect(update)
+        form.addRow("", self.clear_mask_button)
 
     def _show_placement_controls(self, mount: str) -> None:
         hidden = WALL_ONLY if mount == "floor" else FLOOR_ONLY
@@ -509,16 +570,19 @@ class ControlPanel(QScrollArea):
 
     def _show_material_controls(self, kind: str) -> None:
         labels = MATERIAL_LABELS.get(kind, {})
+        # Sides of another kind take that kind's preset colors, so the side color doesn't apply to them.
+        own_sides = self.vm.get("material", "side_kind") == "same"
         for field, (form, widget, default_label) in self._material_rows.items():
-            form.setRowVisible(widget, field in MATERIAL_CONTROLS[kind])
+            shown = field in MATERIAL_CONTROLS[kind] and (own_sides or field != "side_color")
+            form.setRowVisible(widget, shown)
             form.labelForField(widget).setText(labels.get(field, default_label))
 
     def _refresh(self, section: str, field: str) -> None:
         setter = self._setters.get((section, field))
         if setter is not None:
             setter(self.vm.get(section, field))
-        if (section, field) == ("material", "kind"):
-            self._show_material_controls(self.vm.get(section, field))
+        if (section, field) in (("material", "kind"), ("material", "side_kind")):
+            self._show_material_controls(self.vm.get("material", "kind"))
         if (section, field) == ("transform", "mount"):
             self._show_placement_controls(self.vm.get(section, field))
         if (section, field) == ("text", "content"):
