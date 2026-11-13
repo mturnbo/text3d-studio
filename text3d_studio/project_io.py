@@ -17,6 +17,7 @@ from .image_io import SUPPORTED_EXTENSIONS, load_image, qimage_to_rgba, rgba_to_
 from .model import (
     CameraParams,
     Document,
+    EffectsParams,
     GridParams,
     GroundParams,
     FIELD_RANGES,
@@ -142,6 +143,7 @@ def _scene_from_dict(data: dict) -> Scene:
         camera=_params_from_dict(CameraParams, data.get("camera")),
         wall=_params_from_dict(WallParams, data.get("wall")),
         mask=_params_from_dict(MaskParams, data.get("mask")),
+        effects=_params_from_dict(EffectsParams, data.get("effects")),
     )
     if objects:
         scene.objects = objects

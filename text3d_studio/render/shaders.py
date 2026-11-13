@@ -702,3 +702,61 @@ void main() {
 }
 """
 
+# Gaussian blur of a premultiplied RGBA image along u_step, alpha included (BLUR_FS keeps only color).
+BLUR_RGBA_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform vec2 u_step;
+out vec4 frag;
+void main() {
+    vec4 total = vec4(0.0);
+    float weights = 0.0;
+    for (int i = -12; i <= 12; ++i) {
+        float x = float(i) / 6.0;
+        float w = exp(-0.5 * x * x);
+        total += texture(u_image, v_uv + u_step * float(i)) * w;
+        weights += w;
+    }
+    frag = total / weights;
+}
+"""
+
+# A texture stretched over the viewport, scaled: composites premultiplied layers and adds glows.
+SCALED_TEXTURE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform float u_scale;
+out vec4 frag;
+void main() {
+    frag = texture(u_image, v_uv) * u_scale;
+}
+"""
+
+# Ground reflection: the mirrored text layer, faded by how far below the ground each pixel's mirrored surface lies
+# (the height above the ground of what it mirrors). Positions come back from the layer's depth.
+REFLECTION_FADE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+uniform mat4 u_inverse_proj;
+uniform vec4 u_ground_plane;
+uniform float u_fade;   // world units below the ground where the reflection has faded out
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    vec4 color = texelFetch(u_color, texel, 0);
+    if (color.a <= 0.0) {
+        frag = vec4(0.0);
+        return;
+    }
+    float depth = texelFetch(u_depth, texel, 0).r;
+    vec4 view = u_inverse_proj * vec4(v_uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec3 position = view.xyz / view.w;
+    float below = -(dot(u_ground_plane.xyz, position) + u_ground_plane.w);
+    frag = color * clamp(1.0 - below / u_fade, 0.0, 1.0);
+}
+"""
+

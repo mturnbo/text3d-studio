@@ -42,6 +42,7 @@ def busy_scene() -> Scene:
     scene.objects[1].transform = dataclasses.replace(scene.objects[1].transform, mount="wall", wall_x=-2.5, wall_y=1.25)
     scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5, enabled=True)
     scene.mask = dataclasses.replace(scene.mask, brush_size=0.12, feather=0.25)
+    scene.effects = dataclasses.replace(scene.effects, reflection_strength=0.4, reflection_fade=1.5)
     return scene
 
 

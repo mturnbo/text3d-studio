@@ -17,6 +17,7 @@ from ..materials import TRANSMISSION
 from ..model import Scene, TextObject
 from ..text_raster import GlyphRaster
 from . import shaders
+from .effects import EffectsRenderer
 from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
 from .shadow_renderer import ShadowRenderer, casts_shadow
 from .text3d_renderer import Glyph, Text3DRenderer
@@ -44,6 +45,7 @@ class Compositor:
         self.text = Text3DRenderer(self.quad)
         self.glyphs: dict[int, Glyph] = {}  # by TextObject.id; objects without one (no ink) aren't drawn
         self.shadows = ShadowRenderer(self.quad)
+        self.effects = EffectsRenderer(self.quad)
         self.lighting = LightingEngine()
         self.max_texture_size = int(GL.glGetIntegerv(GL.GL_MAX_TEXTURE_SIZE))
 
@@ -111,6 +113,9 @@ class Compositor:
         draw_shadow = casts_shadow(scene) and bool(drawn)
         if draw_shadow:
             self.shadows.render_mask(self.text, scene, drawn, proj, lighting, viewport)
+        reflect = self.effects.render_reflection(
+            self.text, scene, drawn, proj, lighting, self._environment(scene), viewport
+        )
 
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
         target_samples = int(GL.glGetIntegerv(GL.GL_SAMPLES))
@@ -124,6 +129,8 @@ class Compositor:
         self._draw_background()
         if draw_shadow:
             self.shadows.composite_onto(scene)
+        if reflect:
+            self.effects.composite_reflection(scene)
 
         if drawn:
             backdrop = None
@@ -178,7 +185,7 @@ class Compositor:
         # text over the transparent clear into premultiplied color and a coverage alpha.
         GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
         GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_ONE)
-        environment = self.background if self.has_background and scene.light.reflect_photo else None
+        environment = self._environment(scene)
         for obj, glyph in drawn:
             transmissive = obj.material.kind in TRANSMISSION
             self.text.draw_beauty(
@@ -188,6 +195,29 @@ class Compositor:
         GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
         GL.glDisable(GL.GL_DEPTH_TEST)
         layer.resolve()
+
+    def _environment(self, scene: Scene):
+        """What glossy text reflects: the photo, or None for the ambient colour."""
+        return self.background if self.has_background and scene.light.reflect_photo else None
+
+    def read_reflection(self, scene: Scene, width: int, height: int) -> np.ndarray | None:
+        """The ground reflection the last render of `scene` put over the photo (premultiplied, scaled by its
+        strength), at (height, width), top row first; None when it drew none. The transparent export reads it."""
+        if not self.effects.has_reflection:
+            return None
+        target = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
+        try:
+            target.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+            GL.glViewport(0, 0, width, height)
+            GL.glClearColor(0, 0, 0, 0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+            self.effects.composite_reflection(scene, write_alpha=True)
+            GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+            data = GL.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        finally:
+            target.delete()
+        return np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1].copy()
 
     def _composite_text_layer(self, viewport) -> None:
         """Puts the resolved layer over the bound target, writing its depth for the grid overlay.
@@ -299,6 +329,7 @@ class Compositor:
         self.retain_glyphs(())
         self.text.delete()
         self.shadows.delete()
+        self.effects.delete()
         self.backdrop.delete()
         self.text_layer.delete()
         self.layer_program.delete()

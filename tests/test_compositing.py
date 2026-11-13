@@ -363,3 +363,79 @@ def test_the_contact_shadow_is_in_the_transparent_export(compositor):
     assert shadowed.sum() > 20
     assert (pixels[shadowed][:, 3] > 20).all()
     assert not pixels[~dilated((darker > 0) | text, 3)][:, 3].any()  # nothing where nothing darkened
+
+
+# ----- Ground reflection --------------------------------------------------------------------------
+
+REFLECTION_GROUND = {"pitch": 8.0, "height": 1.5}
+
+
+def reflection_document(**effects):
+    effects = {"reflection_strength": 1.0, "reflection_roughness": 0.0, "reflection_fade": 3.0, **effects}
+    return make_document(ground=REFLECTION_GROUND, transform={"z": -9.0, "rot_y": -10.0}, shadow=NO_SHADOW,
+                         effects=effects)
+
+
+def reflection_change(compositor, **effects):
+    """How much each pixel changed from the reflection-free render, and where the text is."""
+    plain = render(compositor, reflection_document(reflection_strength=0.0))
+    shown = render(compositor, reflection_document(**effects))
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    return np.abs(shown[..., :3].astype(int) - plain[..., :3]).sum(-1), text
+
+
+def test_zero_reflection_strength_is_identical_to_before(compositor):
+    reference = render(compositor, make_document(ground=REFLECTION_GROUND))
+    unused = render(compositor, make_document(ground=REFLECTION_GROUND, effects={
+        "reflection_strength": 0.0, "reflection_roughness": 1.0, "reflection_fade": 0.5}))
+    assert np.array_equal(reference, unused)
+
+
+def test_the_reflection_appears_below_the_text_and_fades_with_depth(compositor):
+    change, text = reflection_change(compositor)
+    rows = np.flatnonzero(text.any(axis=1))
+    top, base = rows.min(), rows.max()
+    reflected = (change > 6) & ~text
+    reflected_rows = np.nonzero(reflected)[0]
+    assert reflected.sum() > 500
+    assert np.median(reflected_rows) > base  # below the text, on the floor
+    assert not (change[:top] > 0).any()
+    height = base - top
+    near = change[base + 1:base + height // 3].mean()
+    far = change[base + 2 * height // 3:base + height].mean()
+    assert near > 2 * far
+
+
+def test_a_short_fade_shortens_the_reflection(compositor):
+    long, text = reflection_change(compositor, reflection_fade=6.0)
+    short, _ = reflection_change(compositor, reflection_fade=0.5)
+    assert ((short > 6) & ~text).sum() < 0.6 * ((long > 6) & ~text).sum()
+
+
+def test_roughness_blurs_the_reflection(compositor):
+    sharp, text = reflection_change(compositor)
+    rough, _ = reflection_change(compositor, reflection_roughness=1.0)
+    below = ~dilated(text, 2)
+    below[: np.flatnonzero(text.any(axis=1)).max()] = False
+
+    def detail(change):
+        return np.abs(np.diff(change.astype(float), axis=1))[below[:, 1:]].mean()
+
+    assert detail(rough) < 0.75 * detail(sharp)
+
+
+def test_wall_text_is_not_reflected_in_the_floor(compositor):
+    plain = scene_of(wall_text(), wall={**WALL, "enabled": False}, shadow=NO_SHADOW)
+    reflected = scene_of(wall_text(), wall={**WALL, "enabled": False}, shadow=NO_SHADOW,
+                         effects={"reflection_strength": 1.0})
+    assert np.array_equal(render(compositor, plain), render(compositor, reflected))
+
+
+def test_the_reflection_is_in_the_transparent_export_under_the_text(compositor):
+    change, text = reflection_change(compositor)
+    pixels = render(compositor, reflection_document(), transparent=True)
+    reflected = (change > 30) & ~dilated(text, 2)
+    assert reflected.sum() > 100
+    assert (pixels[reflected][:, 3] > 0).all()
+    assert (pixels[eroded(text, 3)][:, 3] == 255).mean() > 0.999  # the text stays opaque over it
+    assert not pixels[~dilated((change > 0) | text, 2)][:, 3].any()

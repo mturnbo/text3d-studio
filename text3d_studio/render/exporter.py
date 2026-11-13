@@ -68,6 +68,10 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
         text = np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1]
     else:
         text = np.zeros((height, width, 4), np.uint8)
+    reflection = compositor.read_reflection(scene, width, height)
+    if reflection is not None:  # the text over its reflection, premultiplied
+        alpha = text[..., 3:].astype(np.float32) / 255.0
+        text = np.round(text + reflection * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
 
     factors = []
     target = ColorTarget(GL.GL_RGBA16F, GL.GL_RGBA)

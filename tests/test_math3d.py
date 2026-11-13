@@ -342,3 +342,17 @@ def test_closest_line_parameter_scales_with_the_direction_and_meets_crossing_lin
 
 def test_closest_line_parameter_is_undefined_for_parallel_lines():
     assert math3d.closest_line_parameter((1, 0, 0), (0, 1, 0), (0, 0, 0), (0, -2, 0)) is None
+
+
+def test_reflection_matrix_mirrors_across_the_plane_and_undoes_itself():
+    normal = np.array([0.2, 0.9, -0.1])
+    plane = math3d.plane_from_point_normal(np.array([1.0, -1.5, -4.0]), normal)
+    mirror = math3d.reflection_matrix(plane)
+    point = np.array([2.0, 0.5, -7.0, 1.0])
+    image = mirror @ point
+    distance = plane @ point
+    assert plane @ image == pytest.approx(-distance)
+    assert plane @ ((point + image) / 2) == pytest.approx(0.0, abs=1e-12)  # the midpoint lies on the plane
+    np.testing.assert_allclose(np.cross(image[:3] - point[:3], plane[:3]), 0.0, atol=1e-12)  # along the normal
+    np.testing.assert_allclose(mirror @ mirror, np.eye(4), atol=1e-12)
+    assert np.linalg.det(mirror[:3, :3]) == pytest.approx(-1.0)

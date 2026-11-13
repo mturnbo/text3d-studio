@@ -127,6 +127,15 @@ class MaskParams:
 
 
 @dataclass
+class EffectsParams:
+    """Finishing passes over the composite. All of them are off (or neutral) by default."""
+
+    reflection_strength: float = 0.0  # a mirrored copy of the floor text on the ground; 0 = off
+    reflection_roughness: float = 0.3  # blurs the reflection
+    reflection_fade: float = 3.0  # world units below the ground over which the reflection fades out
+
+
+@dataclass
 class TextObject:
     """One piece of 3D text: what it says, where it stands and what it's made of."""
 
@@ -148,6 +157,7 @@ class Scene:
     camera: CameraParams = field(default_factory=CameraParams)
     wall: WallParams = field(default_factory=WallParams)
     mask: MaskParams = field(default_factory=MaskParams)
+    effects: EffectsParams = field(default_factory=EffectsParams)
 
 
 @dataclass
@@ -172,4 +182,9 @@ class Document:
 FIELD_RANGES = {
     ShadowParams: {"contact_strength": (0.0, 1.0), "contact_size": (0.02, 1.0)},
     MaskParams: {"brush_size": (0.005, 0.5), "feather": (0.0, 1.0)},
+    EffectsParams: {
+        "reflection_strength": (0.0, 1.0),
+        "reflection_roughness": (0.0, 1.0),
+        "reflection_fade": (0.1, 30.0),
+    },
 }
