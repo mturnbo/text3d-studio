@@ -881,3 +881,17 @@ void main() {
 }
 """
 
+
+# Bloom: the part of the (premultiplied) text layer brighter than the threshold, per channel, rescaled to 0-1.
+BLOOM_EXTRACT_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform float u_threshold;
+out vec4 frag;
+void main() {
+    vec4 color = texture(u_image, v_uv);
+    vec3 bright = max(color.rgb - vec3(u_threshold) * color.a, 0.0) / max(1.0 - u_threshold, 1e-3);
+    frag = vec4(bright, 0.0);
+}
+"""

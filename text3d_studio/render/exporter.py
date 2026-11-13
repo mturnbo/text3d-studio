@@ -72,6 +72,14 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
     if reflection is not None:  # the text over its reflection, premultiplied
         alpha = text[..., 3:].astype(np.float32) / 255.0
         text = np.round(text + reflection * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+    glow = compositor.read_bloom(scene, width, height)
+    if glow is not None:  # added light: over transparency, its brightest channel becomes its alpha
+        alpha = text[..., 3:].astype(np.float32) / 255.0
+        glow_alpha = glow.max(axis=-1, keepdims=True).astype(np.float32)
+        text = text.astype(np.float32)
+        text[..., :3] += glow
+        text[..., 3:] += glow_alpha * (1.0 - alpha)
+        text = np.round(text).clip(0, 255).astype(np.uint8)
 
     factors = []
     target = ColorTarget(GL.GL_RGBA16F, GL.GL_RGBA)

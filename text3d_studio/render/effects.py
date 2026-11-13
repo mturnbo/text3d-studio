@@ -3,6 +3,8 @@
 - Ground reflection: floor text drawn again, mirrored across the ground plane (light mirrored too), into a
   half-resolution layer; faded with depth below the ground and blurred by roughness, then put over the floor before
   the text.
+- Bloom: what is brighter than the threshold in the text layer, at half resolution, blurred and added over the
+  composite. It is light, with no alpha of its own; the transparent export gives it its brightest channel as alpha.
 """
 
 import dataclasses
@@ -20,6 +22,7 @@ BLUR_TAPS = 12  # one-sided tap count in BLUR_RGBA_FS
 BLUR_ITERATIONS = 2
 REFLECTION_SAMPLES = 4
 REFLECTION_BLUR = 0.04  # the reflection's blur radius at roughness 1, as a fraction of the image height
+BLOOM_SPREAD = 0.15  # the glow's blur radius at bloom_radius 1, as a fraction of the image height
 
 
 class EffectsRenderer:
@@ -28,10 +31,13 @@ class EffectsRenderer:
         self.blur = ShaderProgram(shaders.FULLSCREEN_VS, shaders.BLUR_RGBA_FS)
         self.scaled = ShaderProgram(shaders.FULLSCREEN_VS, shaders.SCALED_TEXTURE_FS)
         self.reflection_fade = ShaderProgram(shaders.FULLSCREEN_VS, shaders.REFLECTION_FADE_FS)
+        self.bloom_extract = ShaderProgram(shaders.FULLSCREEN_VS, shaders.BLOOM_EXTRACT_FS)
         self.reflection_layer = LayerTarget()
         self.reflection = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)  # faded and blurred, premultiplied
         self.half_scratch = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
+        self.bloom = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
         self.has_reflection = False
+        self.has_bloom = False
 
     # ----- Ground reflection --------------------------------------------------------------------
 
@@ -91,6 +97,35 @@ class EffectsRenderer:
             self.reflection, scene.effects.reflection_strength, (GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA), write_alpha
         )
 
+    # ----- Bloom ----------------------------------------------------------------------------------
+
+    def render_bloom(self, scene: Scene, drawn, text_layer, viewport) -> bool:
+        """Extracts and blurs the text layer's glow (`text_layer`: a texture the viewport's size) into self.bloom.
+        False, drawing nothing, when bloom is off or no text was drawn."""
+        effects = scene.effects
+        self.has_bloom = effects.bloom_strength > 0 and bool(drawn)
+        if not self.has_bloom:
+            return False
+        _, _, width, height = viewport
+        w, h = max(1, width // 2), max(1, height // 2)
+        self.bloom.resize(w, h)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.bloom.fbo)
+        GL.glViewport(0, 0, w, h)
+        program = self.bloom_extract
+        program.use()
+        program.set_int("u_flip_y", 0)
+        program.set_int("u_image", 0)
+        program.set_float("u_threshold", effects.bloom_threshold)
+        text_layer.bind(0)
+        self.quad.draw()
+        self._blur(self.bloom, self.half_scratch, 0.5 + effects.bloom_radius * BLOOM_SPREAD * h)
+        return True
+
+    def composite_bloom(self, scene: Scene) -> None:
+        """Adds the glow onto the bound target and viewport (alpha writes off)."""
+        self._composite(self.bloom, scene.effects.bloom_strength, (GL.GL_ONE, GL.GL_ONE))
+
+
     # ----- Shared -------------------------------------------------------------------------------
 
     def _composite(self, source: ColorTarget, scale: float, blend, write_alpha: bool = False) -> None:
@@ -130,6 +165,8 @@ class EffectsRenderer:
         self.blur.delete()
         self.scaled.delete()
         self.reflection_fade.delete()
+        self.bloom_extract.delete()
+        self.bloom.delete()
         self.reflection_layer.delete()
         self.reflection.delete()
         self.half_scratch.delete()

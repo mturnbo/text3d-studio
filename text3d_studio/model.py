@@ -141,6 +141,9 @@ class EffectsParams:
     reflection_strength: float = 0.0  # a mirrored copy of the floor text on the ground; 0 = off
     reflection_roughness: float = 0.3  # blurs the reflection
     reflection_fade: float = 3.0  # world units below the ground over which the reflection fades out
+    bloom_strength: float = 0.0  # bright parts of the text glow; 0 = off
+    bloom_threshold: float = 0.8  # brightness (0-1) above which the text glows
+    bloom_radius: float = 0.3  # how far the glow spreads, relative to the image height
 
 
 @dataclass
@@ -194,5 +197,8 @@ FIELD_RANGES = {
         "reflection_strength": (0.0, 1.0),
         "reflection_roughness": (0.0, 1.0),
         "reflection_fade": (0.1, 30.0),
+        "bloom_strength": (0.0, 2.0),
+        "bloom_threshold": (0.0, 1.0),
+        "bloom_radius": (0.0, 1.0),
     },
 }

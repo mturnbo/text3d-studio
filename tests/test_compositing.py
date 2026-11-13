@@ -4,6 +4,7 @@ photo matching. Tests check rendered properties against control renders, never r
 import numpy as np
 import pytest
 
+from text3d_studio.materials import PRESETS
 from text3d_studio.model import Document
 from text3d_studio.render.compositor import Compositor
 from text3d_studio.render.exporter import render_document
@@ -58,10 +59,12 @@ def eroded(mask, erode=2):
 
 
 def dilated(mask, grow):
+    """Every pixel within `grow` pixels of the mask, diagonals included (a square, not a cross)."""
     grown = mask.copy()
     for axis in (0, 1):
+        source = grown.copy()
         for shift in range(1, grow + 1):
-            grown |= np.roll(mask, shift, axis) | np.roll(mask, -shift, axis)
+            grown |= np.roll(source, shift, axis) | np.roll(source, -shift, axis)
     return grown
 
 
@@ -439,3 +442,77 @@ def test_the_reflection_is_in_the_transparent_export_under_the_text(compositor):
     assert (pixels[reflected][:, 3] > 0).all()
     assert (pixels[eroded(text, 3)][:, 3] == 255).mean() > 0.999  # the text stays opaque over it
     assert not pixels[~dilated((change > 0) | text, 2)][:, 3].any()
+
+
+# ----- Bloom --------------------------------------------------------------------------------------
+
+BRIGHT = {"kind": "plastic", "face_color": (1.0, 1.0, 1.0), "side_color": (1.0, 1.0, 1.0), "roughness": 0.3,
+          "metallic": 0.0}
+NEON = {"kind": "neon", **{k: v for k, v in PRESETS["neon"].items()}, "emission_strength": 3.0}
+
+
+def bloom_document(material=BRIGHT, **effects):
+    return make_document(shadow=NO_SHADOW, material=material, light={"intensity": 2.5, "azimuth": 0.0},
+                         effects={"bloom_strength": 1.0, "bloom_threshold": 0.6, "bloom_radius": 0.3, **effects})
+
+
+def test_bloom_off_is_identical_to_before(compositor):
+    reference = render(compositor, make_document(shadow=NO_SHADOW, material=BRIGHT, light={"intensity": 2.5,
+                                                                                            "azimuth": 0.0}))
+    assert np.array_equal(reference, render(compositor, bloom_document(bloom_strength=0.0)))
+    assert np.array_equal(reference, render(compositor, bloom_document(bloom_strength=0.0, bloom_threshold=0.0,
+                                                                       bloom_radius=1.0)))
+    nothing_bright = render(compositor, bloom_document(bloom_threshold=1.0))
+    assert np.array_equal(reference, nothing_bright)
+
+
+@pytest.mark.parametrize("material", [BRIGHT, NEON], ids=["highlight", "neon"])
+def test_bright_text_spreads_light_into_neighbouring_photo_pixels(compositor, material):
+    plain = render(compositor, bloom_document(material, bloom_strength=0.0))
+    glowing = render(compositor, bloom_document(material))
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    ring = dilated(text, 8) & ~dilated(text, 1)
+    brighter = luminance(glowing) - luminance(plain)
+    assert brighter[ring].mean() > 5
+    assert (brighter >= -1).all()  # it only adds light
+    assert np.abs(brighter[~dilated(text, 150)]).max() <= 1  # and only near the text
+
+
+def test_a_wider_radius_glows_further(compositor):
+    plain = render(compositor, bloom_document(bloom_strength=0.0))
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    far = dilated(text, 30) & ~dilated(text, 20)
+    narrow = luminance(render(compositor, bloom_document(bloom_radius=0.1))) - luminance(plain)
+    wide = luminance(render(compositor, bloom_document(bloom_radius=1.0))) - luminance(plain)
+    assert narrow[far].mean() < 0.5
+    assert wide[far].mean() > narrow[far].mean() + 2
+
+
+def test_bloom_with_no_text_to_glow_changes_nothing(compositor):
+    doc = bloom_document(bloom_threshold=0.0)
+    reference = render(compositor, make_document(text={"content": " "}))
+    doc.scene.objects[0].text.content = " "
+    assert np.array_equal(render(compositor, doc), reference)
+    assert np.array_equal(render(compositor, doc, transparent=True)[..., 3], np.zeros(reference.shape[:2]))
+
+
+def test_the_glow_is_in_the_transparent_export_as_light_over_nothing(compositor):
+    plain = render(compositor, bloom_document(NEON, bloom_strength=0.0), transparent=True)
+    glowing = render(compositor, bloom_document(NEON), transparent=True)
+    text = plain[..., 3] > 0
+    ring = dilated(text, 8) & ~dilated(text, 1)
+    assert not plain[ring][:, 3].any()
+    assert glowing[ring][:, 3].mean() > 10  # the glow alone, translucent
+    assert (glowing[ring][:, 0] >= glowing[ring][:, 1]).all()  # in the neon's own (pink) colour
+    assert (glowing[..., 3] >= plain[..., 3]).all()
+    assert (glowing[plain[..., 3] == 255][:, 3] == 255).all()  # the text stays opaque
+    assert not glowing[~dilated(text, 150)][:, 3].any()
+
+
+def test_the_preview_stays_opaque_with_every_effect_on(compositor):
+    doc = bloom_document(reflection_strength=1.0)
+    doc.scene.shadow.enabled = True
+    doc.scene.shadow.contact_strength = 1.0
+    doc.scene.wall.enabled = True
+    doc.mask = left_half_mask(doc)
+    assert render_preview(compositor, doc, mask_overlay=True)[..., 3].min() == 255
