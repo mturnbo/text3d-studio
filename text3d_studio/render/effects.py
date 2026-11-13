@@ -4,7 +4,8 @@
   half-resolution layer; faded with depth below the ground and blurred by roughness, then put over the floor before
   the text.
 - Text finishing: passes on the resolved text layer alone, each into a full-size copy (ping-pong), so the composite,
-  the bloom and the transparent export all see the finished text: film grain (seeded value noise, fixed to the image).
+  the bloom and the transparent export all see the finished text, in this order: blur (premultiplied, so the edge
+  softens into transparency), film grain (seeded value noise, fixed to the image).
 - Bloom: what is brighter than the threshold in the text layer, at half resolution, blurred and added over the
   composite. It is light, with no alpha of its own; the transparent export gives it its brightest channel as alpha.
 """
@@ -25,6 +26,7 @@ BLUR_ITERATIONS = 2
 REFLECTION_SAMPLES = 4
 REFLECTION_BLUR = 0.04  # the reflection's blur radius at roughness 1, as a fraction of the image height
 BLOOM_SPREAD = 0.15  # the glow's blur radius at bloom_radius 1, as a fraction of the image height
+TEXT_BLUR = 0.02  # the text's blur radius at blur_radius 1, as a fraction of the image height
 GRAIN_CONTRAST = 0.3  # how far grain at amount 1 moves a channel (0-1) either way
 GRAIN_SEED = 0x7E47  # the same grain in every frame and export
 
@@ -110,6 +112,11 @@ class EffectsRenderer:
         the layer's own color, untouched, when they are all off."""
         effects = scene.effects
         color = layer.color
+        if effects.blur_radius > 0:
+            target, scratch = self.finished if color is not self.finished[1].texture else self.finished[::-1]
+            target.resize(layer.width, layer.height)
+            self._blur(target, scratch, max(0.5, effects.blur_radius * TEXT_BLUR * layer.height), source=color)
+            color = target.texture
         if effects.grain_amount > 0:
             target = self._spare(color, layer)
             program = self.text_finish
@@ -176,8 +183,9 @@ class EffectsRenderer:
         GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         GL.glDisable(GL.GL_BLEND)
 
-    def _blur(self, target: ColorTarget, scratch: ColorTarget, radius_px: float) -> None:
-        """Blurs `target` in place (through `scratch`) by about `radius_px` of its pixels; nothing below half a pixel."""
+    def _blur(self, target: ColorTarget, scratch: ColorTarget, radius_px: float, source: Texture2D | None = None) -> None:
+        """Blurs `target` in place (through `scratch`) by about `radius_px` of its pixels; nothing below half a pixel.
+        With a `source` (the target's size), blurs that into `target` instead."""
         if radius_px < 0.5:
             return
         scratch.resize(target.width, target.height)
@@ -187,11 +195,12 @@ class EffectsRenderer:
         program.set_int("u_image", 0)
         program.set_int("u_flip_y", 0)
         GL.glViewport(0, 0, target.width, target.height)
-        for _ in range(BLUR_ITERATIONS):
-            for source, dest, direction in ((target, scratch, (step / target.width, 0.0)),
-                                            (scratch, target, (0.0, step / target.height))):
+        for iteration in range(BLUR_ITERATIONS):
+            first = source if source is not None and iteration == 0 else target.texture
+            for image, dest, direction in ((first, scratch, (step / target.width, 0.0)),
+                                           (scratch.texture, target, (0.0, step / target.height))):
                 GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, dest.fbo)
-                source.texture.bind(0)
+                image.bind(0)
                 program.set_vec2("u_step", direction)
                 self.quad.draw()
 

@@ -144,6 +144,7 @@ class EffectsParams:
     bloom_strength: float = 0.0  # bright parts of the text glow; 0 = off
     bloom_threshold: float = 0.8  # brightness (0-1) above which the text glows
     bloom_radius: float = 0.3  # how far the glow spreads, relative to the image height
+    blur_radius: float = 0.0  # softens the text to match a soft photo; 0 = off
     grain_amount: float = 0.0  # film grain on the text; 0 = off
     grain_size: float = 1.0  # size of a grain, in thousandths of the image height
 
@@ -202,6 +203,7 @@ FIELD_RANGES = {
         "bloom_strength": (0.0, 2.0),
         "bloom_threshold": (0.0, 1.0),
         "bloom_radius": (0.0, 1.0),
+        "blur_radius": (0.0, 1.0),
         "grain_amount": (0.0, 1.0),
         "grain_size": (0.5, 5.0),
     },

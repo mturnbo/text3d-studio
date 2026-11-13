@@ -571,6 +571,43 @@ def test_zero_grain_is_identical_to_before(compositor):
     assert np.array_equal(plain, render(compositor, finish_document(grain_amount=0.0, grain_size=4.0)))
 
 
+def edge_sharpness(pixels, text):
+    """The mean luminance step between neighbours along the text's outline."""
+    band = dilated(text, 2) & ~eroded(text, 2)
+    steps = np.abs(np.diff(luminance(pixels), axis=1))
+    return steps[band[:, 1:]].mean()
+
+
+def test_blur_softens_the_text_edges_and_reaches_only_its_own_soft_edge(compositor):
+    plain, text = text_and_photo(compositor)
+    soft = render(compositor, finish_document(blur_radius=1.0))
+    assert edge_sharpness(soft, text) < 0.6 * edge_sharpness(plain, text)
+    reach = round(1.0 * 0.02 * 400) + 2  # TEXT_BLUR of the image height, plus filtering
+    assert np.array_equal(soft[~dilated(text, reach)], plain[~dilated(text, reach)])
+    assert changed(soft, plain)[dilated(text, 3) & ~text].mean() > 0.5  # the edge spreads into the photo
+
+
+def test_a_larger_blur_is_softer(compositor):
+    _, text = text_and_photo(compositor)
+    slight = render(compositor, finish_document(blur_radius=0.2))
+    strong = render(compositor, finish_document(blur_radius=1.0))
+    assert edge_sharpness(strong, text) < edge_sharpness(slight, text)
+
+
+def test_the_blurred_edge_is_soft_alpha_in_the_transparent_export(compositor):
+    _, text = text_and_photo(compositor)
+    plain = render(compositor, finish_document(), transparent=True)
+    soft = render(compositor, finish_document(blur_radius=1.0), transparent=True)
+    outside = dilated(text, 3) & ~dilated(text, 1)
+    assert not plain[outside][:, 3].any()
+    assert 0 < soft[outside][:, 3].mean() < 200
+
+
+def test_zero_blur_is_identical_to_before(compositor):
+    plain, _ = text_and_photo(compositor)
+    assert np.array_equal(plain, render(compositor, finish_document(blur_radius=0.0)))
+
+
 def test_the_preview_stays_opaque_with_every_effect_on(compositor):
     doc = bloom_document(reflection_strength=1.0)
     doc.scene.shadow.enabled = True
