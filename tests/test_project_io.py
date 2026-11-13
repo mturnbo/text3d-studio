@@ -40,6 +40,7 @@ def busy_scene() -> Scene:
     scene.camera = dataclasses.replace(scene.camera, fov=55.0)
     scene.objects[1].transform = dataclasses.replace(scene.objects[1].transform, mount="wall", wall_x=-2.5, wall_y=1.25)
     scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5)
+    scene.mask = dataclasses.replace(scene.mask, brush_size=0.12, feather=0.25)
     return scene
 
 
@@ -399,3 +400,75 @@ def test_wall_and_mounts_round_trip_and_default_when_missing(qapp, tmp_path):
     older = load_project(write_json(tmp_path / "old.t3d", project_dict(scene={"objects": [{"transform": {"x": 1.0}}]})))
     assert older.document.scene.wall == model.WallParams()
     assert older.document.scene.objects[0].transform.mount == "floor"
+
+
+# ----- Occlusion mask ---------------------------------------------------------------------------
+
+
+def soft_mask(height=30, width=50):
+    mask = np.zeros((height, width), np.uint8)
+    mask[5:20, 10:30] = 255
+    mask[5:20, 30:35] = np.linspace(200, 20, 5).astype(np.uint8)  # a feathered edge
+    return mask
+
+
+@pytest.mark.parametrize("embed_photo", [False, True])
+def test_mask_round_trips_pixel_exact_as_an_embedded_png(qapp, tmp_path, embed_photo):
+    document = Document(background=photo_pixels(), background_path=photo_file(tmp_path))
+    document.mask = soft_mask()
+    path = str(tmp_path / "masked.t3d")
+    save_project(path, document, embed_photo=embed_photo)
+    entry = json.loads(open(path).read())["mask"]
+    assert set(entry) == {"embedded_png"}
+    loaded = load_project(path)
+    assert loaded.warnings == []
+    assert np.array_equal(loaded.document.mask, document.mask)
+
+
+def test_no_mask_is_saved_as_null_and_loads_as_none(qapp, tmp_path):
+    path = str(tmp_path / "plain.t3d")
+    save_project(path, Document(background=photo_pixels()))
+    assert json.loads(open(path).read())["mask"] is None
+    assert load_project(path).document.mask is None
+    older = load_project(write_json(tmp_path / "old.t3d", project_dict()))  # saved before masks existed
+    assert older.document.mask is None and older.warnings == []
+
+
+@pytest.mark.parametrize("entry", [{"embedded_png": "not base64!"}, {"embedded_png": "aGVsbG8="}, {"other": 1}, "png"])
+def test_a_damaged_mask_is_left_out_with_a_warning(qapp, tmp_path, entry):
+    loaded = load_project(write_json(tmp_path / "bad.t3d", project_dict(mask=entry)))
+    assert loaded.document.mask is None
+    assert any("mask" in warning for warning in loaded.warnings)
+
+
+def test_a_mask_that_does_not_fit_the_photo_is_left_out_with_a_warning(qapp, tmp_path):
+    document = Document(background=photo_pixels())
+    document.mask = soft_mask(height=40, width=40)
+    path = str(tmp_path / "mismatch.t3d")
+    save_project(path, document, embed_photo=True)
+    loaded = load_project(path)
+    assert loaded.document.mask is None and loaded.document.background is not None
+    assert any("size" in warning for warning in loaded.warnings)
+
+
+def test_a_mask_whose_photo_is_missing_is_kept_for_when_the_photo_is_found(qapp, tmp_path):
+    document = Document(background=photo_pixels(), background_path=photo_file(tmp_path))
+    document.mask = soft_mask()
+    path = str(tmp_path / "masked.t3d")
+    save_project(path, document)
+    os.remove(document.background_path)
+    loaded = load_project(path)
+    assert loaded.missing_photo is not None
+    assert np.array_equal(loaded.document.mask, document.mask)
+
+
+@pytest.mark.parametrize("value, expected", [
+    (1e9, 0.5), (-3.0, 0.005), (float("nan"), model.MaskParams().brush_size), ("big", model.MaskParams().brush_size),
+    (True, model.MaskParams().brush_size), (0.2, 0.2),
+])
+def test_brush_values_are_clamped_or_defaulted_on_load(qapp, tmp_path, value, expected):
+    path = tmp_path / "brush.t3d"
+    path.write_text(json.dumps(project_dict(scene={"mask": {"brush_size": value, "feather": 7}})))
+    brush = load_project(str(path)).document.scene.mask
+    assert brush.brush_size == expected
+    assert brush.feather == 1.0

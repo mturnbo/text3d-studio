@@ -116,6 +116,14 @@ class CameraParams:
 
 
 @dataclass
+class MaskParams:
+    """The Mask tool's brush. The occlusion mask itself is per photo and lives on the Document."""
+
+    brush_size: float = 0.05  # diameter, as a fraction of the photo's height
+    feather: float = 0.5  # how much of the brush's radius fades out softly
+
+
+@dataclass
 class TextObject:
     """One piece of 3D text: what it says, where it stands and what it's made of."""
 
@@ -136,6 +144,7 @@ class Scene:
     shadow: ShadowParams = field(default_factory=ShadowParams)
     camera: CameraParams = field(default_factory=CameraParams)
     wall: WallParams = field(default_factory=WallParams)
+    mask: MaskParams = field(default_factory=MaskParams)
 
 
 @dataclass
@@ -145,6 +154,8 @@ class Document:
     scene: Scene = field(default_factory=Scene)
     background: np.ndarray | None = None  # (H, W, 4) uint8 RGBA, top row first
     background_path: str | None = None
+    # Occlusion mask: (H, W) uint8 at the photo's size, 255 where the photo is in front of the text. None: no mask.
+    mask: np.ndarray | None = None
 
     @property
     def native_size(self) -> tuple[int, int]:
@@ -152,3 +163,9 @@ class Document:
             return (1600, 1000)
         height, width = self.background.shape[:2]
         return (width, height)
+
+
+# Ranges of numeric fields, shared by the panel's sliders and project loading (which clamps to them).
+FIELD_RANGES = {
+    MaskParams: {"brush_size": (0.005, 0.5), "feather": (0.0, 1.0)},
+}

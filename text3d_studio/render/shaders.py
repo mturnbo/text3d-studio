@@ -621,3 +621,45 @@ void main() {
 }
 """
 
+# ----- Compositing passes ---------------------------------------------------------------------------
+
+# Occlusion: redraws the photo (sampled exactly as BACKGROUND_FS does) over everything drawn so far, with the
+# mask as alpha, so photo pixels marked as in front of the text cover the text, its shadow and its effects.
+OCCLUSION_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform sampler2D u_mask;
+out vec4 frag;
+void main() {
+    float cover = texture(u_mask, v_uv).r;
+    if (cover <= 0.0) discard;
+    frag = vec4(texture(u_image, v_uv).rgb, cover);
+}
+"""
+
+# Editor overlay (preview only): the mask, tinted.
+MASK_OVERLAY_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+uniform vec4 u_tint;  // color, and opacity where the mask is full
+out vec4 frag;
+void main() {
+    float cover = texture(u_mask, v_uv).r;
+    if (cover <= 0.0) discard;
+    frag = vec4(u_tint.rgb, cover * u_tint.a);
+}
+"""
+
+# The mask resampled to a target (the transparent export reads it back).
+MASK_VALUE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+out vec4 frag;
+void main() {
+    frag = vec4(texture(u_mask, v_uv).r, 0.0, 0.0, 1.0);
+}
+"""
+

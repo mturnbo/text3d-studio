@@ -32,6 +32,12 @@ class Compositor:
         self.background = Texture2D(mipmaps=True)
         self.background.upload(np.zeros((1, 1, 4), np.uint8))  # keeps the sampler complete before a photo loads
         self.has_background = False
+        self.mask = Texture2D(GL.GL_R8, GL.GL_RED)
+        self.mask.upload(np.zeros((1, 1), np.uint8))
+        self.has_mask = False
+        self.occlusion_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.OCCLUSION_FS)
+        self.mask_overlay_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.MASK_OVERLAY_FS)
+        self.mask_value_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.MASK_VALUE_FS)
         self.backdrop = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA, mipmaps=True)
         self.text_layer = LayerTarget()
         self.layer_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.LAYER_COMPOSITE_FS)
@@ -52,6 +58,23 @@ class Compositor:
             )
         self.background.upload(pixels)
         self.has_background = True
+
+    def set_mask(self, mask: np.ndarray | None, rect=None) -> None:
+        """Uploads the occlusion mask ((H, W) uint8 at the photo's size), or only its `rect` (x0, y0, x1, y1).
+        None removes it. A mask whose size isn't the photo's is ignored when rendering."""
+        if mask is None:
+            self.has_mask = False
+            return
+        if rect is None or not self.has_mask or (self.mask.height, self.mask.width) != mask.shape:
+            self.mask.upload(mask)
+        else:
+            x0, y0, x1, y1 = rect
+            self.mask.upload_region(mask[y0:y1, x0:x1], x0, y0)
+        self.has_mask = True
+
+    def _mask_applies(self) -> bool:
+        background = (self.background.height, self.background.width)
+        return self.has_mask and self.has_background and (self.mask.height, self.mask.width) == background
 
     def set_glyph(self, object_id: int, raster: GlyphRaster | None) -> None:
         """Uploads a text object's glyph raster; None (text with no ink) removes it."""
@@ -108,6 +131,8 @@ class Compositor:
             GL.glEnable(GL.GL_SCISSOR_TEST)
             self._composite_text_layer(viewport)
 
+        if self._mask_applies():
+            self._draw_occlusion()
         GL.glDisable(GL.GL_SCISSOR_TEST)
 
     def render_shadow_factor(
@@ -198,6 +223,63 @@ class Compositor:
         self.backdrop.texture.bind(0)
         GL.glGenerateMipmap(GL.GL_TEXTURE_2D)
 
+    def _draw_occlusion(self) -> None:
+        """Puts the photo back over everything where the mask says it is in front of the text (alpha writes off)."""
+        program = self.occlusion_program
+        program.use()
+        program.set_int("u_flip_y", 1)
+        program.set_int("u_image", 0)
+        program.set_int("u_mask", 1)
+        self.background.bind(0)
+        self.mask.bind(1)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        self.quad.draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDisable(GL.GL_BLEND)
+
+    def render_mask_overlay(self, target_fbo: int, viewport, tint) -> None:
+        """Editor overlay (preview only, never part of render): the occlusion mask tinted with `tint` (r, g, b, a)."""
+        if not self._mask_applies():
+            return
+        x, y, width, height = viewport
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+        GL.glViewport(x, y, width, height)
+        program = self.mask_overlay_program
+        program.use()
+        program.set_int("u_flip_y", 1)
+        program.set_int("u_mask", 0)
+        program.set_vec4("u_tint", tint)
+        self.mask.bind(0)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        self.quad.draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDisable(GL.GL_BLEND)
+
+    def read_occlusion(self, width: int, height: int) -> np.ndarray | None:
+        """The occlusion mask resampled to (height, width) as floats in 0..1, top row first; None without one."""
+        if not self._mask_applies():
+            return None
+        target = ColorTarget(GL.GL_R8, GL.GL_RED)
+        try:
+            target.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+            GL.glViewport(0, 0, width, height)
+            program = self.mask_value_program
+            program.use()
+            program.set_int("u_flip_y", 1)
+            program.set_int("u_mask", 0)
+            self.mask.bind(0)
+            self.quad.draw()
+            GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+            data = GL.glReadPixels(0, 0, width, height, GL.GL_RED, GL.GL_UNSIGNED_BYTE)
+        finally:
+            target.delete()
+        return np.frombuffer(data, np.uint8).reshape(height, width)[::-1].astype(np.float32) / 255.0
+
     def _draw_background(self) -> None:
         program = self.background_program
         program.use()
@@ -216,4 +298,8 @@ class Compositor:
         self.layer_program.delete()
         self.background_program.delete()
         self.background.delete()
+        self.occlusion_program.delete()
+        self.mask_overlay_program.delete()
+        self.mask_value_program.delete()
+        self.mask.delete()
         self.quad.delete()

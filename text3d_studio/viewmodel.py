@@ -8,6 +8,7 @@ import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from . import ground as ground_model
+from . import occlusion
 from .history import History
 from .materials import KINDS, PRESETS
 from .model import Document, Scene, TextObject, TransformParams
@@ -28,21 +29,27 @@ class SceneViewModel(QObject):
     dirty_changed = pyqtSignal(bool)  # the document gained or lost unsaved changes
     document_loaded = pyqtSignal()  # load_document replaced the whole document
     history_changed = pyqtSignal()  # can_undo or can_redo may have changed
+    mask_changed = pyqtSignal(object)  # the occlusion mask's changed rect (x0, y0, x1, y1), or None: all of it
 
     def __init__(self, document: Document | None = None, clock=time.monotonic):
         super().__init__()
         self.document = document or Document()
         self.selected = 0  # editor state: the object that "text", "transform" and "material" edits address
-        # Undo states are (deep copy of the scene, selected index). Every scene-changing entry point records one.
+        # Undo states are (deep copy of the scene, selected index, mask snapshot). Every scene-changing entry point
+        # records one. The mask snapshot is compressed (occlusion.encode) and only replaced when a stroke ends, so
+        # steps that don't paint share it.
         self.history = History(clock=clock)
         self._edit_depth = 0
         self._edit_start = None  # the state when the outermost edit began
+        self._mask_snapshot = occlusion.encode(self.document.mask)
+        self._mask_painted = False  # the mask changed since the last snapshot
         # Ids are never reused, so nothing keyed by a deleted object's id (a cached raster) can match a new one.
         self._next_object_id = max(o.id for o in self.scene.objects) + 1
         self.dirty = False  # unsaved changes since the last save or load
         self.scene_changed.connect(self._mark_dirty)
         self.objects_changed.connect(self._mark_dirty)
         self.background_changed.connect(self._mark_dirty)
+        self.mask_changed.connect(self._mark_dirty)
 
     @property
     def scene(self):
@@ -200,11 +207,51 @@ class SceneViewModel(QObject):
         self.set(section, name, self.get(section, name) + delta)
 
     def set_background(self, pixels: np.ndarray, path: str | None = None) -> None:
-        """Not undoable: a new photo starts a fresh history, since undoing across photos would confuse."""
+        """Not undoable: a new photo starts a fresh history, since undoing across photos would confuse.
+
+        The occlusion mask belongs to the photo, so a new photo drops it, except when the document had no photo
+        and the new one has the mask's size (finding the photo of a project whose photo was missing)."""
+        mask = self.document.mask
+        relinking = self.document.background is None and mask is not None and mask.shape == pixels.shape[:2]
         self.document.background = pixels
         self.document.background_path = path
+        if not relinking:
+            self.document.mask = None
+            self._mask_snapshot = None
         self.background_changed.emit()
+        self.mask_changed.emit(None)
         self.clear_history()
+
+    # ----- Occlusion mask ---------------------------------------------------------------------------
+
+    def paint_mask(self, a, b, erase: bool = False) -> None:
+        """Paints (or, with `erase`, erases) the brush along the segment a→b, in photo pixels (origin top left).
+
+        One undo step on its own; inside an open edit (a stroke on the canvas) it joins that edit's step."""
+        background = self.document.background
+        if background is None:
+            return
+        if self.document.mask is None:
+            if erase:
+                return
+            self.document.mask = np.zeros(background.shape[:2], np.uint8)
+        brush = self.scene.mask
+        radius = brush.brush_size * background.shape[0] / 2
+        self.begin_edit()
+        rect = occlusion.paint_segment(self.document.mask, a, b, radius, brush.feather, erase)
+        if rect is not None:
+            self._mask_painted = True
+            self.mask_changed.emit(rect)
+        self.end_edit()
+
+    def clear_mask(self) -> None:
+        if self.document.mask is None:
+            return
+        self.begin_edit()
+        self.document.mask = None
+        self._mask_painted = True
+        self.mask_changed.emit(None)
+        self.end_edit()
 
     # ----- Undo -------------------------------------------------------------------------------------
 
@@ -231,7 +278,10 @@ class SceneViewModel(QObject):
         if self._edit_depth > 0:
             return
         start, self._edit_start = self._edit_start, None
-        if start[0] != self.scene:
+        if self._mask_painted:
+            self._mask_painted = False
+            self._mask_snapshot = occlusion.encode(self.document.mask)
+        if start[0] != self.scene or start[2] != self._mask_snapshot:
             self.history.record(start, merge_key)
             self.history_changed.emit()
 
@@ -258,13 +308,17 @@ class SceneViewModel(QObject):
         return (section, name)
 
     def _state(self):
-        return (copy.deepcopy(self.scene), self.selected)
+        return (copy.deepcopy(self.scene), self.selected, self._mask_snapshot)
 
     def _restore(self, state) -> bool:
         """Puts a recorded state back in place (the Scene object stays the same) and refreshes every view."""
         if state is None:
             return False
-        scene, selected = state
+        scene, selected, mask = state
+        if mask != self._mask_snapshot:
+            self.document.mask = occlusion.decode(mask)
+            self._mask_snapshot = mask
+            self.mask_changed.emit(None)
         old = copy.copy(self.scene)
         for field in dataclasses.fields(Scene):
             setattr(self.scene, field.name, getattr(scene, field.name))
@@ -290,7 +344,9 @@ class SceneViewModel(QObject):
         self.document = document
         self.selected = 0
         self._next_object_id = max(o.id for o in self.scene.objects) + 1
+        self._mask_snapshot = occlusion.encode(document.mask)
         self.background_changed.emit()
+        self.mask_changed.emit(None)
         self.objects_changed.emit()  # the canvas re-rasterizes every object whose text differs from its cached raster
         self.selection_changed.emit(0)  # per-object controls show the first object
         for section in SHARED_SECTIONS:

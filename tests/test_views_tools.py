@@ -610,3 +610,101 @@ def test_wall_preview_is_clipped_to_the_photo(vm):
     inside = (rows >= rect_y) & (rows < rect_y + rect_h)
     assert alpha[inside].any()
     assert not alpha[~inside].any()
+
+
+# ----- Mask tool --------------------------------------------------------------------------------
+
+
+def mask_canvas(vm):
+    from text3d_studio.views.image_canvas import MASK_TOOL
+
+    canvas, _ = picking_canvas(vm)  # 160 x 100 photo at 5 widget pixels per photo pixel
+    vm.set("mask", "brush_size", 0.1)  # 10 photo pixels across
+    vm.set("mask", "feather", 0.0)
+    vm.clear_history()
+    canvas.set_tool(MASK_TOOL)
+    return canvas
+
+
+def test_dragging_with_the_mask_tool_paints_along_the_path_in_photo_pixels(vm):
+    canvas = mask_canvas(vm)
+    drag(canvas, widget_position(canvas, 50, 20), widget_position(canvas, 50, 120))
+    mask = vm.document.mask
+    assert mask.shape == (100, 160)
+    assert (mask[50, 20:121] == 255).all()
+    assert mask[50, 140] == 0 and mask[20, 70] == 0
+
+
+def test_a_mask_stroke_is_one_undo_step_however_long(vm):
+    canvas = mask_canvas(vm)
+    mouse(canvas, QEvent.Type.MouseButtonPress, widget_position(canvas, 20, 20), Qt.MouseButton.LeftButton)
+    for column in range(30, 140, 10):
+        mouse(canvas, QEvent.Type.MouseMove, widget_position(canvas, 20 + column // 4, column), Qt.MouseButton.NoButton,
+              Qt.MouseButton.LeftButton)
+    mouse(canvas, QEvent.Type.MouseButtonRelease, widget_position(canvas, 50, 130), Qt.MouseButton.LeftButton,
+          Qt.MouseButton.NoButton)
+    assert vm.document.mask[20, 20] == 255
+    assert vm.undo() and vm.document.mask is None and not vm.can_undo
+    assert vm.redo() and vm.document.mask[20, 20] == 255
+
+
+def test_option_drag_erases_and_the_text_never_moves(vm):
+    canvas = mask_canvas(vm)
+    transform = dataclasses.replace(vm.selected_object.transform)
+    drag(canvas, widget_position(canvas, 50, 20), widget_position(canvas, 50, 120))
+    drag(canvas, widget_position(canvas, 50, 70), widget_position(canvas, 50, 70), modifiers=Qt.KeyboardModifier.AltModifier)
+    assert vm.document.mask[50, 70] == 0 and vm.document.mask[50, 30] == 255
+    assert vm.selected_object.transform == transform
+    vm.undo()
+    assert vm.document.mask[50, 70] == 255
+
+
+def test_the_mask_tool_without_a_photo_paints_nothing(vm):
+    from text3d_studio.views.image_canvas import MASK_TOOL
+
+    canvas = sized_canvas(vm)
+    canvas.set_tool(MASK_TOOL)
+    drag(canvas, (100, 100), (300, 200))
+    assert vm.document.mask is None and not vm.can_undo
+
+
+def test_the_brush_outline_follows_the_cursor_and_the_brush_size(vm):
+    canvas = mask_canvas(vm)
+    assert canvas.tool_overlay.isVisibleTo(canvas)
+    mouse(canvas, QEvent.Type.MouseMove, (300, 200), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    center, radius = canvas.brush_outline_px()
+    assert center == (300, 200) and radius == pytest.approx(0.1 * 500 / 2)
+    vm.set("mask", "brush_size", 0.2)
+    assert canvas.brush_outline_px()[1] == pytest.approx(0.2 * 500 / 2)
+    canvas.set_show_original(True)
+    assert not canvas.tool_overlay.isVisibleTo(canvas)
+
+
+def test_mask_tool_is_in_the_tools_menu_with_shortcut_m(window):
+    from text3d_studio.views.image_canvas import MASK_TOOL
+
+    action = window.tool_actions[MASK_TOOL]
+    assert action.shortcut() == QKeySequence("M")
+    assert action in window.toolbar.actions()
+    action.trigger()
+    assert window.canvas.tool == MASK_TOOL
+    assert "erase" in window.hint_label.text().lower()
+
+
+def test_the_panel_sets_the_brush_and_clears_the_mask(window):
+    from PyQt6.QtWidgets import QPushButton
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    vm = window.vm
+    vm.set_background(photo())
+    button = window.panel.findChild(QPushButton, "mask.clear")
+    assert not button.isEnabled()
+    window.panel.findChild(SliderRow, "mask.brush_size").spin.setValue(0.2)
+    assert vm.scene.mask.brush_size == pytest.approx(0.2)
+    vm.paint_mask((50, 50), (50, 50))
+    assert button.isEnabled()
+    button.click()
+    assert vm.document.mask is None and not button.isEnabled()
+    vm.undo()
+    assert vm.document.mask is not None and button.isEnabled()

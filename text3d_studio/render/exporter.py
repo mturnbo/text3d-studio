@@ -83,7 +83,11 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
         target.delete()
     if not factors:
         factors = [np.ones((height, width, 3), np.float32)] * 2
-    return compose_transparent(text, factors[0], factors[1][..., :1])
+    pixels = compose_transparent(text, factors[0], factors[1][..., :1])
+    occlusion = compositor.read_occlusion(width, height)
+    if occlusion is not None:  # the photo is in front there: the text and shadow are hidden
+        pixels[..., 3] = np.round(pixels[..., 3] * (1.0 - occlusion)).astype(np.uint8)
+    return pixels
 
 
 def compose_transparent(text: np.ndarray, shadow_factor: np.ndarray, strength_factor: np.ndarray) -> np.ndarray:

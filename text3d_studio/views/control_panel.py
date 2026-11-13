@@ -28,6 +28,7 @@ from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
 from ..materials import KINDS
 from ..text_raster import ALIGNMENTS
 from ..text_raster import LAYOUT_RANGES
+from ..model import FIELD_RANGES, MaskParams
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
@@ -89,6 +90,10 @@ SLIDERS = {
         ("angle", "Facing", -180, 180, 1),
         ("offset", "Distance", 0, 150, 2),
     ],
+    "mask": [
+        ("brush_size", "Brush size", *FIELD_RANGES[MaskParams]["brush_size"], 3),
+        ("feather", "Feather", *FIELD_RANGES[MaskParams]["feather"], 2),
+    ],
 }
 
 CHECKBOXES = {
@@ -146,6 +151,7 @@ GROUP_TITLES = [
     ("material", "Material"),
     ("shadow", "Shadow"),
     ("wall", "Wall"),
+    ("mask", "Mask"),
 ]
 
 
@@ -321,6 +327,8 @@ class ControlPanel(QScrollArea):
             for field, label in COLORS.get(section, []):
                 button = self._add_color(form, section, field, label)
                 self._remember_material_row(section, field, label, form, button)
+            if section == "mask":
+                self._add_clear_mask_button(form)
             column.addWidget(group)
         column.addStretch(1)
         self.setWidget(content)
@@ -463,6 +471,15 @@ class ControlPanel(QScrollArea):
         self._setters[("transform", "mount")] = set_mount
         combo.activated.connect(lambda index: self.vm.set_mount(combo.itemData(index)))
         form.addRow("Mount", combo)
+
+    def _add_clear_mask_button(self, form: QFormLayout) -> None:
+        self.clear_mask_button = QPushButton("Clear Mask")
+        self.clear_mask_button.setObjectName("mask.clear")
+        self.clear_mask_button.clicked.connect(lambda: self.vm.clear_mask())
+        update = lambda *_: self.clear_mask_button.setEnabled(self.vm.document.mask is not None)
+        update()
+        self.vm.mask_changed.connect(update)
+        form.addRow("", self.clear_mask_button)
 
     def _show_placement_controls(self, mount: str) -> None:
         hidden = WALL_ONLY if mount == "floor" else FLOOR_ONLY

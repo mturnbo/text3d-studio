@@ -9,6 +9,7 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 
+import numpy as np
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
 from PyQt6.QtGui import QImage
 
@@ -18,7 +19,9 @@ from .model import (
     Document,
     GridParams,
     GroundParams,
+    FIELD_RANGES,
     LightParams,
+    MaskParams,
     MaterialParams,
     Scene,
     ShadowParams,
@@ -62,6 +65,7 @@ def save_project(path: str, document: Document, embed_photo: bool = False) -> No
         "version": FORMAT_VERSION,
         "scene": dataclasses.asdict(document.scene),
         "photo": _photo_entry(path, document, embed_photo),
+        "mask": None if document.mask is None else {"embedded_png": _encode_mask_png(document.mask)},
     }
     directory = os.path.dirname(os.path.abspath(path))
     handle, temp_path = tempfile.mkstemp(prefix=".", suffix=PROJECT_EXTENSION + ".tmp", dir=directory)
@@ -121,6 +125,7 @@ def load_project(path: str) -> LoadedProject:
         raise ValueError(f"{os.path.basename(path)} has a damaged scene: {exc}") from exc
     loaded = LoadedProject(Document(scene=scene))
     _load_photo(path, project.get("photo"), loaded)
+    _load_mask(project.get("mask"), loaded)
     return loaded
 
 
@@ -136,6 +141,7 @@ def _scene_from_dict(data: dict) -> Scene:
         shadow=_params_from_dict(ShadowParams, data.get("shadow")),
         camera=_params_from_dict(CameraParams, data.get("camera")),
         wall=_params_from_dict(WallParams, data.get("wall")),
+        mask=_params_from_dict(MaskParams, data.get("mask")),
     )
     if objects:
         scene.objects = objects
@@ -167,6 +173,12 @@ def _params_from_dict(cls, data: dict | None):
         if name in values:
             values[name] = tuple(values[name])
     params = cls(**values)
+    for name, (low, high) in FIELD_RANGES.get(cls, {}).items():
+        value = getattr(params, name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            setattr(params, name, getattr(cls(), name))
+        else:
+            setattr(params, name, min(max(float(value), low), high))
     return sanitized_text_params(params) if cls is TextParams else params
 
 
@@ -215,6 +227,42 @@ def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
     loaded.missing_photo = absolute or relative or "(unknown)"
     detail = f" ({'; '.join(reasons)})" if reasons else ""
     loaded.warnings.append(f"Photo not found: {loaded.missing_photo}{detail}")
+
+
+def _encode_mask_png(mask) -> str:
+    mask = np.ascontiguousarray(mask, dtype=np.uint8)
+    height, width = mask.shape
+    image = QImage(mask.data, width, height, width, QImage.Format.Format_Grayscale8).copy()
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not image.save(buffer, "PNG"):
+        raise OSError("Could not encode the occlusion mask as PNG")
+    return base64.b64encode(bytes(data)).decode("ascii")
+
+
+def _load_mask(entry, loaded: LoadedProject) -> None:
+    """The occlusion mask, a grayscale PNG. One that can't be read, or doesn't fit the photo, is dropped with a warning."""
+    if not entry:
+        return
+    image = QImage()
+    try:
+        data = base64.b64decode(entry.get("embedded_png", "") if isinstance(entry, dict) else "", validate=True)
+    except (ValueError, TypeError):
+        data = b""
+    if not image.loadFromData(data, "PNG"):
+        loaded.warnings.append("The occlusion mask in this project could not be read")
+        return
+    image = image.convertToFormat(QImage.Format.Format_Grayscale8)
+    width, height = image.width(), image.height()
+    ptr = image.constBits()
+    ptr.setsize(image.sizeInBytes())
+    mask = np.frombuffer(ptr, np.uint8).reshape(height, image.bytesPerLine())[:, :width].copy()
+    photo = loaded.document.background
+    if photo is not None and photo.shape[:2] != mask.shape:
+        loaded.warnings.append("The occlusion mask doesn't match the photo's size and was left out")
+        return
+    loaded.document.mask = mask
 
 
 def is_allowed_photo_path(path: str, windows: bool = os.name == "nt") -> bool:
