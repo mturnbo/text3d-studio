@@ -717,11 +717,66 @@ def test_depth_of_field_blurs_the_edge_in_the_transparent_export(compositor):
     assert not soft[~dilated(text, round(0.04 * 400) + 3)][:, 3].any()  # no farther than the largest blur
 
 
-def test_the_preview_stays_opaque_with_every_effect_on(compositor):
-    doc = bloom_document(reflection_strength=1.0)
-    doc.scene.shadow.enabled = True
-    doc.scene.shadow.contact_strength = 1.0
-    doc.scene.wall.enabled = True
+EVERY_EFFECT = {"reflection_strength": 0.6, "reflection_roughness": 0.5, "bloom_strength": 1.5, "bloom_threshold": 0.5,
+                "bloom_radius": 1.0, "grain_amount": 0.4, "grain_size": 2.0, "blur_radius": 0.5,
+                "grade_brightness": 0.1, "grade_contrast": 1.2, "grade_saturation": 0.7, "grade_warmth": 0.4,
+                "dof_focus": 8.0, "dof_aperture": 1.0}
+
+
+def every_effect_document(width, height):
+    """Neon floor text, a glass object behind it and stone on the wall, with every shadow, mask and effect on."""
+    neon = text_object(0, "NEON", x=-1.5, z=-8.0, size=2.0)
+    neon.material = MaterialParams(**{**PRESETS["neon"], "kind": "neon"})
+    glass = text_object(1, "GLASS", x=3.0, z=-14.0, size=2.5)
+    glass.material = MaterialParams(**{**PRESETS["glass"], "kind": "glass"})
+    stone = wall_text(object_id=2)
+    stone.text.content = "STONE"
+    stone.material = MaterialParams(**{**PRESETS["stone"], "kind": "stone"})
+    doc = scene_of(neon, glass, stone, light=FRONT_LIGHT, effects=EVERY_EFFECT,
+                   shadow={**SHADOW, "contact_strength": 1.0, "contact_size": 0.3})
+    doc.background = np.zeros((height, width, 4), np.uint8)
+    doc.background[..., :3] = BG_COLOR
+    doc.background[..., 3] = 255
     doc.mask = left_half_mask(doc)
+    return doc
+
+
+def test_every_effect_on_stays_above_30_fps(compositor):
+    import time
+
+    from OpenGL import GL
+
+    from text3d_studio.render.gl_utils import RenderTarget
+
+    doc = every_effect_document(1600, 1000)
+    render(compositor, make_document(width=1600, height=1000))  # the GL state an export leaves behind
+    compositor.set_background(doc.background)
+    compositor.set_mask(doc.mask)
+    for obj in doc.scene.objects:
+        compositor.set_glyph(obj.id, rasterize_text(obj.text))
+    target = RenderTarget(1600, 1000, samples=4)
+    try:
+        compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        start = time.perf_counter()
+        for i in range(20):
+            doc.scene.objects[0].transform.rot_y = -40 + i  # a slider drag
+            compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        fps = 20 / (time.perf_counter() - start)
+    finally:
+        target.delete()
+    assert fps > 30, f"only {fps:.1f} FPS"
+
+
+def test_the_preview_stays_opaque_with_every_effect_on(compositor):
+    doc = every_effect_document(640, 400)
     assert render_preview(compositor, doc, mask_overlay=True)[..., 3].min() == 255
 
+
+def test_the_transparent_export_works_with_every_effect_on(compositor):
+    doc = every_effect_document(640, 400)
+    pixels = render(compositor, doc, transparent=True)
+    shown = pixels[..., 3] > 0
+    assert shown[:, 330:].mean() > 0.02  # text, shadows, reflection and glow on the unmasked right half
+    assert not shown[:, :318].any()  # the mask hides everything on the left
