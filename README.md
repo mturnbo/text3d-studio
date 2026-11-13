@@ -80,6 +80,10 @@ one is skipped and the status bar says so.
 - **File → Export Transparent PNG…** (⇧⌘E / Ctrl+Shift+E) saves only the text and its shadow over
   transparency, for layering in another editor. The shadow keeps its colour with partial transparency. Glass
   text still shows the photo it bends, since that is what glass looks like. PNG only (JPEG has no transparency).
+  Every effect comes along: wall and contact shadows, the reflection (under the text), and the text's depth of
+  field, blur, grade and grain. Bloom's glow becomes a soft, see-through halo; laid over the photo it looks
+  close to, not exactly like, the app's (it slightly darkens what is under the glow instead of only adding
+  light). Masked parts are left transparent.
 - **File → Batch Export…** (⌥⌘E / Ctrl+Alt+E) writes several sizes (native, 50%, a long edge you choose) in
   several formats (PNG, JPG, transparent PNG) into one folder, named `photo_3d_3000x2000.png`,
   `photo_3d_1500x1000.jpg`, `photo_3d_1500x1000_transparent.png` and so on. Existing files are never replaced:
@@ -97,8 +101,8 @@ one is skipped and the status bar says so.
 
 ## Saving and opening projects
 
-A project (`.t3d`) saves the whole scene (every text object, the ground, grid, lighting, shadow and camera)
-with a link to the photo.
+A project (`.t3d`) saves the whole scene (every text object, the ground, grid, lighting, shadow, camera, wall,
+effects and the occlusion mask) with a link to the photo.
 - **File → Save Project** (⌘S / Ctrl+S) saves to the current project, or asks where the first time.
   **Save Project As…** (⇧⌘S / Ctrl+Shift+S) saves a copy under a new name.
 - **File → Save Project With Photo…** stores a copy of the photo inside the project file, so it opens anywhere
@@ -119,7 +123,7 @@ with a link to the photo.
 2. **Match the ground.** Fastest: pick **Fit Rectangle** (**R**) and drag the four handles onto the corners of something rectangular on the floor: a tile, rug, doormat or table top. Set its real size under **Grid › Fit width/depth** first; that sets the scale. Tick **Fit: estimate field of view** if you don't know the lens. Handles turn red if the shape can't be a rectangle. Or do it by hand: pick **Adjust Grid** (**P**) and drag the grid's white horizon line onto the photo's horizon. Drag near either end of it to roll it if the photo is slanted. Right-drag to rotate the grid until its lines run along floor tiles, curbs or walls, and drag the ground to slide the lines onto real seams. The **Ground** panel has the same settings as sliders. The text stays where it is on screen while you adjust. Then set **Field of view** to match the lens: wide-angle photos need 60–80°, telephoto 15–30°. **Camera height** sets how far the eye is above the floor.
 3. **Place the text.** Switch back to **Move Text** (**V**) and drag the text to move it; it keeps its size on screen. Hold **Shift** to move only straight across or straight up and down. Hold **Option** (Alt) to slide it along the floor in perspective instead, so it shrinks into the distance. Hold **Command** (Ctrl) and drag, or right-drag, to turn it (**Yaw**) to line up with walls, curbs and other strong lines in the scene. Pinch or scroll to resize it.
 4. **Find the sun.** Fastest: pick **Match Sun** (**L**) and click three points on something upright that casts a clear shadow on the floor (a post, a person, a bottle): its **top**, its **base** where it meets the floor, then the **tip of its shadow**. The light's **Azimuth** and **Elevation** are solved from them (match the ground first; the solve uses it). Click again to start over. Or set them by hand: **Azimuth** so the text's shadow points the same way as the photo's shadows, **Elevation** low (10–25°) for long morning or evening shadows, high (60–80°) for midday.
-5. **Match the softness.** Overcast scenes need high **Softness** and low **Opacity**. Hard sunlight needs low softness. Tint the **Shadow color** toward the scene's shadow color, usually a desaturated blue.
+5. **Match the softness.** Overcast scenes need high **Softness** and low **Opacity**. Hard sunlight needs low softness. Tint the **Shadow color** toward the scene's shadow color, usually a desaturated blue. **Contact shadow** adds a tight, dark shadow right where floor text meets the ground, which seats it even under soft overcast light; **Contact size** sets how far up the text it reaches and so how far it spreads.
 6. **Pick a material.** Choose **Metal**, **Plastic**, **Stone**, **Wood**, **Glass** or **Neon** from the **Material** dropdown. It loads a starting point that you can adjust, and choosing it again resets it. **Glass** shows the photo behind it, bent by its surface, and through its front you see its own back and side walls. Raise **Frost** to blur what's behind it and **Tint depth** to deepen the colour in thicker glass. Its shadow is lighter and takes on its tint. **Neon** glows: set the **Glow color** and **Glow** strength; the sides glow dimmer, and with the glow at 0 it is a dark glossy tube. **Sides** gives the side walls and back another material's look (gold letters with stone sides, say); **Same** uses the material itself. **Outline** draws a band of **Outline color** around the face's edge, following the letter shapes, up to the full width of the bevel (raise **Bevel width** for a wider one); **Outline metallic** makes it metal.
 7. **Borrow the scene's colors.** Pick the **Ambient color** from the sky or the dominant bounce color, and set **Light color** warm for golden hour. The **Pick** button next to either colour samples it straight from the photo: click it, then click the photo (**Esc** cancels). Use **Metallic** 1 for metals and 0 for everything else, and raise **Roughness** for matte or brushed surfaces. Leave **Reflect the photo** on so glossy text picks up the scene's colors.
 8. **Check depth.** Real signage is rarely deeper than 0.2–0.5× its height. Raise **Depth darkening** to fake ambient occlusion on the walls.
@@ -161,9 +165,38 @@ The scene has one wall: an upright plane standing on the floor. To put text on a
    it along the wall at its real size instead. It can't go below the floor. **Wall position** and **Wall height**
    in the panel place it exactly. Yaw doesn't apply to wall text.
 
-Wall text still casts its shadow on the floor (the wall itself doesn't catch shadows). Setting **Mount** back
+If the photo really shows that wall, tick **Wall › Wall in the photo (catches shadows)**: shadows then fall on
+the wall too (wall text shadows the wall around it, and floor text near the wall casts a shadow that climbs it),
+and floor shadows stop at the wall's base instead of running on behind it. A light from behind the wall casts
+nothing on it. Without the tick, the wall only holds text, and all shadows fall on the floor. Setting **Mount** back
 to **Floor** stands it on the floor where it appears, facing the way the wall does. Moving the wall carries its
 text along; adjusting the ground keeps both the wall and its text where they are on screen.
+
+## Putting text behind things
+
+When something in the photo should stand in front of the text (a lamp post, a person, a plant), pick **Mask**
+(**M**) and paint over it: the photo shows through the text, its shadow and its effects wherever you paint. Hold
+**Option** (Alt) to erase. **Mask › Brush size** and **Feather** (how softly the brush's edge fades) set the
+brush, which shows as a circle under the cursor; the painted area is tinted while the tool is active (never in
+exports). Each stroke is one undo step, and **Clear Mask** removes it all. The mask belongs to the photo: it is
+saved in the project, and opening another photo drops it.
+
+## Finishing effects
+
+The **Effects** group finishes the composite so the text sits in the photo's look. Every effect is off (or
+neutral) until you move its slider, and all of them are in exports.
+- **Reflection** mirrors floor text in a glossy floor (wet street, polished stone). **Reflection blur** roughens
+  the floor, and **Reflection fade** sets how quickly it fades with depth below the floor. Wall text isn't reflected.
+- **Bloom** makes bright parts of the text glow softly into their surroundings: neon, and strong highlights.
+  **Bloom threshold** sets how bright a part must be to glow, **Bloom radius** how far the glow spreads.
+- **Grain** adds film grain to the text only, so it matches a grainy or noisy photo; **Grain size** sets its
+  coarseness. The grain is fixed to the image, so it doesn't crawl while you drag, and every export is the same.
+- **Blur** softens the text to match a soft or slightly out-of-focus photo.
+- **Brightness**, **Contrast**, **Saturation** and **Warmth** grade the text only (the photo is never changed):
+  pull saturation down for a faded photo, warm it for golden hour, cool it for blue hour.
+- **Focus distance** and **Aperture** give depth of field: text away from the focus distance (in the scene's
+  units, measured from the camera) blurs, more the farther it is from it and the wider the aperture. Set the focus
+  to the distance of the text that should stay sharp; with two pieces of text, the other one blurs.
 
 ## Undo and redo
 
@@ -179,9 +212,9 @@ the Text field it undoes your typing first. Opening a new photo starts a fresh h
 | Phase | Goal | Key work |
 |---|---|---|
 | **1 – MVP (this repo)** | Credible composite + export | Layer-stack extrusion, system fonts, bevel, Blinn-Phong (physically based since v0.7), planar soft shadow, native-res MSAA export, 30+ FPS |
-| **2 – Integration quality** | Text "belongs" in the photo | Vanishing-point / horizon tool that solves Tilt+FOV from two drawn lines; light-direction picker from a shadow the user clicks; color grading (match black point, saturation, grain/noise, blur to the photo's depth of field); contact-hardening shadows (PCSS) |
+| **2 – Integration quality** | Text "belongs" in the photo | Vanishing-point / horizon tool that solves Tilt+FOV from two drawn lines; light-direction picker from a shadow the user clicks (done: Match Sun); colour grade, grain, blur and depth of field (done), contact shadows (done), wall shadows, ground reflection and bloom (done); match black point; contact-hardening shadows (PCSS) |
 | **3 – Geometry fidelity** | Crisp at any size | MSDF glyph masks (sharp corners when magnified); true triangulated extrusion as an optional mode (`QPainterPath` → earcut), with the layer stack kept as the stylized mode; multi-line text, alignment, tracking and arcs (done) |
-| **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (done), JSON project files (done), occlusion masks painted over the photo so the text can sit behind foreground objects |
+| **4 – Editing workflow** | Usable as a real editor | Multiple text objects (done), undo/redo (done), JSON project files (done), occlusion masks painted over the photo so the text can sit behind foreground objects (done) |
 | **5 – Scale & ship** | Large photos, distribution | Tiled export beyond GPU limits (>16k px), 16-bit/HDR pipeline, PyInstaller / briefcase bundles with signing, CI on macOS/Windows/Linux |
 
 Known MVP limits:
