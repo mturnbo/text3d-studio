@@ -115,12 +115,14 @@ class Text3DRenderer:
     def draw_beauty(
         self, scene: Scene, obj: TextObject, glyph: Glyph, proj: np.ndarray, lighting: LightingState,
         viewport_height: int, environment: Texture2D | None = None, backdrop: Texture2D | None = None,
+        model: np.ndarray | None = None,
     ) -> None:
         """`environment`: the background photo to reflect, or None to reflect the ambient color instead.
-        `backdrop`: what is behind the text in this viewport, for transmissive materials to show through."""
+        `backdrop`: what is behind the text in this viewport, for transmissive materials to show through.
+        `model`: draws with this model matrix instead of the object's placement (the ground reflection's mirror)."""
         layers = self.effective_layers(scene, obj.transform, viewport_height)
         if self.depth_prepass:
-            self._bind_common(self.depth, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting)
+            self._bind_common(self.depth, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting, model)
             self.depth.set_int("u_layers", layers)
             GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
             self.quad.draw(layers)
@@ -129,7 +131,7 @@ class Text3DRenderer:
 
         GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         program = self.beauty
-        self._bind_common(program, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting)
+        self._bind_common(program, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting, model)
         program.set_int("u_layers", layers)
         self._bind_material(program, scene, obj.material, lighting, environment, backdrop)
         program.set_int("u_far_walls", 0)
@@ -244,8 +246,9 @@ class Text3DRenderer:
     def _layer_count(t: TransformParams) -> int:
         return max(1, int(t.layers)) if t.depth > 1e-4 else 1
 
-    def _bind_common(self, program, scene, t, glyph, proj, flatten_gl, lighting) -> None:
-        model = ground_model.text_model_matrix(scene.ground, t, scene.wall)
+    def _bind_common(self, program, scene, t, glyph, proj, flatten_gl, lighting, model=None) -> None:
+        if model is None:
+            model = ground_model.text_model_matrix(scene.ground, t, scene.wall)
         program.use()
         glyph.mask.bind(0)
         program.set_int("u_mask", 0)

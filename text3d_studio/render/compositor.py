@@ -17,8 +17,9 @@ from ..materials import transmits
 from ..model import Scene, TextObject
 from ..text_raster import GlyphRaster
 from . import shaders
+from .effects import EffectsRenderer
 from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
-from .shadow_renderer import ShadowRenderer
+from .shadow_renderer import ShadowRenderer, casts_shadow
 from .text3d_renderer import Glyph, Text3DRenderer
 
 NEAR, FAR = 0.1, 1000.0
@@ -32,12 +33,19 @@ class Compositor:
         self.background = Texture2D(mipmaps=True)
         self.background.upload(np.zeros((1, 1, 4), np.uint8))  # keeps the sampler complete before a photo loads
         self.has_background = False
+        self.mask = Texture2D(GL.GL_R8, GL.GL_RED)
+        self.mask.upload(np.zeros((1, 1), np.uint8))
+        self.has_mask = False
+        self.occlusion_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.OCCLUSION_FS)
+        self.mask_overlay_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.MASK_OVERLAY_FS)
+        self.mask_value_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.MASK_VALUE_FS)
         self.backdrop = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA, mipmaps=True)
         self.text_layer = LayerTarget()
         self.layer_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.LAYER_COMPOSITE_FS)
         self.text = Text3DRenderer(self.quad)
         self.glyphs: dict[int, Glyph] = {}  # by TextObject.id; objects without one (no ink) aren't drawn
         self.shadows = ShadowRenderer(self.quad)
+        self.effects = EffectsRenderer(self.quad)
         self.lighting = LightingEngine()
         self.max_texture_size = int(GL.glGetIntegerv(GL.GL_MAX_TEXTURE_SIZE))
 
@@ -52,6 +60,29 @@ class Compositor:
             )
         self.background.upload(pixels)
         self.has_background = True
+
+    def set_mask(self, mask: np.ndarray | None, rect=None) -> None:
+        """Uploads the occlusion mask ((H, W) uint8 at the photo's size), or only its `rect` (x0, y0, x1, y1).
+        None removes it. A mask whose size isn't the photo's is ignored when rendering."""
+        if mask is None:
+            self.has_mask = False
+            return
+        height, width = mask.shape[:2]
+        if max(width, height) > self.max_texture_size:
+            self.has_mask = False
+            raise ValueError(
+                f"Mask is {width}x{height}; this GPU supports up to {self.max_texture_size}px per side."
+            )
+        if rect is None or not self.has_mask or (self.mask.height, self.mask.width) != mask.shape:
+            self.mask.upload(mask)
+        else:
+            x0, y0, x1, y1 = rect
+            self.mask.upload_region(mask[y0:y1, x0:x1], x0, y0)
+        self.has_mask = True
+
+    def _mask_applies(self) -> bool:
+        background = (self.background.height, self.background.width)
+        return self.has_mask and self.has_background and (self.mask.height, self.mask.width) == background
 
     def set_glyph(self, object_id: int, raster: GlyphRaster | None) -> None:
         """Uploads a text object's glyph raster; None (text with no ink) removes it."""
@@ -79,9 +110,12 @@ class Compositor:
         lighting = self.lighting.compute(scene.light, scene.ground)
         drawn = [(obj, self.glyphs[obj.id]) for obj in scene.objects if obj.id in self.glyphs]
 
-        draw_shadow = scene.shadow.enabled and scene.shadow.opacity > 0 and bool(drawn)
+        draw_shadow = casts_shadow(scene) and bool(drawn)
         if draw_shadow:
             self.shadows.render_mask(self.text, scene, drawn, proj, lighting, viewport)
+        reflect = self.effects.render_reflection(
+            self.text, scene, drawn, proj, lighting, self._environment(scene), viewport
+        )
 
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
         target_samples = int(GL.glGetIntegerv(GL.GL_SAMPLES))
@@ -95,6 +129,8 @@ class Compositor:
         self._draw_background()
         if draw_shadow:
             self.shadows.composite_onto(scene)
+        if reflect:
+            self.effects.composite_reflection(scene)
 
         if drawn:
             backdrop = None
@@ -111,6 +147,8 @@ class Compositor:
             GL.glEnable(GL.GL_SCISSOR_TEST)
             self._composite_text_layer(viewport)
 
+        if self._mask_applies():
+            self._draw_occlusion()
         GL.glDisable(GL.GL_SCISSOR_TEST)
 
     def render_shadow_factor(
@@ -121,7 +159,7 @@ class Compositor:
         hold 1 − opacity × strength. Returns False, drawing nothing, when the scene casts no shadow."""
         x, y, width, height = viewport
         drawn = [(obj, self.glyphs[obj.id]) for obj in scene.objects if obj.id in self.glyphs]
-        if not (scene.shadow.enabled and scene.shadow.opacity > 0 and drawn):
+        if not (casts_shadow(scene) and drawn):
             return False
         proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
         lighting = self.lighting.compute(scene.light, scene.ground)
@@ -150,7 +188,7 @@ class Compositor:
         # text over the transparent clear into premultiplied color and a coverage alpha.
         GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
         GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_ONE)
-        environment = self.background if self.has_background and scene.light.reflect_photo else None
+        environment = self._environment(scene)
         for obj, glyph in drawn:
             transmissive = transmits(obj.material)
             self.text.draw_beauty(
@@ -160,6 +198,29 @@ class Compositor:
         GL.glDisable(GL.GL_SAMPLE_ALPHA_TO_COVERAGE)
         GL.glDisable(GL.GL_DEPTH_TEST)
         layer.resolve()
+
+    def _environment(self, scene: Scene):
+        """What glossy text reflects: the photo, or None for the ambient colour."""
+        return self.background if self.has_background and scene.light.reflect_photo else None
+
+    def read_reflection(self, scene: Scene, width: int, height: int) -> np.ndarray | None:
+        """The ground reflection the last render of `scene` put over the photo (premultiplied, scaled by its
+        strength), at (height, width), top row first; None when it drew none. The transparent export reads it."""
+        if not self.effects.has_reflection:
+            return None
+        target = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
+        try:
+            target.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+            GL.glViewport(0, 0, width, height)
+            GL.glClearColor(0, 0, 0, 0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+            self.effects.composite_reflection(scene, write_alpha=True)
+            GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+            data = GL.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        finally:
+            target.delete()
+        return np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1].copy()
 
     def _composite_text_layer(self, viewport) -> None:
         """Puts the resolved layer over the bound target, writing its depth for the grid overlay.
@@ -201,6 +262,63 @@ class Compositor:
         self.backdrop.texture.bind(0)
         GL.glGenerateMipmap(GL.GL_TEXTURE_2D)
 
+    def _draw_occlusion(self) -> None:
+        """Puts the photo back over everything where the mask says it is in front of the text (alpha writes off)."""
+        program = self.occlusion_program
+        program.use()
+        program.set_int("u_flip_y", 1)
+        program.set_int("u_image", 0)
+        program.set_int("u_mask", 1)
+        self.background.bind(0)
+        self.mask.bind(1)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        self.quad.draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDisable(GL.GL_BLEND)
+
+    def render_mask_overlay(self, target_fbo: int, viewport, tint) -> None:
+        """Editor overlay (preview only, never part of render): the occlusion mask tinted with `tint` (r, g, b, a)."""
+        if not self._mask_applies():
+            return
+        x, y, width, height = viewport
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+        GL.glViewport(x, y, width, height)
+        program = self.mask_overlay_program
+        program.use()
+        program.set_int("u_flip_y", 1)
+        program.set_int("u_mask", 0)
+        program.set_vec4("u_tint", tint)
+        self.mask.bind(0)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_FALSE)
+        self.quad.draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glDisable(GL.GL_BLEND)
+
+    def read_occlusion(self, width: int, height: int) -> np.ndarray | None:
+        """The occlusion mask resampled to (height, width) as floats in 0..1, top row first; None without one."""
+        if not self._mask_applies():
+            return None
+        target = ColorTarget(GL.GL_R8, GL.GL_RED)
+        try:
+            target.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+            GL.glViewport(0, 0, width, height)
+            program = self.mask_value_program
+            program.use()
+            program.set_int("u_flip_y", 1)
+            program.set_int("u_mask", 0)
+            self.mask.bind(0)
+            self.quad.draw()
+            GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+            data = GL.glReadPixels(0, 0, width, height, GL.GL_RED, GL.GL_UNSIGNED_BYTE)
+        finally:
+            target.delete()
+        return np.frombuffer(data, np.uint8).reshape(height, width)[::-1].astype(np.float32) / 255.0
+
     def _draw_background(self) -> None:
         program = self.background_program
         program.use()
@@ -214,9 +332,14 @@ class Compositor:
         self.retain_glyphs(())
         self.text.delete()
         self.shadows.delete()
+        self.effects.delete()
         self.backdrop.delete()
         self.text_layer.delete()
         self.layer_program.delete()
         self.background_program.delete()
         self.background.delete()
+        self.occlusion_program.delete()
+        self.mask_overlay_program.delete()
+        self.mask_value_program.delete()
+        self.mask.delete()
         self.quad.delete()

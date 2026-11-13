@@ -51,6 +51,7 @@ class WallParams:
 
     angle: float = 0.0  # facing of the wall, like transform.rot_y: 0 runs the base line along the ground's x axis
     offset: float = 20.0  # distance of the base line from the point below the camera
+    enabled: bool = False  # the photo shows this wall: it catches shadows, and floor shadows stop at its base
 
 
 @dataclass
@@ -116,11 +117,30 @@ class ShadowParams:
     softness: float = 0.2
     falloff: float = 0.8  # how quickly the shadow fades for parts of the text far from the ground
     color: Color = (0.08, 0.10, 0.14)
+    contact_strength: float = 0.0  # a tight, dark shadow where floor text meets the ground; 0 = off
+    contact_size: float = 0.15  # how far up the text (in em) the contact shadow reaches, and so how far it spreads
 
 
 @dataclass
 class CameraParams:
     fov: float = 40.0  # vertical field of view in degrees
+
+
+@dataclass
+class MaskParams:
+    """The Mask tool's brush. The occlusion mask itself is per photo and lives on the Document."""
+
+    brush_size: float = 0.05  # diameter, as a fraction of the photo's height
+    feather: float = 0.5  # how much of the brush's radius fades out softly
+
+
+@dataclass
+class EffectsParams:
+    """Finishing passes over the composite. All of them are off (or neutral) by default."""
+
+    reflection_strength: float = 0.0  # a mirrored copy of the floor text on the ground; 0 = off
+    reflection_roughness: float = 0.3  # blurs the reflection
+    reflection_fade: float = 3.0  # world units below the ground over which the reflection fades out
 
 
 @dataclass
@@ -144,6 +164,8 @@ class Scene:
     shadow: ShadowParams = field(default_factory=ShadowParams)
     camera: CameraParams = field(default_factory=CameraParams)
     wall: WallParams = field(default_factory=WallParams)
+    mask: MaskParams = field(default_factory=MaskParams)
+    effects: EffectsParams = field(default_factory=EffectsParams)
 
 
 @dataclass
@@ -153,6 +175,8 @@ class Document:
     scene: Scene = field(default_factory=Scene)
     background: np.ndarray | None = None  # (H, W, 4) uint8 RGBA, top row first
     background_path: str | None = None
+    # Occlusion mask: (H, W) uint8 at the photo's size, 255 where the photo is in front of the text. None: no mask.
+    mask: np.ndarray | None = None
 
     @property
     def native_size(self) -> tuple[int, int]:
@@ -160,3 +184,15 @@ class Document:
             return (1600, 1000)
         height, width = self.background.shape[:2]
         return (width, height)
+
+
+# Ranges of numeric fields, shared by the panel's sliders and project loading (which clamps to them).
+FIELD_RANGES = {
+    ShadowParams: {"contact_strength": (0.0, 1.0), "contact_size": (0.02, 1.0)},
+    MaskParams: {"brush_size": (0.005, 0.5), "feather": (0.0, 1.0)},
+    EffectsParams: {
+        "reflection_strength": (0.0, 1.0),
+        "reflection_roughness": (0.0, 1.0),
+        "reflection_fade": (0.1, 30.0),
+    },
+}

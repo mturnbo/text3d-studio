@@ -68,6 +68,10 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
         text = np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1]
     else:
         text = np.zeros((height, width, 4), np.uint8)
+    reflection = compositor.read_reflection(scene, width, height)
+    if reflection is not None:  # the text over its reflection, premultiplied
+        alpha = text[..., 3:].astype(np.float32) / 255.0
+        text = np.round(text + reflection * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
 
     factors = []
     target = ColorTarget(GL.GL_RGBA16F, GL.GL_RGBA)
@@ -83,7 +87,11 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
         target.delete()
     if not factors:
         factors = [np.ones((height, width, 3), np.float32)] * 2
-    return compose_transparent(text, factors[0], factors[1][..., :1])
+    pixels = compose_transparent(text, factors[0], factors[1][..., :1])
+    occlusion = compositor.read_occlusion(width, height)
+    if occlusion is not None:  # the photo is in front there: the text and shadow are hidden
+        pixels[..., 3] = np.round(pixels[..., 3] * (1.0 - occlusion)).astype(np.uint8)
+    return pixels
 
 
 def compose_transparent(text: np.ndarray, shadow_factor: np.ndarray, strength_factor: np.ndarray) -> np.ndarray:

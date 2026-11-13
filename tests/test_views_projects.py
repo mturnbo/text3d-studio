@@ -512,6 +512,29 @@ def test_oversized_and_non_finite_values_open_safely_and_show_in_range(window, t
     window.canvas.grab()  # paints, rasterizing the loaded text
 
 
+def test_a_painted_mask_saves_reopens_and_covers_the_text_in_the_export(window, tmp_path, monkeypatch, qapp):
+    window.show()
+    window.load_image_path(image_file(tmp_path))
+    plain = window.canvas.render_export()
+    window.vm.set("mask", "brush_size", 0.5)
+    window.vm.paint_mask((0, 20), (60, 20))  # most of the 60 x 40 photo
+    painted = window.vm.document.mask.copy()
+    covered = window.canvas.render_export()
+    photo = np.zeros((40, 60, 3), np.uint8)
+    photo[:, :30, 0] = 200
+    assert np.array_equal(covered[painted == 255][:, :3], photo[painted == 255])
+    assert not np.array_equal(covered, plain)
+    path = str(tmp_path / "masked.t3d")
+    save_dialog(monkeypatch, path)
+    assert window.save_project_as()
+    window.vm.clear_mask()
+    window.open_project_path(path)
+    qapp.processEvents()
+    assert np.array_equal(window.vm.document.mask, painted)
+    assert np.array_equal(window.canvas.render_export(), covered)
+    window.vm.mark_saved()
+
+
 def test_hostile_shading_values_open_safely_and_show_in_range(window, tmp_path, qapp):
     from PyQt6.QtWidgets import QComboBox
 

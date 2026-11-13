@@ -15,7 +15,7 @@ from ..preferences import Preferences
 from ..render.exporter import batch_jobs, long_edge_scale, scaled_size
 from ..viewmodel import SceneViewModel
 from .control_panel import ControlPanel
-from .image_canvas import FIT_TOOL, GRID_TOOL, SUN_TOOL, TEXT_TOOL, WALL_TOOL, ImageCanvas
+from .image_canvas import FIT_TOOL, GRID_TOOL, MASK_TOOL, SUN_TOOL, TEXT_TOOL, WALL_TOOL, ImageCanvas
 
 EXPORT_FILTERS = "PNG image (*.png);;JPEG image (*.jpg *.jpeg)"
 TRANSPARENT_FILTER = "PNG image (*.png)"  # JPEG has no transparency
@@ -29,6 +29,8 @@ TOOL_HINTS = {
     "Its real size (Grid › Fit width/depth) sets the scale",
     WALL_TOOL: "Drag along the line where the wall meets the floor",
     SUN_TOOL: "Click the top of a vertical object, its base, then the tip of its shadow",
+    MASK_TOOL: "Paint over parts of the photo that stand in front of the text · Option/Alt: erase · "
+    "Brush size and feather in Mask",
 }
 
 
@@ -131,7 +133,7 @@ class MainWindow(QMainWindow):
         tools_menu = self.menuBar().addMenu("&Tools")
         tools = (
             (TEXT_TOOL, "Move &Text", "V"), (GRID_TOOL, "Adjust &Grid", "P"), (FIT_TOOL, "Fit &Rectangle", "R"),
-            (WALL_TOOL, "Set &Wall", "W"), (SUN_TOOL, "Match &Sun", "L"),
+            (WALL_TOOL, "Set &Wall", "W"), (SUN_TOOL, "Match &Sun", "L"), (MASK_TOOL, "&Mask", "M"),
         )
         for tool, text, key in tools:
             action = QAction(text, self)

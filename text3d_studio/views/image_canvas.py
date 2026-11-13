@@ -33,6 +33,8 @@ GRID_TOOL = "grid"
 FIT_TOOL = "fit"
 WALL_TOOL = "wall"
 SUN_TOOL = "sun"
+MASK_TOOL = "mask"
+MASK_TINT = (1.0, 0.25, 0.35, 0.45)  # the mask's overlay while the Mask tool is active: colour and opacity
 SUN_POINT_LABELS = ("Top", "Base", "Shadow tip")
 SUN_PROMPTS = (
     "Match Sun: click the top of a vertical object (a post, a person, a bottle)",
@@ -169,7 +171,18 @@ class ToolOverlay(QWidget):
             self._paint_wall(painter)
         if self.canvas.tool == SUN_TOOL:
             self._paint_sun_points(painter)
+        if self.canvas.tool == MASK_TOOL:
+            self._paint_brush(painter)
         painter.end()
+
+    def _paint_brush(self, painter: QPainter) -> None:
+        outline = self.canvas.brush_outline_px()
+        if outline is None:
+            return
+        center, radius = outline
+        for color, width in ((QColor(0, 0, 0, 160), 3), (QColor(255, 255, 255, 230), 1)):
+            painter.setPen(QPen(color, width))
+            painter.drawEllipse(QPointF(*center), radius, radius)
 
     def _paint_sun_points(self, painter: QPainter) -> None:
         points = [QPointF(*p) for p in self.canvas.sun_points_px()]
@@ -253,6 +266,10 @@ class ImageCanvas(QOpenGLWidget):
         self.sun_points: list[tuple[float, float]] = []  # Match Sun clicks (top, base, tip), fractions of the image rect
         self.sun_valid = True
         self.eyedropper: tuple[str, str] | None = None  # (section, field) the next click picks from the photo
+        self._mask_last: tuple[float, float] | None = None  # photo pixel the mask stroke last painted to
+        self._mask_erasing = False
+        self._brush_hover: QPointF | None = None  # where the Mask tool's brush outline shows
+        self._mask_pending = True  # the mask's changed rect to upload: True for all of it, None for nothing
         self.tool_overlay = ToolOverlay(self)
         self._frame_times: deque[float] = deque(maxlen=30)
         # Before/after: the preview shows the photo alone while backslash is held or the View menu toggle is on.
@@ -274,6 +291,7 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.selection_changed.connect(lambda *_: self.update())
         self.vm.background_changed.connect(self._mark_background_dirty)
         self.vm.background_changed.connect(self.zoom_to_fit)  # a new photo (or project) starts fitted
+        self.vm.mask_changed.connect(self._mark_mask_dirty)
 
         self.empty_state = EmptyStateOverlay(self)
         self.empty_state.open_requested.connect(self.open_requested)
@@ -295,6 +313,7 @@ class ImageCanvas(QOpenGLWidget):
         self.compositor = Compositor()
         self.grid_renderer = GridRenderer(self.compositor.quad)
         self._unsent = set(self._rasters)  # a new context starts without glyphs
+        self._mask_pending = True
         self.context().aboutToBeDestroyed.connect(self._release_gl)
 
     def paintGL(self) -> None:
@@ -317,6 +336,9 @@ class ImageCanvas(QOpenGLWidget):
             self.grid_renderer.render(
                 self.vm.scene, obj, self.compositor.glyph_raster(obj.id), self.defaultFramebufferObject(), rect, dpr
             )
+        if self.tool == MASK_TOOL and not self.showing_original:
+            # Editor overlay, like the grid: drawn after the composite, so exports never contain it.
+            self.compositor.render_mask_overlay(self.defaultFramebufferObject(), rect, MASK_TINT)
         self._track_fps()
 
     def _sync_resources(self) -> None:
@@ -324,6 +346,13 @@ class ImageCanvas(QOpenGLWidget):
             self._background_dirty = False
             try:
                 self.compositor.set_background(self.vm.document.background)
+            except ValueError as exc:
+                self.error.emit(str(exc))
+        if self._mask_pending is not None:
+            rect = None if self._mask_pending is True else self._mask_pending
+            self._mask_pending = None
+            try:
+                self.compositor.set_mask(self.vm.document.mask, rect)
             except ValueError as exc:
                 self.error.emit(str(exc))
         if self._glyph_dirty:
@@ -366,6 +395,19 @@ class ImageCanvas(QOpenGLWidget):
 
     def _mark_background_dirty(self) -> None:
         self._background_dirty = True
+        self.update()
+
+    def _mark_mask_dirty(self, rect) -> None:
+        """Collects the mask's changed rects (their union) for the next upload."""
+        pending = self._mask_pending
+        if rect is None or pending is True:
+            self._mask_pending = True
+        elif pending is None:
+            self._mask_pending = rect
+        else:
+            self._mask_pending = (
+                min(pending[0], rect[0]), min(pending[1], rect[1]), max(pending[2], rect[2]), max(pending[3], rect[3])
+            )
         self.update()
 
     def _track_fps(self) -> None:
@@ -538,7 +580,7 @@ class ImageCanvas(QOpenGLWidget):
     def _update_overlays(self) -> None:
         """Shows the active tool's overlay, unless the original photo is showing: it shows the photo alone."""
         self.fit_overlay.setVisible(self.tool == FIT_TOOL and not self.showing_original)
-        self.tool_overlay.setVisible(self.tool in (WALL_TOOL, SUN_TOOL) and not self.showing_original)
+        self.tool_overlay.setVisible(self.tool in (WALL_TOOL, SUN_TOOL, MASK_TOOL) and not self.showing_original)
 
     # ----- Export -------------------------------------------------------------------------------
 
@@ -589,13 +631,16 @@ class ImageCanvas(QOpenGLWidget):
             self.sun_points = []
             self.sun_valid = True
             self.tool_status.emit(SUN_PROMPTS[0])
+        self._brush_hover = None
         self._update_overlays()
         self.tool_overlay.update()
         self._restore_tool_cursor()
+        self.update()  # the mask overlay shows only with the Mask tool
         self.tool_changed.emit(tool)
 
     def _restore_tool_cursor(self) -> None:
-        self.setCursor(Qt.CursorShape.OpenHandCursor if self.tool == TEXT_TOOL else Qt.CursorShape.ArrowCursor)
+        cursors = {TEXT_TOOL: Qt.CursorShape.OpenHandCursor, MASK_TOOL: Qt.CursorShape.CrossCursor}
+        self.setCursor(cursors.get(self.tool, Qt.CursorShape.ArrowCursor))
 
     # ----- Mouse interaction --------------------------------------------------------------------
     # Press: select the object under the cursor; every gesture acts on the selected object
@@ -621,6 +666,8 @@ class ImageCanvas(QOpenGLWidget):
             self._wall_start = self.ground_point_at(event.position())
         elif self.tool == SUN_TOOL:
             self._add_sun_point(event.position())
+        elif self.tool == MASK_TOOL:
+            self._mask_press(event)
         else:
             self._text_press(event)
         # The whole press→release drag is one undo step. It begins after the press's selection, which isn't one,
@@ -669,6 +716,7 @@ class ImageCanvas(QOpenGLWidget):
         self._grid_drag = None
         self._fit_handle = None
         self._wall_start = None
+        self._mask_last = None
         if self.tool == TEXT_TOOL and self.eyedropper is None:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         # Ends with the last button up. A release with no press here (a dialog closed on the press) ends nothing.
@@ -698,6 +746,12 @@ class ImageCanvas(QOpenGLWidget):
                 self._drag_wall_to(event.position())
             return
         if self.tool == SUN_TOOL:
+            return
+        if self.tool == MASK_TOOL:
+            self._brush_hover = event.position()
+            self.tool_overlay.update()
+            if self._mask_last is not None:
+                self._paint_mask_to(event.position())
             return
         if self.tool == GRID_TOOL:
             if self._grid_drag is None:
@@ -1055,6 +1109,7 @@ class ImageCanvas(QOpenGLWidget):
             return
         self.vm.set("wall", "angle", wall.angle)
         self.vm.set("wall", "offset", wall.offset)
+        self.vm.set("wall", "enabled", True)  # setting the wall says the photo shows one
 
     def wall_preview_px(self):
         """The wall preview in widget pixels: ([grid line end points], base line end points or None)."""
@@ -1108,6 +1163,45 @@ class ImageCanvas(QOpenGLWidget):
         self.vm.set("light", "elevation", elevation)
         self.vm.end_edit()
         self.tool_status.emit(f"Sun matched: azimuth {azimuth:.0f}°, elevation {elevation:.0f}°. Click again to start over")
+
+    # ----- Mask tool ------------------------------------------------------------------------------
+    # Paint where the photo is in front of the text; Option/Alt erases. Each stroke is one undo step.
+
+    def _mask_press(self, event) -> None:
+        if event.button() != Qt.MouseButton.LeftButton or self.vm.document.background is None:
+            return
+        # The stroke's first dab belongs to the press→release undo step, so open it before painting.
+        if not self._editing:
+            self._editing = True
+            self.vm.begin_edit()
+        self._mask_erasing = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+        self._mask_last = self._photo_pixel(event.position())
+        self.vm.paint_mask(self._mask_last, self._mask_last, self._mask_erasing)
+
+    def _paint_mask_to(self, position: QPointF) -> None:
+        current = self._photo_pixel(position)
+        self.vm.paint_mask(self._mask_last, current, self._mask_erasing)
+        self._mask_last = current
+
+    def _photo_pixel(self, position: QPointF) -> tuple[float, float]:
+        """The photo pixel (x, y, origin top left, unclamped) under a widget position."""
+        u, v = self._image_pixel(position)
+        _, _, rect_w, rect_h = self._image_rect()
+        height, width = self.vm.document.background.shape[:2]
+        return (u / rect_w * width, v / rect_h * height)
+
+    def brush_outline_px(self) -> tuple[tuple[float, float], float] | None:
+        """The brush's outline under the cursor: (center, radius) in widget pixels, or None off the canvas."""
+        if self._brush_hover is None:
+            return None
+        _, _, _, rect_h = self._image_rect()
+        radius = self.vm.scene.mask.brush_size * rect_h / 2
+        return (self._brush_hover.x(), self._brush_hover.y()), radius
+
+    def leaveEvent(self, event) -> None:
+        self._brush_hover = None
+        self.tool_overlay.update()
+        super().leaveEvent(event)
 
     # ----- Eyedropper -----------------------------------------------------------------------------
     # After a panel's Pick button, the next click on the photo sets that colour. Escape cancels.

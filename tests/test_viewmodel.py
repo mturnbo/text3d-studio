@@ -954,3 +954,180 @@ def test_set_mount_only_moves_the_selected_object(vm):
     first = dataclasses.replace(vm.scene.objects[0].transform)
     vm.set_mount("wall")
     assert vm.scene.objects[0].transform == first and vm.scene.objects[1].transform.mount == "wall"
+
+
+def test_mounting_text_on_the_wall_says_the_photo_shows_a_wall_in_the_same_step(uvm):
+    assert not uvm.scene.wall.enabled
+    uvm.set_mount("wall")
+    assert uvm.scene.wall.enabled
+    uvm.undo()
+    assert not uvm.scene.wall.enabled and uvm.selected_object.transform.mount == "floor"
+    uvm.set_mount("wall")
+    uvm.set_mount("floor")  # the wall is still in the photo
+    assert uvm.scene.wall.enabled
+
+
+def test_ground_edits_move_the_wall_but_keep_whether_the_photo_shows_one(vm):
+    vm.set("wall", "enabled", True)
+    vm.set("ground", "pitch", 10.0)
+    assert vm.scene.wall.enabled
+    vm.set("wall", "enabled", False)
+    vm.set("ground", "pitch", 5.0)
+    assert not vm.scene.wall.enabled
+
+
+# ----- Occlusion mask -----------------------------------------------------------------------------
+
+
+def photo(width=200, height=100):
+    pixels = np.zeros((height, width, 4), np.uint8)
+    pixels[..., 3] = 255
+    return pixels
+
+
+@pytest.fixture
+def mvm(uvm):
+    uvm.set_background(photo())
+    return uvm
+
+
+def stroke(vm, *points, erase=False):
+    """One stroke as the canvas paints it: one edit around every segment."""
+    vm.begin_edit()
+    vm.paint_mask(points[0], points[0], erase)
+    for a, b in zip(points, points[1:]):
+        vm.paint_mask(a, b, erase)
+    vm.end_edit()
+
+
+def test_painting_creates_a_mask_at_the_photos_size(mvm):
+    assert mvm.document.mask is None
+    stroke(mvm, (50, 50), (120, 50))
+    mask = mvm.document.mask
+    assert mask.shape == (100, 200) and mask.dtype == np.uint8
+    assert mask[50, 80] == 255 and mask[5, 5] == 0
+
+
+def test_brush_size_is_a_fraction_of_the_photo_height(mvm):
+    mvm.set("mask", "brush_size", 0.2)  # 20 px across on a 100 px tall photo
+    mvm.set("mask", "feather", 0.0)
+    stroke(mvm, (100, 50))
+    assert mvm.document.mask[50, 100 + 8] == 255
+    assert mvm.document.mask[50, 100 + 12] == 0
+
+
+def test_a_stroke_is_one_undo_step_and_redo_brings_it_back(mvm):
+    stroke(mvm, (20, 20), (60, 30), (100, 60))
+    painted = mvm.document.mask.copy()
+    assert undo_count(mvm) == 1
+    assert mvm.document.mask is None
+    assert mvm.redo()
+    assert np.array_equal(mvm.document.mask, painted)
+
+
+def test_strokes_undo_one_at_a_time(mvm):
+    stroke(mvm, (20, 20))
+    first = mvm.document.mask.copy()
+    stroke(mvm, (150, 70))
+    mvm.undo()
+    assert np.array_equal(mvm.document.mask, first)
+
+
+def test_a_dab_outside_any_edit_is_its_own_step(mvm):
+    mvm.paint_mask((30, 30), (30, 30))
+    mvm.paint_mask((90, 30), (90, 30))
+    assert undo_count(mvm) == 2
+
+
+def test_erasing_removes_paint_as_one_step(mvm):
+    stroke(mvm, (50, 50), (150, 50))
+    stroke(mvm, (100, 50), erase=True)
+    assert mvm.document.mask[50, 100] == 0 and mvm.document.mask[50, 60] == 255
+    mvm.undo()
+    assert mvm.document.mask[50, 100] == 255
+
+
+def test_erasing_nothing_or_painting_off_the_photo_records_no_step(mvm):
+    stroke(mvm, (50, 50), erase=True)
+    assert mvm.document.mask is None
+    stroke(mvm, (50, 50))
+    mvm.clear_history()
+    stroke(mvm, (-100, -100), (-80, -90))
+    stroke(mvm, (180, 90), erase=True)
+    assert not mvm.can_undo
+
+
+def test_painting_without_a_photo_does_nothing(uvm):
+    stroke(uvm, (10, 10))
+    assert uvm.document.mask is None and not uvm.can_undo
+
+
+def test_clear_mask_is_one_undoable_step(mvm):
+    stroke(mvm, (50, 50))
+    painted = mvm.document.mask.copy()
+    mvm.clear_mask()
+    assert mvm.document.mask is None
+    mvm.undo()
+    assert np.array_equal(mvm.document.mask, painted)
+    mvm.clear_history()
+    mvm.clear_mask()
+    mvm.clear_mask()  # nothing left to clear
+    assert undo_count(mvm) == 1
+
+
+def test_scene_steps_around_a_stroke_keep_the_mask_they_had(mvm):
+    mvm.set("light", "azimuth", 10.0)
+    stroke(mvm, (50, 50))
+    mvm.set("light", "azimuth", 20.0)
+    painted = mvm.document.mask.copy()
+    mvm.undo()  # the azimuth, not the mask
+    assert np.array_equal(mvm.document.mask, painted) and mvm.scene.light.azimuth == 10.0
+    mvm.undo()
+    assert mvm.document.mask is None
+
+
+def test_mask_changes_are_signalled_with_the_changed_rect_and_mark_the_document_dirty(mvm):
+    events = record(mvm.mask_changed)
+    mvm.mark_saved()
+    stroke(mvm, (50, 50))
+    x0, y0, x1, y1 = events[0][0]
+    assert x0 <= 50 < x1 and y0 <= 50 < y1
+    assert mvm.dirty
+    mvm.undo()
+    assert events[-1] == (None,)
+
+
+def test_a_new_photo_drops_the_mask_and_its_history(mvm):
+    stroke(mvm, (50, 50))
+    mvm.set_background(photo())
+    assert mvm.document.mask is None and not mvm.can_undo
+
+
+def test_finding_a_missing_photo_of_the_masks_size_keeps_the_mask(uvm):
+    document = Document()
+    document.mask = np.full((100, 200), 255, np.uint8)
+    uvm.load_document(document)
+    uvm.set_background(photo())
+    assert uvm.document.mask is not None
+    uvm.load_document(document)
+    uvm.set_background(photo(width=50))  # another size: another photo
+    assert uvm.document.mask is None
+
+
+def test_loading_a_document_with_a_mask_restores_it_on_undo(uvm):
+    document = Document(background=photo())
+    document.mask = np.zeros((100, 200), np.uint8)
+    document.mask[:, :10] = 255
+    uvm.load_document(document)
+    stroke(uvm, (150, 50))
+    uvm.undo()
+    assert uvm.document.mask[:, :10].all() and not uvm.document.mask[:, 10:].any()
+
+
+def test_mask_snapshots_are_compressed_and_shared_between_steps(mvm):
+    stroke(mvm, (50, 50))
+    mvm.set("light", "azimuth", 10.0)
+    mvm.set("shadow", "opacity", 0.3)
+    states = mvm.history._undo
+    assert states[1][2] is states[2][2]  # steps that don't paint share the snapshot
+    assert len(states[1][2][1]) < mvm.document.mask.nbytes / 10

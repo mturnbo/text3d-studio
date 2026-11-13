@@ -742,3 +742,142 @@ void main() {
 }
 """
 
+# ----- Compositing passes ---------------------------------------------------------------------------
+
+# Occlusion: redraws the photo (sampled exactly as BACKGROUND_FS does) over everything drawn so far, with the
+# mask as alpha, so photo pixels marked as in front of the text cover the text, its shadow and its effects.
+OCCLUSION_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform sampler2D u_mask;
+out vec4 frag;
+void main() {
+    float cover = texture(u_mask, v_uv).r;
+    if (cover <= 0.0) discard;
+    frag = vec4(texture(u_image, v_uv).rgb, cover);
+}
+"""
+
+# Editor overlay (preview only): the mask, tinted.
+MASK_OVERLAY_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+uniform vec4 u_tint;  // color, and opacity where the mask is full
+out vec4 frag;
+void main() {
+    float cover = texture(u_mask, v_uv).r;
+    if (cover <= 0.0) discard;
+    frag = vec4(u_tint.rgb, cover * u_tint.a);
+}
+"""
+
+# Multiplies the shadows onto the surfaces that catch them. Each pixel's camera ray finds what it shows: the floor
+# when it meets the floor in front of the wall, else the wall. The floor shadow and the contact shadow darken only
+# the floor and the wall's shadow only the wall, so a floor shadow stops at the wall's base instead of carrying
+# on behind it. Without a wall everything is floor. Masks hold each channel's darkening (see SHADOW_FS).
+SHADOW_SURFACES_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_floor;
+uniform sampler2D u_wall;
+uniform sampler2D u_contact;
+uniform float u_opacity;
+uniform float u_contact_strength;
+uniform bool u_has_wall;
+uniform vec2 u_tan_half;      // tan(fov / 2) * aspect, tan(fov / 2): turns the viewport into camera rays
+uniform vec4 u_ground_plane;
+uniform vec4 u_wall_plane;    // normal toward the camera's side
+out vec4 frag;
+void main() {
+    vec3 floor_dark = texture(u_floor, v_uv).rgb * u_opacity;
+    vec3 contact_dark = texture(u_contact, v_uv).rgb * u_contact_strength;
+    vec3 wall_dark = vec3(0.0);
+    if (u_has_wall) {
+        vec3 dir = vec3((v_uv * 2.0 - 1.0) * u_tan_half, -1.0);
+        float toward_floor = dot(u_ground_plane.xyz, dir);
+        bool on_floor = false;
+        if (toward_floor < 0.0) {
+            vec3 hit = dir * (-u_ground_plane.w / toward_floor);
+            on_floor = dot(u_wall_plane.xyz, hit) + u_wall_plane.w >= 0.0;
+        }
+        if (!on_floor) {
+            floor_dark = vec3(0.0);
+            contact_dark = vec3(0.0);
+            if (dot(u_wall_plane.xyz, dir) < 0.0) wall_dark = texture(u_wall, v_uv).rgb * u_opacity;
+        }
+    }
+    frag = vec4((1.0 - floor_dark) * (1.0 - contact_dark) * (1.0 - wall_dark), 1.0);
+}
+"""
+
+# The mask resampled to a target (the transparent export reads it back).
+MASK_VALUE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_mask;
+out vec4 frag;
+void main() {
+    frag = vec4(texture(u_mask, v_uv).r, 0.0, 0.0, 1.0);
+}
+"""
+
+# Gaussian blur of a premultiplied RGBA image along u_step, alpha included (BLUR_FS keeps only color).
+BLUR_RGBA_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform vec2 u_step;
+out vec4 frag;
+void main() {
+    vec4 total = vec4(0.0);
+    float weights = 0.0;
+    for (int i = -12; i <= 12; ++i) {
+        float x = float(i) / 6.0;
+        float w = exp(-0.5 * x * x);
+        total += texture(u_image, v_uv + u_step * float(i)) * w;
+        weights += w;
+    }
+    frag = total / weights;
+}
+"""
+
+# A texture stretched over the viewport, scaled: composites premultiplied layers and adds glows.
+SCALED_TEXTURE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform float u_scale;
+out vec4 frag;
+void main() {
+    frag = texture(u_image, v_uv) * u_scale;
+}
+"""
+
+# Ground reflection: the mirrored text layer, faded by how far below the ground each pixel's mirrored surface lies
+# (the height above the ground of what it mirrors). Positions come back from the layer's depth.
+REFLECTION_FADE_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+uniform mat4 u_inverse_proj;
+uniform vec4 u_ground_plane;
+uniform float u_fade;   // world units below the ground where the reflection has faded out
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    vec4 color = texelFetch(u_color, texel, 0);
+    if (color.a <= 0.0) {
+        frag = vec4(0.0);
+        return;
+    }
+    float depth = texelFetch(u_depth, texel, 0).r;
+    vec4 view = u_inverse_proj * vec4(v_uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec3 position = view.xyz / view.w;
+    float below = -(dot(u_ground_plane.xyz, position) + u_ground_plane.w);
+    frag = color * clamp(1.0 - below / u_fade, 0.0, 1.0);
+}
+"""
+

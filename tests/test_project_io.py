@@ -36,10 +36,13 @@ def busy_scene() -> Scene:
     scene.ground = dataclasses.replace(scene.ground, pitch=12.5, roll=-3.0, height=2.0)
     scene.grid = dataclasses.replace(scene.grid, visible=True, accent_color=(0.5, 0.25, 1.0))
     scene.light = dataclasses.replace(scene.light, azimuth=80.0, color=(1.0, 0.5, 0.25), reflect_photo=False)
-    scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4))
+    scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4), contact_strength=0.7,
+                                       contact_size=0.3)
     scene.camera = dataclasses.replace(scene.camera, fov=55.0)
     scene.objects[1].transform = dataclasses.replace(scene.objects[1].transform, mount="wall", wall_x=-2.5, wall_y=1.25)
-    scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5)
+    scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5, enabled=True)
+    scene.mask = dataclasses.replace(scene.mask, brush_size=0.12, feather=0.25)
+    scene.effects = dataclasses.replace(scene.effects, reflection_strength=0.4, reflection_fade=1.5)
     return scene
 
 
@@ -399,6 +402,146 @@ def test_wall_and_mounts_round_trip_and_default_when_missing(qapp, tmp_path):
     older = load_project(write_json(tmp_path / "old.t3d", project_dict(scene={"objects": [{"transform": {"x": 1.0}}]})))
     assert older.document.scene.wall == model.WallParams()
     assert older.document.scene.objects[0].transform.mount == "floor"
+
+
+@pytest.mark.parametrize("wall, mounts, expected", [
+    ({"angle": 5.0}, ["floor"], False),  # saved before walls caught shadows: no wall text, no wall
+    ({"angle": 5.0}, ["floor", "wall"], True),  # wall text means the photo showed a wall
+    ({"enabled": False}, ["wall"], False),
+    ({"enabled": True}, ["floor"], True),
+    ({"enabled": "yes"}, ["floor"], False),  # not a bool: worked out from the mounts
+    ({"enabled": 1}, ["wall"], True),
+])
+def test_whether_the_photo_shows_a_wall_loads_or_is_worked_out(qapp, tmp_path, wall, mounts, expected):
+    objects = [{"id": i, "transform": {"mount": mount}} for i, mount in enumerate(mounts)]
+    path = write_json(tmp_path / "wall.t3d", project_dict(scene={"wall": wall, "objects": objects}))
+    assert load_project(path).document.scene.wall.enabled is expected
+
+
+# ----- Occlusion mask ---------------------------------------------------------------------------
+
+
+def soft_mask(height=30, width=50):
+    mask = np.zeros((height, width), np.uint8)
+    mask[5:20, 10:30] = 255
+    mask[5:20, 30:35] = np.linspace(200, 20, 5).astype(np.uint8)  # a feathered edge
+    return mask
+
+
+@pytest.mark.parametrize("embed_photo", [False, True])
+def test_mask_round_trips_pixel_exact_as_an_embedded_png(qapp, tmp_path, embed_photo):
+    document = Document(background=photo_pixels(), background_path=photo_file(tmp_path))
+    document.mask = soft_mask()
+    path = str(tmp_path / "masked.t3d")
+    save_project(path, document, embed_photo=embed_photo)
+    entry = json.loads(open(path).read())["mask"]
+    assert set(entry) == {"embedded_png"}
+    loaded = load_project(path)
+    assert loaded.warnings == []
+    assert np.array_equal(loaded.document.mask, document.mask)
+
+
+def test_no_mask_is_saved_as_null_and_loads_as_none(qapp, tmp_path):
+    path = str(tmp_path / "plain.t3d")
+    save_project(path, Document(background=photo_pixels()))
+    assert json.loads(open(path).read())["mask"] is None
+    assert load_project(path).document.mask is None
+    older = load_project(write_json(tmp_path / "old.t3d", project_dict()))  # saved before masks existed
+    assert older.document.mask is None and older.warnings == []
+
+
+@pytest.mark.parametrize("entry", [{"embedded_png": "not base64!"}, {"embedded_png": "aGVsbG8="}, {"other": 1}, "png"])
+def test_a_damaged_mask_is_left_out_with_a_warning(qapp, tmp_path, entry):
+    loaded = load_project(write_json(tmp_path / "bad.t3d", project_dict(mask=entry, photo=embedded_photo())))
+    assert loaded.document.background is not None
+    assert loaded.document.mask is None
+    assert any("mask" in warning and "could not be read" in warning for warning in loaded.warnings)
+
+
+def embedded_photo():
+    from text3d_studio.project_io import _encode_png
+
+    return {"embedded_png": _encode_png(photo_pixels())}
+
+
+def png_header_only(width, height):
+    """A PNG that claims to be width x height but holds no pixel data: a crafted file's way to ask for a huge
+    allocation. Only its header may be read."""
+    import base64
+    import struct
+    import zlib
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    chunk = b"IHDR" + ihdr
+    png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", len(ihdr)) + chunk + struct.pack(">I", zlib.crc32(chunk))
+    return {"embedded_png": base64.b64encode(png).decode("ascii")}
+
+
+@pytest.mark.parametrize("width, height", [(100000, 100000), (2**31 - 1, 1), (50, 30)])
+def test_an_oversized_or_empty_mask_is_refused_from_its_header(qapp, tmp_path, width, height):
+    loaded = load_project(write_json(tmp_path / "huge.t3d", project_dict(mask=png_header_only(width, height),
+                                                                          photo=embedded_photo())))
+    assert loaded.document.mask is None and loaded.document.background is not None
+    assert any("mask" in warning for warning in loaded.warnings)
+
+
+def test_a_mask_that_does_not_fit_the_photo_is_left_out_with_a_warning(qapp, tmp_path):
+    document = Document(background=photo_pixels())
+    document.mask = soft_mask(height=40, width=40)
+    path = str(tmp_path / "mismatch.t3d")
+    save_project(path, document, embed_photo=True)
+    loaded = load_project(path)
+    assert loaded.document.mask is None and loaded.document.background is not None
+    assert any("size" in warning for warning in loaded.warnings)
+
+
+def test_a_mask_whose_photo_is_missing_or_rejected_is_left_out_with_a_warning(qapp, tmp_path):
+    document = Document(background=photo_pixels(), background_path=photo_file(tmp_path))
+    document.mask = soft_mask()
+    path = str(tmp_path / "masked.t3d")
+    save_project(path, document)
+    os.remove(document.background_path)
+    loaded = load_project(path)
+    assert loaded.missing_photo is not None
+    assert loaded.document.mask is None
+    assert any("mask" in warning for warning in loaded.warnings)
+    no_photo = load_project(write_json(tmp_path / "nophoto.t3d", project_dict(mask={"embedded_png": "aGVsbG8="})))
+    assert no_photo.document.mask is None and any("mask" in warning for warning in no_photo.warnings)
+
+
+@pytest.mark.parametrize("value, expected", [
+    (1e9, 0.5), (-3.0, 0.005), (float("nan"), model.MaskParams().brush_size), ("big", model.MaskParams().brush_size),
+    (True, model.MaskParams().brush_size), (0.2, 0.2),
+])
+def test_brush_values_are_clamped_or_defaulted_on_load(qapp, tmp_path, value, expected):
+    path = tmp_path / "brush.t3d"
+    path.write_text(json.dumps(project_dict(scene={"mask": {"brush_size": value, "feather": 7}})))
+    brush = load_project(str(path)).document.scene.mask
+    assert brush.brush_size == expected
+    assert brush.feather == 1.0
+
+
+SECTION_NAMES = {type(getattr(Scene(), f.name)): f.name for f in dataclasses.fields(Scene) if f.name != "objects"}
+
+
+@pytest.mark.parametrize("cls", list(model.FIELD_RANGES))
+@pytest.mark.parametrize("value, end", [(1e12, 1), (-1e12, 0), ("NaN", None), ("x", None), (None, None), ([1], None)])
+def test_every_ranged_field_loads_clamped_or_defaulted(qapp, tmp_path, cls, value, end):
+    section = SECTION_NAMES[cls]
+    ranges = model.FIELD_RANGES[cls]
+    text = json.dumps(project_dict(scene={section: {name: value for name in ranges}}))
+    path = tmp_path / "ranged.t3d"
+    path.write_text(text.replace('"NaN"', "NaN"))
+    params = getattr(load_project(str(path)).document.scene, section)
+    for name, bounds in ranges.items():
+        expected = getattr(cls(), name) if end is None else bounds[end]
+        assert getattr(params, name) == expected, name
+
+
+def test_every_ranged_field_has_a_default_inside_its_range():
+    for cls, ranges in model.FIELD_RANGES.items():
+        for name, (low, high) in ranges.items():
+            assert low <= getattr(cls(), name) <= high, (cls.__name__, name)
 
 
 def test_side_material_round_trips_and_an_unknown_one_loads_as_same(qapp, tmp_path):

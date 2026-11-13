@@ -73,6 +73,15 @@ def planar_shadow_matrix(plane: np.ndarray, light_dir: np.ndarray) -> np.ndarray
     return float(plane @ light) * identity() - np.outer(light, plane)
 
 
+def reflection_matrix(plane: np.ndarray) -> np.ndarray:
+    """Mirrors points across `plane` (a, b, c, d with a unit normal)."""
+    normal = np.asarray(plane[:3], dtype=np.float64)
+    m = identity()
+    m[:3, :3] -= 2.0 * np.outer(normal, normal)
+    m[:3, 3] = -2.0 * float(plane[3]) * normal
+    return m
+
+
 def to_gl(m: np.ndarray) -> np.ndarray:
     """Column-major float32 copy for glUniformMatrix4fv(..., GL_FALSE, ...)."""
     return np.ascontiguousarray(m.T, dtype=np.float32)
