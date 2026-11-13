@@ -27,6 +27,10 @@ SIDE_GLOW = 0.35  # the side walls and back cap glow with this fraction of their
 # The shading pass keeps its alpha test. False renders the stack in one pass.
 DEPTH_PREPASS = True
 
+# Stone and wood read their noise from a texture baked once per renderer (shaders.BAKED_NOISE_GLSL) instead of
+# computing it per pixel. False computes it procedurally.
+BAKED_NOISE = True
+
 # Glass shows its own back cap and side walls (drawn into the backdrop before it is shaded); False shows only
 # what is behind the text.
 GLASS_FAR_WALLS = True
@@ -50,6 +54,47 @@ class Glyph:
         self.walls.delete()
 
 
+class NoiseVolume:
+    """gradient_noise baked into a tiling 3D texture on the GPU, once (see shaders.BAKED_NOISE_GLSL)."""
+
+    def __init__(self, quad: UnitQuad):
+        size = shaders.NOISE_PERIOD * shaders.NOISE_TEXELS_PER_CELL
+        self.size = size
+        self.handle = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_3D, self.handle)
+        for name, value in (
+            (GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR), (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR),
+            (GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT), (GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT),
+            (GL.GL_TEXTURE_WRAP_R, GL.GL_REPEAT),
+        ):
+            GL.glTexParameteri(GL.GL_TEXTURE_3D, name, value)
+        GL.glTexImage3D(GL.GL_TEXTURE_3D, 0, GL.GL_R16F, size, size, size, 0, GL.GL_RED, GL.GL_FLOAT, None)
+
+        previous_fbo = GL.glGetIntegerv(GL.GL_FRAMEBUFFER_BINDING)
+        previous_viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
+        program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.NOISE_BAKE_FS)
+        fbo = GL.glGenFramebuffers(1)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
+        GL.glViewport(0, 0, size, size)
+        program.use()
+        program.set_int("u_flip_y", 0)
+        for z in range(size):
+            GL.glFramebufferTextureLayer(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, self.handle, 0, z)
+            program.set_float("u_slice", z)
+            quad.draw()
+        GL.glDeleteFramebuffers(1, [fbo])
+        program.delete()
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, int(previous_fbo))
+        GL.glViewport(*map(int, previous_viewport))
+
+    def bind(self, unit: int) -> None:
+        GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+        GL.glBindTexture(GL.GL_TEXTURE_3D, self.handle)
+
+    def delete(self) -> None:
+        GL.glDeleteTextures(1, [self.handle])
+
+
 class Text3DRenderer:
     """Draws one text object at a time, with the glyph uploaded for it; holds no per-object state."""
 
@@ -58,7 +103,11 @@ class Text3DRenderer:
         self.depth_prepass = DEPTH_PREPASS
         self.glass_far_walls = GLASS_FAR_WALLS
         self.far_target: RenderTarget | None = None  # sized to the backdrop when glass is drawn
-        self.beauty = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_STACK_FS)
+        self.noise = NoiseVolume(quad) if BAKED_NOISE else None
+        fragment = shaders.LAYER_STACK_FS
+        if self.noise is not None:
+            fragment = shaders.with_define(fragment, "BAKED_NOISE")
+        self.beauty = ShaderProgram(shaders.LAYER_STACK_VS, fragment)
         self.depth = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_DEPTH_FS)
         self.cap_shadow = ShaderProgram(shaders.LAYER_STACK_VS, shaders.SHADOW_FS)
         self.wall_shadow = ShaderProgram(shaders.WALL_VS, shaders.SHADOW_FS)
@@ -127,6 +176,9 @@ class Text3DRenderer:
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.far_target.fbo)
 
     def _bind_material(self, program, scene, m, lighting, environment, backdrop) -> None:
+        if self.noise is not None:
+            self.noise.bind(3)
+            program.set_int("u_noise", 3)
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
@@ -213,6 +265,8 @@ class Text3DRenderer:
         self.wall_shadow.delete()
         if self.far_target is not None:
             self.far_target.delete()
+        if self.noise is not None:
+            self.noise.delete()
 
 
 def _blit(source_fbo: int, target_fbo: int, width: int, height: int) -> None:

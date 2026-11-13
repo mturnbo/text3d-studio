@@ -70,11 +70,21 @@ void main() {
 # 3D gradient noise (Perlin-style, arithmetic hash, no lookup textures) and fractional Brownian motion.
 # Procedural materials sample these at the text-local position, so patterns run continuously across the
 # face and around the side walls of the layer stack.
-NOISE_GLSL = """
+GRADIENT_NOISE_GLSL = """
 vec3 hash33(vec3 p) {
     p = fract(p * vec3(0.1031, 0.1030, 0.0973));
     p += dot(p, p.yxz + 33.33);
     return -1.0 + 2.0 * fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// The lattice cell a corner's gradient comes from. Baking wraps it, so the baked noise tiles every
+// NOISE_PERIOD cells.
+vec3 lattice_cell(vec3 c) {
+#ifdef WRAP_LATTICE
+    return mod(c, NOISE_PERIOD);
+#else
+    return c;
+#endif
 }
 
 // Roughly in [-1, 1], zero at integer lattice points, smooth (quintic fade) everywhere.
@@ -82,25 +92,64 @@ float gradient_noise(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
     vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    float n000 = dot(hash33(i), f);
-    float n100 = dot(hash33(i + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));
-    float n010 = dot(hash33(i + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));
-    float n110 = dot(hash33(i + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));
-    float n001 = dot(hash33(i + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));
-    float n101 = dot(hash33(i + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));
-    float n011 = dot(hash33(i + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));
-    float n111 = dot(hash33(i + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));
+    float n000 = dot(hash33(lattice_cell(i)), f);
+    float n100 = dot(hash33(lattice_cell(i + vec3(1.0, 0.0, 0.0))), f - vec3(1.0, 0.0, 0.0));
+    float n010 = dot(hash33(lattice_cell(i + vec3(0.0, 1.0, 0.0))), f - vec3(0.0, 1.0, 0.0));
+    float n110 = dot(hash33(lattice_cell(i + vec3(1.0, 1.0, 0.0))), f - vec3(1.0, 1.0, 0.0));
+    float n001 = dot(hash33(lattice_cell(i + vec3(0.0, 0.0, 1.0))), f - vec3(0.0, 0.0, 1.0));
+    float n101 = dot(hash33(lattice_cell(i + vec3(1.0, 0.0, 1.0))), f - vec3(1.0, 0.0, 1.0));
+    float n011 = dot(hash33(lattice_cell(i + vec3(0.0, 1.0, 1.0))), f - vec3(0.0, 1.0, 1.0));
+    float n111 = dot(hash33(lattice_cell(i + vec3(1.0, 1.0, 1.0))), f - vec3(1.0, 1.0, 1.0));
     return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
                mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
 }
+"""
 
+# fbm's octaves read their noise through octave_noise. The precomputed alternative (text3d_renderer.BAKED_NOISE)
+# bakes gradient_noise once into a tiling 3D texture of NOISE_PERIOD lattice cells per side, NOISE_TEXELS_PER_CELL
+# texels per cell, read with trilinear filtering: one fetch instead of eight hashes. Only fbm uses it (stone
+# about 24 calls per pixel, wood 12); the direct gradient_noise calls stay procedural, because they draw the fine
+# speckle and grain whose finite-difference bump would show the texture's trilinear facets as a grid.
+NOISE_PERIOD = 16
+NOISE_TEXELS_PER_CELL = 8
+
+PROCEDURAL_OCTAVE_GLSL = """
+float octave_noise(vec3 p) {
+    return gradient_noise(p);
+}
+"""
+
+BAKED_OCTAVE_GLSL = f"""
+uniform sampler3D u_noise;
+// Texel k holds the noise at (k + 0.5) / NOISE_TEXELS_PER_CELL cells: exactly where trilinear filtering
+// returns it unblended, so the texture reproduces the noise at texel centers and interpolates between them.
+float octave_noise(vec3 p) {{
+    return texture(u_noise, p * {1.0 / NOISE_PERIOD!r}).r;
+}}
+"""
+
+# Renders one z slice of the baked noise volume (see BAKED_OCTAVE_GLSL).
+NOISE_BAKE_FS = f"""
+#version 410 core
+#define WRAP_LATTICE
+const float NOISE_PERIOD = {float(NOISE_PERIOD)!r};
+uniform float u_slice;
+out vec4 frag;
+""" + GRADIENT_NOISE_GLSL + f"""
+void main() {{
+    vec3 texel = vec3(gl_FragCoord.xy, u_slice + 0.5);
+    frag = vec4(gradient_noise(texel / {float(NOISE_TEXELS_PER_CELL)!r}), 0.0, 0.0, 1.0);
+}}
+"""
+
+FBM_GLSL = """
 // Octaves of noise at doubling frequency and halving amplitude, normalized back to roughly [-1, 1].
 float fbm(vec3 p, int octaves) {
     float sum = 0.0;
     float amplitude = 1.0;
     float total = 0.0;
     for (int i = 0; i < octaves; ++i) {
-        sum += amplitude * gradient_noise(p);
+        sum += amplitude * octave_noise(p);
         total += amplitude;
         p = p * 2.03 + vec3(17.1, 31.7, 7.3);  // offset so octaves don't share lattice zeros
         amplitude *= 0.5;
@@ -108,6 +157,20 @@ float fbm(vec3 p, int octaves) {
     return sum / total;
 }
 """
+
+NOISE_GLSL = GRADIENT_NOISE_GLSL + PROCEDURAL_OCTAVE_GLSL + FBM_GLSL
+BAKED_NOISE_GLSL = GRADIENT_NOISE_GLSL + BAKED_OCTAVE_GLSL + FBM_GLSL
+# The materials' noise: fbm baked when the shader is built with BAKED_NOISE defined (see with_define).
+MATERIAL_NOISE_GLSL = (
+    GRADIENT_NOISE_GLSL + "#ifdef BAKED_NOISE\n" + BAKED_OCTAVE_GLSL + "#else\n" + PROCEDURAL_OCTAVE_GLSL + "#endif\n"
+    + FBM_GLSL
+)
+
+
+def with_define(source: str, name: str) -> str:
+    """The GLSL source with `#define name` right after its #version line."""
+    version, rest = source.lstrip("\n").split("\n", 1)
+    return f"{version}\n#define {name}\n{rest}"
 
 # Shared by the depth pre-pass and the shading pass so both derive exactly the same coverage.
 MASK_COVERAGE = """
@@ -233,7 +296,7 @@ vec2 environment_brdf(float n_dot_v, float roughness) {
     float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
-""" + MASK_COVERAGE + NOISE_GLSL + """
+""" + MASK_COVERAGE + MATERIAL_NOISE_GLSL + """
 // Tilts a normal against a height field's gradient (both in the text's own space).
 vec3 perturb(vec3 n, vec3 gradient, float strength) {
     return normalize(n - strength * (gradient - dot(gradient, n) * n));

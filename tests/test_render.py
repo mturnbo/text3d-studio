@@ -475,6 +475,25 @@ def test_stone_bump_adds_detail(compositor):
     assert bumpy > 1.2 * flat
 
 
+@pytest.mark.parametrize("kind", ["stone", "wood"])
+def test_procedural_and_baked_noise_give_the_same_kind_of_texture(gl_context, monkeypatch, kind):
+    import text3d_studio.render.text3d_renderer as text3d_renderer
+
+    details = {}
+    for baked in (False, True):
+        monkeypatch.setattr(text3d_renderer, "BAKED_NOISE", baked)
+        compositor = Compositor()
+        try:
+            assert (compositor.text.noise is not None) is baked
+            details[baked] = directional_detail(compositor, textured_document(kind))
+            plain = directional_detail(compositor, textured_document(kind, texture_strength=0.0, bump_strength=0.0))
+        finally:
+            compositor.delete()
+        assert sum(details[baked]) > 1.5 * sum(plain)
+    for procedural, baked in zip(details[False], details[True]):
+        assert baked == pytest.approx(procedural, rel=0.25)  # as fine and as directional, though not identical
+
+
 @pytest.mark.parametrize("angle, across", [(0.0, "vertical"), (90.0, "horizontal")])
 def test_wood_rings_vary_across_the_grain(compositor, angle, across):
     vertical, horizontal = directional_detail(compositor, textured_document("wood", grain_angle=angle, bump_strength=0.0))
