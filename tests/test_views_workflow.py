@@ -798,3 +798,23 @@ def test_fit_handles_follow_the_zoom(qapp):
     drag(canvas, corners[index], target)
     fx, fy = canvas.fit_corners[index]
     assert (rect_x + fx * rect_w, rect_y + fy * rect_h) == pytest.approx(target, abs=1e-6)
+
+
+@pytest.mark.parametrize("tool_name", ["WALL_TOOL", "SUN_TOOL", "FIT_TOOL"])
+def test_showing_the_photo_hides_every_tool_overlay_even_when_switching_tools(window, qapp, tool_name):
+    from text3d_studio.views import image_canvas
+
+    tool = getattr(image_canvas, tool_name)
+    canvas = window.canvas
+    overlay = canvas.fit_overlay if tool == image_canvas.FIT_TOOL else canvas.tool_overlay
+    photo(window, 320, 200)
+    activate(window, qapp)
+    canvas.set_tool(tool)
+    assert overlay.isVisibleTo(canvas)
+    window.original_action.setChecked(True)
+    assert not canvas.fit_overlay.isVisibleTo(canvas) and not canvas.tool_overlay.isVisibleTo(canvas)
+    canvas.set_tool(image_canvas.TEXT_TOOL)
+    canvas.set_tool(tool)  # picking a tool while the photo shows must not bring its overlay back
+    assert not overlay.isVisibleTo(canvas)
+    window.original_action.setChecked(False)
+    assert overlay.isVisibleTo(canvas)

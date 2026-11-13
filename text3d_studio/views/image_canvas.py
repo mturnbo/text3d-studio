@@ -532,8 +532,13 @@ class ImageCanvas(QOpenGLWidget):
         super().focusOutEvent(event)
 
     def _update_original(self) -> None:
-        self.fit_overlay.setVisible(self.tool == FIT_TOOL and not self.showing_original)
+        self._update_overlays()
         self.update()
+
+    def _update_overlays(self) -> None:
+        """Shows the active tool's overlay, unless the original photo is showing: it shows the photo alone."""
+        self.fit_overlay.setVisible(self.tool == FIT_TOOL and not self.showing_original)
+        self.tool_overlay.setVisible(self.tool in (WALL_TOOL, SUN_TOOL) and not self.showing_original)
 
     # ----- Export -------------------------------------------------------------------------------
 
@@ -578,14 +583,13 @@ class ImageCanvas(QOpenGLWidget):
             self._capture_pose_base()
             self._fit_settled = self._pose_snapshot()
             self.fit_status.emit("")
-        self.fit_overlay.setVisible(tool == FIT_TOOL)
         self.fit_overlay.update()
         self.eyedropper = None
         if tool == SUN_TOOL:
             self.sun_points = []
             self.sun_valid = True
             self.tool_status.emit(SUN_PROMPTS[0])
-        self.tool_overlay.setVisible(tool in (WALL_TOOL, SUN_TOOL))
+        self._update_overlays()
         self.tool_overlay.update()
         self._restore_tool_cursor()
         self.tool_changed.emit(tool)
