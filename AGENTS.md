@@ -24,7 +24,9 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 
 ```
 model.py            Pure dataclasses: Scene{objects: [TextObject{id, text, transform, material}], ground, grid,
-                    light, shadow, camera, wall}, Document. No Qt, no OpenGL. Document.native_size is the export size.
+                    light, shadow, camera, wall, mask, effects}, Document (+ the occlusion mask). No Qt, no OpenGL.
+                    Document.native_size is the export size. FIELD_RANGES: numeric ranges shared by the panel's
+                    sliders and project loading (clamped; non-finite → default)
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
                       "text", "transform" and "material" (OBJECT_SECTIONS) address the SELECTED object
@@ -55,9 +57,11 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shaders.py          all GLSL 4.10 sources as strings
   text3d_renderer.py  instanced layer stack (beauty) + shadow casters (caps + side walls), one object at a time;
                       Glyph = one object's mask texture + wall triangles
-  shadow_renderer.py  half-res shadow mask (all objects) → separable Gaussian blur → multiply composite
-  compositor.py       frame orchestration: background → shadow → text layer (every object, composited over).
-                      Holds a Glyph per object id: set_glyph(id, raster|None), retain_glyphs(ids)
+  shadow_renderer.py  half-res shadow masks (floor, wall, contact; all objects) → separable Gaussian blur →
+                      multiply composite
+  effects.py          EffectsRenderer: ground reflection, text finishing (depth of field, blur, grade, grain), bloom
+  compositor.py       frame orchestration (see *Compositing*). Holds a Glyph per object id: set_glyph(id, raster|None),
+                      retain_glyphs(ids); the occlusion mask: set_mask(mask, rect)
   exporter.py         offscreen 8× MSAA render at native size (× scale) → resolve → glReadPixels;
                       transparent export (compose_transparent); batch naming (batch_jobs)
   grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
@@ -75,6 +79,7 @@ ground.py           Ground model B: ground pose (GroundParams) → plane, origin
                     reanchor_wall, reanchor_wall_text, mount_on_wall, mount_on_floor, wall_grid_lines)
 lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix;
                     solve_sun: azimuth and elevation from a vertical object's top, base and shadow tip
+occlusion.py        Occlusion masks: paint_segment (soft round brush, paint or erase), encode/decode (compressed undo snapshots)
 text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles. Lays out
                     multi-line text (align, letter spacing, line height) and bends it along arcs
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
@@ -104,6 +109,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
    the beveled face, the middle instances are side walls (normal = outward edge direction, darkening
    with depth) and the last instance is the back cap. All objects share the text layer's depth buffer, so
    nearer objects hide farther ones whatever their order. Alpha-to-coverage is on.
+
+The full order, with the compositing passes, is under *Compositing*.
 
 ### Coordinate conventions
 
@@ -212,6 +219,54 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
   using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
 
+### Compositing (wave 2F)
+
+`Compositor.render` runs every pass, in this order, for the preview and every export alike:
+
+| # | Pass | Where | Off when | Transparent export |
+|---|---|---|---|---|
+| 1 | Shadow masks: floor; wall (`wall.enabled`, casters flattened onto the wall's plane); contact (floor text flattened straight down, fading within `contact_size` em) | `ShadowRenderer.render_mask`, half res | shadow off, or opacity and contact strength 0 | rendered again by `render_shadow_factor` |
+| 2 | Reflection layer: floor text mirrored across the ground (light mirrored too), faded by depth below the ground, blurred by roughness | `EffectsRenderer.render_reflection`, half res | `reflection_strength` 0, no floor text | — |
+| 3 | Background | `_draw_background` | — | left out |
+| 4 | Shadow composite: each pixel multiplied by the shadow of the surface it shows (floor or wall), plus the contact shadow | `ShadowRenderer.composite_onto` | as 1 | alpha = opacity × strength, colour recovered (`compose_transparent`); wall and contact included |
+| 5 | Reflection composite, premultiplied over | `composite_reflection` | as 2 | under the text (`read_reflection`) |
+| 6 | Glass backdrop capture + far walls | `_capture_backdrop`, `draw_far_walls` | no transmissive object | glass still refracts the photo |
+| 7 | Text layer, resolved (premultiplied, coverage alpha) | `_draw_text_layer` | no text | the text |
+| 8 | Text finishing: depth of field → blur → grade + grain, into `Compositor.text_color` | `EffectsRenderer.finish_text_layer` | each pass skipped at its neutral value; all off → `text_color` *is* `text_layer.color` | included (the export reads `text_color`) |
+| 9 | Text composite (alpha writes off) | `_composite_text_layer` | no text | — |
+| 10 | Bloom: `text_color` above the threshold, half res, blurred, **added** | `render_bloom`, `composite_bloom` | `bloom_strength` 0, no text | added to the text's colour, with its brightest channel as alpha (`read_bloom`): over a photo it is an *over*, not an add, so it darkens the photo under the glow slightly |
+| 11 | Occlusion: the photo put back where the mask says it is in front | `_draw_occlusion` | no mask, or one not at the photo's size | alpha × (1 − mask): hides text, shadows, reflection and glow alike |
+
+- **Settings** live in `scene.effects` (`EffectsParams`; reflection, bloom, grain, blur, grade, depth of field) and
+  `scene.shadow` (`contact_strength`, `contact_size`). Every one is in `model.FIELD_RANGES`, which the panel's
+  sliders and project loading share, and defaults to off or neutral, where the pass is skipped and the frame is
+  bit-identical to before (tests guard each).
+- **Resolution independence.** Every radius is a fraction of the image height (`REFLECTION_BLUR`, `BLOOM_SPREAD`,
+  `TEXT_BLUR`, `DOF_BLUR`, grain size in thousandths), so a scaled export matches the preview.
+- **Text finishing** ping-pongs between two full-size RGBA8 targets (`EffectsRenderer.finished`) and never touches
+  `text_layer` itself; the layer's depth still goes to the composite (the grid overlay tests against it), so a
+  blurred edge beyond the text's own pixels has far depth there.
+  - **Depth of field.** `DOF_COC_FS` turns the layer's depth into a blur radius (circle of confusion):
+    `aperture × DOF_BLUR × height × min(|1 − focus / distance|, 1)`, distance along the view. Pixels without
+    text (depth cleared to 1, which includes a sharp edge's partly covered pixels) take the largest radius of
+    text whose blur reaches them, from a 48-sample spiral, but never from text behind them, so out-of-focus
+    text spreads past its outline and over farther text, not over nearer text. `DOF_BLUR_FS` is then the
+    separable Gaussian with each pixel's own radius. An in-focus object keeps its own sharp edge.
+  - **Blur** is the shared separable Gaussian (`_blur`) on the premultiplied layer, so the edge softens into
+    transparency (alpha included).
+  - **Grade and grain** are one pass (`TEXT_FINISH_FS`) on the straight colour: brightness (gain), contrast
+    around mid grey, saturation (Rec. 709 luma), warmth (red/blue gains, `WARMTH_SHIFT`), then monochrome value
+    noise on a fixed `GRAIN_SEED` lattice in image pixels. It never changes alpha, and the grain is fixed to the
+    image (no shimmer while dragging; exports are reproducible).
+- **Bloom** extracts per channel `max(c − threshold · a, 0) / (1 − threshold)` from the finished layer, so it finds
+  near-saturated pixels: highlights, and neon, whose glow saturates in the RGBA8 layer (see *Emission*). It glows
+  over the photo and the text alike.
+- **The occlusion mask** (`Document.mask`, (H, W) uint8 at the photo's size, saved in projects) is painted with
+  the Mask tool (**M**; Option/Alt erases; `vm.paint_mask`, one undo step per stroke; `scene.mask` is the brush).
+  The canvas uploads only the changed rect. `render_mask_overlay` tints it in the preview only.
+- **Cost** (1600×1000, 4× MSAA, Apple GPU): about 2.5 ms with nothing on, about 5 ms with every effect on (depth
+  of field is the most expensive, ~1 ms). `test_every_effect_on_stays_above_30_fps` guards it.
+
 ### Workflow features (wave 1A)
 
 - **Looks** (`presets.py`). A look is a dict per section (`material`, `light`, `shadow`) of field → value.
@@ -287,7 +342,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   alpha-to-coverage *and* alpha-to-one, then resolved: color comes out premultiplied and alpha is coverage.
   `LAYER_COMPOSITE_FS` puts it over the target with (ONE, ONE_MINUS_SRC_ALPHA), fetching texels 1:1 with
   the viewport. Exports match the old direct render to within one level. Passes that work on the text
-  alone (occlusion, grading, bloom, transparent export) read `text_layer.color` / `.depth`.
+  alone read `text_layer.color` / `.depth`; what comes after the finishing passes (the composite, bloom, the
+  transparent export) reads `Compositor.text_color` instead.
 - **Depth pre-pass** (`text3d_renderer.DEPTH_PREPASS`). The stack is drawn once into depth only
   (`LAYER_DEPTH_FS`), then shaded with `GL_EQUAL` and depth writes off, so expensive shading runs about
   once per pixel instead of once per slice. Real gains are modest on Apple GPUs (~11% without MSAA, ~0

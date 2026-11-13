@@ -4,7 +4,8 @@ photo matching. Tests check rendered properties against control renders, never r
 import numpy as np
 import pytest
 
-from text3d_studio.model import Document
+from text3d_studio.materials import PRESETS
+from text3d_studio.model import Document, MaterialParams
 from text3d_studio.render.compositor import Compositor
 from text3d_studio.render.exporter import render_document
 from text3d_studio.text_raster import rasterize_text
@@ -58,10 +59,12 @@ def eroded(mask, erode=2):
 
 
 def dilated(mask, grow):
+    """Every pixel within `grow` pixels of the mask, diagonals included (a square, not a cross)."""
     grown = mask.copy()
     for axis in (0, 1):
+        source = grown.copy()
         for shift in range(1, grow + 1):
-            grown |= np.roll(mask, shift, axis) | np.roll(mask, -shift, axis)
+            grown |= np.roll(source, shift, axis) | np.roll(source, -shift, axis)
     return grown
 
 
@@ -439,3 +442,341 @@ def test_the_reflection_is_in_the_transparent_export_under_the_text(compositor):
     assert (pixels[reflected][:, 3] > 0).all()
     assert (pixels[eroded(text, 3)][:, 3] == 255).mean() > 0.999  # the text stays opaque over it
     assert not pixels[~dilated((change > 0) | text, 2)][:, 3].any()
+
+
+# ----- Bloom --------------------------------------------------------------------------------------
+
+BRIGHT = {"kind": "plastic", "face_color": (1.0, 1.0, 1.0), "side_color": (1.0, 1.0, 1.0), "roughness": 0.3,
+          "metallic": 0.0}
+NEON = {"kind": "neon", **{k: v for k, v in PRESETS["neon"].items()}, "emission_strength": 3.0}
+
+
+def bloom_document(material=BRIGHT, **effects):
+    return make_document(shadow=NO_SHADOW, material=material, light={"intensity": 2.5, "azimuth": 0.0},
+                         effects={"bloom_strength": 1.0, "bloom_threshold": 0.6, "bloom_radius": 0.3, **effects})
+
+
+def test_bloom_off_is_identical_to_before(compositor):
+    reference = render(compositor, make_document(shadow=NO_SHADOW, material=BRIGHT, light={"intensity": 2.5,
+                                                                                            "azimuth": 0.0}))
+    assert np.array_equal(reference, render(compositor, bloom_document(bloom_strength=0.0)))
+    assert np.array_equal(reference, render(compositor, bloom_document(bloom_strength=0.0, bloom_threshold=0.0,
+                                                                       bloom_radius=1.0)))
+    nothing_bright = render(compositor, bloom_document(bloom_threshold=1.0))
+    assert np.array_equal(reference, nothing_bright)
+
+
+@pytest.mark.parametrize("material", [BRIGHT, NEON], ids=["highlight", "neon"])
+def test_bright_text_spreads_light_into_neighbouring_photo_pixels(compositor, material):
+    plain = render(compositor, bloom_document(material, bloom_strength=0.0))
+    glowing = render(compositor, bloom_document(material))
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    ring = dilated(text, 8) & ~dilated(text, 1)
+    brighter = luminance(glowing) - luminance(plain)
+    assert brighter[ring].mean() > 5
+    assert (brighter >= -1).all()  # it only adds light
+    assert np.abs(brighter[~dilated(text, 150)]).max() <= 1  # and only near the text
+
+
+def test_a_wider_radius_glows_further(compositor):
+    plain = render(compositor, bloom_document(bloom_strength=0.0))
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    far = dilated(text, 30) & ~dilated(text, 20)
+    narrow = luminance(render(compositor, bloom_document(bloom_radius=0.1))) - luminance(plain)
+    wide = luminance(render(compositor, bloom_document(bloom_radius=1.0))) - luminance(plain)
+    assert narrow[far].mean() < 0.5
+    assert wide[far].mean() > narrow[far].mean() + 2
+
+
+def test_bloom_with_no_text_to_glow_changes_nothing(compositor):
+    doc = bloom_document(bloom_threshold=0.0)
+    reference = render(compositor, make_document(text={"content": " "}))
+    doc.scene.objects[0].text.content = " "
+    assert np.array_equal(render(compositor, doc), reference)
+    assert np.array_equal(render(compositor, doc, transparent=True)[..., 3], np.zeros(reference.shape[:2]))
+
+
+def test_the_glow_is_in_the_transparent_export_as_light_over_nothing(compositor):
+    plain = render(compositor, bloom_document(NEON, bloom_strength=0.0), transparent=True)
+    glowing = render(compositor, bloom_document(NEON), transparent=True)
+    text = plain[..., 3] > 0
+    ring = dilated(text, 8) & ~dilated(text, 1)
+    assert not plain[ring][:, 3].any()
+    assert glowing[ring][:, 3].mean() > 10  # the glow alone, translucent
+    assert (glowing[ring][:, 0] >= glowing[ring][:, 1]).all()  # in the neon's own (pink) colour
+    assert (glowing[..., 3] >= plain[..., 3]).all()
+    assert (glowing[plain[..., 3] == 255][:, 3] == 255).all()  # the text stays opaque
+    assert not glowing[~dilated(text, 150)][:, 3].any()
+
+
+# ----- Text finishing: grain, blur, grade, depth of field ------------------------------------------
+
+PLAIN = {"kind": "plastic", **{k: v for k, v in PRESETS["plastic"].items()}, "face_color": (0.55, 0.45, 0.35)}
+
+
+def finish_document(**effects):
+    return make_document(shadow=NO_SHADOW, material=PLAIN, effects=effects)
+
+
+def text_and_photo(compositor):
+    """The plain text's pixels and the untouched photo's."""
+    plain = render(compositor, finish_document())
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    return plain, text
+
+
+def solid_text(compositor, text):
+    """The text's interior where it fully covers the photo (a rare seam pixel is only partly covered)."""
+    return eroded(text, 3) & (render(compositor, finish_document(), transparent=True)[..., 3] == 255)
+
+
+def local_variance(pixels, mask):
+    """Mean squared difference between horizontal neighbours inside the mask: high for fine noise."""
+    lum = luminance(pixels)
+    inside = mask[:, 1:] & mask[:, :-1]
+    return (np.diff(lum, axis=1)[inside] ** 2).mean()
+
+
+def test_grain_raises_the_local_variance_inside_the_text_only(compositor):
+    plain, text = text_and_photo(compositor)
+    grainy = render(compositor, finish_document(grain_amount=0.5))
+    inside = eroded(text, 3)
+    assert local_variance(grainy, inside) > 4 * local_variance(plain, inside) + 10
+    assert np.array_equal(grainy[~text], plain[~text])  # the photo is untouched
+    assert abs(luminance(grainy)[inside].mean() - luminance(plain)[inside].mean()) < 3  # no overall shift
+
+
+def test_grain_is_the_same_in_every_render_and_coarser_when_larger(compositor):
+    plain, text = text_and_photo(compositor)
+    inside = eroded(text, 3)
+    fine = render(compositor, finish_document(grain_amount=0.5, grain_size=0.5))
+    assert np.array_equal(fine, render(compositor, finish_document(grain_amount=0.5, grain_size=0.5)))
+    coarse = render(compositor, finish_document(grain_amount=0.5, grain_size=5.0))
+
+    def smoothness(pixels):
+        """How alike neighbouring grains are: 0 for independent pixels, toward 1 for grains many pixels wide."""
+        noise = luminance(pixels) - luminance(plain)
+        pairs = inside[:, 1:] & inside[:, :-1]
+        return np.corrcoef(noise[:, 1:][pairs], noise[:, :-1][pairs])[0, 1]
+
+    assert smoothness(fine) < 0.2
+    assert smoothness(coarse) > smoothness(fine) + 0.3
+
+
+def test_full_grain_stays_in_range_and_keeps_the_text_opaque(compositor):
+    _, text = text_and_photo(compositor)
+    pixels = render(compositor, finish_document(grain_amount=1.0, grain_size=0.5), transparent=True)
+    plain = render(compositor, finish_document(), transparent=True)
+    assert np.array_equal(pixels[..., 3], plain[..., 3])  # grain changes colour, never coverage
+    assert changed(pixels, plain)[eroded(text, 3)].mean() > 0.5  # and it is in the transparent export
+
+
+def test_zero_grain_is_identical_to_before(compositor):
+    plain, _ = text_and_photo(compositor)
+    assert np.array_equal(plain, render(compositor, finish_document(grain_amount=0.0, grain_size=4.0)))
+
+
+def edge_sharpness(pixels, text):
+    """The mean luminance step between neighbours along the text's outline."""
+    band = dilated(text, 2) & ~eroded(text, 2)
+    steps = np.abs(np.diff(luminance(pixels), axis=1))
+    return steps[band[:, 1:]].mean()
+
+
+def test_blur_softens_the_text_edges_and_reaches_only_its_own_soft_edge(compositor):
+    plain, text = text_and_photo(compositor)
+    soft = render(compositor, finish_document(blur_radius=1.0))
+    assert edge_sharpness(soft, text) < 0.6 * edge_sharpness(plain, text)
+    reach = round(1.0 * 0.02 * 400) + 2  # TEXT_BLUR of the image height, plus filtering
+    assert np.array_equal(soft[~dilated(text, reach)], plain[~dilated(text, reach)])
+    assert changed(soft, plain)[dilated(text, 3) & ~text].mean() > 0.5  # the edge spreads into the photo
+
+
+def test_a_larger_blur_is_softer(compositor):
+    _, text = text_and_photo(compositor)
+    slight = render(compositor, finish_document(blur_radius=0.2))
+    strong = render(compositor, finish_document(blur_radius=1.0))
+    assert edge_sharpness(strong, text) < edge_sharpness(slight, text)
+
+
+def test_the_blurred_edge_is_soft_alpha_in_the_transparent_export(compositor):
+    _, text = text_and_photo(compositor)
+    plain = render(compositor, finish_document(), transparent=True)
+    soft = render(compositor, finish_document(blur_radius=1.0), transparent=True)
+    outside = dilated(text, 3) & ~dilated(text, 1)
+    assert not plain[outside][:, 3].any()
+    assert 0 < soft[outside][:, 3].mean() < 200
+
+
+def test_zero_blur_is_identical_to_before(compositor):
+    plain, _ = text_and_photo(compositor)
+    assert np.array_equal(plain, render(compositor, finish_document(blur_radius=0.0)))
+
+
+def test_zero_saturation_makes_the_text_grey_and_leaves_the_photo(compositor):
+    plain, text = text_and_photo(compositor)
+    grey = render(compositor, finish_document(grade_saturation=0.0))
+    inside = solid_text(compositor, text)
+    channels = grey[inside][:, :3].astype(int)
+    assert (channels.max(axis=1) - channels.min(axis=1)).max() <= 2
+    plain_channels = plain[inside][:, :3].astype(int)
+    assert (plain_channels.max(axis=1) - plain_channels.min(axis=1)).mean() > 20  # it was coloured
+    assert np.array_equal(grey[~text], plain[~text])
+
+
+@pytest.mark.parametrize("warmth, redder", [(1.0, True), (-1.0, False)], ids=["warm", "cool"])
+def test_warmth_shifts_red_against_blue(compositor, warmth, redder):
+    plain, text = text_and_photo(compositor)
+    graded = render(compositor, finish_document(grade_warmth=warmth))
+    inside = solid_text(compositor, text)
+    red = graded[inside][:, 0].astype(int) - plain[inside][:, 0]
+    blue = graded[inside][:, 2].astype(int) - plain[inside][:, 2]
+    sign = 1 if redder else -1
+    assert sign * red.mean() > 5 and sign * blue.mean() < -5
+    assert np.array_equal(graded[~text], plain[~text])
+
+
+def test_brightness_and_contrast_reach_black_and_flat_grey(compositor):
+    _, text = text_and_photo(compositor)
+    inside = solid_text(compositor, text)
+    black = render(compositor, finish_document(grade_brightness=-1.0))
+    assert black[inside][:, :3].max() <= 1
+    flat = render(compositor, finish_document(grade_contrast=0.0))
+    assert np.abs(flat[inside][:, :3].astype(int) - 128).max() <= 1
+    brighter = render(compositor, finish_document(grade_brightness=0.5, grade_contrast=1.5))
+    plain = render(compositor, finish_document())
+    assert luminance(brighter)[inside].mean() > luminance(plain)[inside].mean() + 10
+
+
+def test_a_neutral_grade_is_identical_to_before(compositor):
+    plain, _ = text_and_photo(compositor)
+    neutral = finish_document(grade_brightness=0.0, grade_contrast=1.0, grade_saturation=1.0, grade_warmth=0.0)
+    assert np.array_equal(plain, render(compositor, neutral))
+
+
+def test_the_grade_is_in_the_transparent_export(compositor):
+    _, text = text_and_photo(compositor)
+    plain = render(compositor, finish_document(), transparent=True)
+    grey = render(compositor, finish_document(grade_saturation=0.0), transparent=True)
+    inside = solid_text(compositor, text)
+    assert np.array_equal(grey[..., 3], plain[..., 3])
+    channels = grey[inside][:, :3].astype(int)
+    assert (channels.max(axis=1) - channels.min(axis=1)).max() <= 2
+
+
+NEAR_Z, FAR_Z = -6.0, -24.0  # two objects' distances; with pitch 0 their view distance is nearly -z
+
+
+def two_distances(**effects):
+    """A near object on the left and a far one on the right, each covering about the same height on screen."""
+    near = text_object(0, "NEAR", x=-2.2, z=NEAR_Z, size=1.0)
+    far = text_object(1, "FAR", x=6.0, z=FAR_Z, size=4.0)
+    for obj in (near, far):
+        obj.material = MaterialParams(**{**PRESETS["plastic"], "kind": "plastic", "face_color": (0.55, 0.45, 0.35)})
+    doc = make_document(shadow=NO_SHADOW, effects=effects)
+    doc.scene.objects = [near, far]
+    return doc
+
+
+def per_object_sharpness(compositor, pixels):
+    plain = render(compositor, two_distances())
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    left, right = text.copy(), text.copy()
+    left[:, 320:], right[:, :320] = False, False
+    assert left.sum() > 1000 and right.sum() > 1000  # both objects are in the picture, one on each side
+    return edge_sharpness(pixels, left), edge_sharpness(pixels, right)
+
+
+@pytest.mark.parametrize("focus, sharp_side", [(6.2, 0), (24.5, 1)], ids=["near-focus", "far-focus"])
+def test_the_object_out_of_focus_blurs_more(compositor, focus, sharp_side):
+    plain = per_object_sharpness(compositor, render(compositor, two_distances()))
+    focused = per_object_sharpness(compositor, render(compositor, two_distances(dof_focus=focus, dof_aperture=1.0)))
+    blurred_side = 1 - sharp_side
+    assert focused[sharp_side] > 0.85 * plain[sharp_side]  # in focus: about as sharp as before
+    assert focused[blurred_side] < 0.6 * plain[blurred_side]
+
+
+def test_a_wider_aperture_blurs_more(compositor):
+    slight = per_object_sharpness(compositor, render(compositor, two_distances(dof_focus=6.2, dof_aperture=0.2)))
+    strong = per_object_sharpness(compositor, render(compositor, two_distances(dof_focus=6.2, dof_aperture=1.0)))
+    assert strong[1] < slight[1]
+
+
+def test_zero_aperture_is_identical_to_before(compositor):
+    plain = render(compositor, two_distances())
+    assert np.array_equal(plain, render(compositor, two_distances(dof_focus=50.0, dof_aperture=0.0)))
+
+
+def test_depth_of_field_blurs_the_edge_in_the_transparent_export(compositor):
+    plain = render(compositor, two_distances(), transparent=True)
+    soft = render(compositor, two_distances(dof_focus=6.2, dof_aperture=1.0), transparent=True)
+    text = plain[..., 3] > 0
+    outside = dilated(text, 3) & ~dilated(text, 1)
+    outside[:, :320] = False  # around the far, blurred object
+    assert soft[outside][:, 3].mean() > 10
+    assert not soft[~dilated(text, round(0.04 * 400) + 3)][:, 3].any()  # no farther than the largest blur
+
+
+EVERY_EFFECT = {"reflection_strength": 0.6, "reflection_roughness": 0.5, "bloom_strength": 1.5, "bloom_threshold": 0.5,
+                "bloom_radius": 1.0, "grain_amount": 0.4, "grain_size": 2.0, "blur_radius": 0.5,
+                "grade_brightness": 0.1, "grade_contrast": 1.2, "grade_saturation": 0.7, "grade_warmth": 0.4,
+                "dof_focus": 8.0, "dof_aperture": 1.0}
+
+
+def every_effect_document(width, height):
+    """Neon floor text, a glass object behind it and stone on the wall, with every shadow, mask and effect on."""
+    neon = text_object(0, "NEON", x=-1.5, z=-8.0, size=2.0)
+    neon.material = MaterialParams(**{**PRESETS["neon"], "kind": "neon"})
+    glass = text_object(1, "GLASS", x=3.0, z=-14.0, size=2.5)
+    glass.material = MaterialParams(**{**PRESETS["glass"], "kind": "glass"})
+    stone = wall_text(object_id=2)
+    stone.text.content = "STONE"
+    stone.material = MaterialParams(**{**PRESETS["stone"], "kind": "stone"})
+    doc = scene_of(neon, glass, stone, light=FRONT_LIGHT, effects=EVERY_EFFECT,
+                   shadow={**SHADOW, "contact_strength": 1.0, "contact_size": 0.3})
+    doc.background = np.zeros((height, width, 4), np.uint8)
+    doc.background[..., :3] = BG_COLOR
+    doc.background[..., 3] = 255
+    doc.mask = left_half_mask(doc)
+    return doc
+
+
+def test_every_effect_on_stays_above_30_fps(compositor):
+    import time
+
+    from OpenGL import GL
+
+    from text3d_studio.render.gl_utils import RenderTarget
+
+    doc = every_effect_document(1600, 1000)
+    render(compositor, make_document(width=1600, height=1000))  # the GL state an export leaves behind
+    compositor.set_background(doc.background)
+    compositor.set_mask(doc.mask)
+    for obj in doc.scene.objects:
+        compositor.set_glyph(obj.id, rasterize_text(obj.text))
+    target = RenderTarget(1600, 1000, samples=4)
+    try:
+        compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        start = time.perf_counter()
+        for i in range(20):
+            doc.scene.objects[0].transform.rot_y = -40 + i  # a slider drag
+            compositor.render(doc.scene, target.fbo, (0, 0, 1600, 1000))
+        GL.glFinish()
+        fps = 20 / (time.perf_counter() - start)
+    finally:
+        target.delete()
+    assert fps > 30, f"only {fps:.1f} FPS"
+
+
+def test_the_preview_stays_opaque_with_every_effect_on(compositor):
+    doc = every_effect_document(640, 400)
+    assert render_preview(compositor, doc, mask_overlay=True)[..., 3].min() == 255
+
+
+def test_the_transparent_export_works_with_every_effect_on(compositor):
+    doc = every_effect_document(640, 400)
+    pixels = render(compositor, doc, transparent=True)
+    shown = pixels[..., 3] > 0
+    assert shown[:, 330:].mean() > 0.02  # text, shadows, reflection and glow on the unmasked right half
+    assert not shown[:, :318].any()  # the mask hides everything on the left

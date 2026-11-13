@@ -41,6 +41,7 @@ class Compositor:
         self.mask_value_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.MASK_VALUE_FS)
         self.backdrop = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA, mipmaps=True)
         self.text_layer = LayerTarget()
+        self.text_color = self.text_layer.color  # the text layer's color after the finishing passes
         self.layer_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.LAYER_COMPOSITE_FS)
         self.text = Text3DRenderer(self.quad)
         self.glyphs: dict[int, Glyph] = {}  # by TextObject.id; objects without one (no ink) aren't drawn
@@ -142,10 +143,19 @@ class Compositor:
                 environment = self.background if self.has_background and scene.light.reflect_photo else None
                 self.text.draw_far_walls(scene, drawn, proj, lighting, self.backdrop, environment)
             self._draw_text_layer(scene, drawn, proj, lighting, backdrop, max(MIN_LAYER_SAMPLES, target_samples))
+            self.text_color = self.effects.finish_text_layer(scene, self.text_layer, NEAR, FAR)
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
             GL.glViewport(x, y, width, height)
             GL.glEnable(GL.GL_SCISSOR_TEST)
             self._composite_text_layer(viewport)
+
+        GL.glDisable(GL.GL_SCISSOR_TEST)  # the bloom's own targets start at the origin
+        if self.effects.render_bloom(scene, drawn, self.text_color, viewport):
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
+            GL.glViewport(x, y, width, height)
+            GL.glEnable(GL.GL_SCISSOR_TEST)
+            self.effects.composite_bloom(scene)
+        GL.glEnable(GL.GL_SCISSOR_TEST)
 
         if self._mask_applies():
             self._draw_occlusion()
@@ -222,6 +232,25 @@ class Compositor:
             target.delete()
         return np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1].copy()
 
+    def read_bloom(self, scene: Scene, width: int, height: int) -> np.ndarray | None:
+        """The glow the last render of `scene` added (scaled by its strength), at (height, width) as uint8 RGB, top
+        row first; None when it added none. The transparent export reads it."""
+        if not self.effects.has_bloom:
+            return None
+        target = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
+        try:
+            target.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+            GL.glViewport(0, 0, width, height)
+            GL.glClearColor(0, 0, 0, 0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+            self.effects.composite_bloom(scene)
+            GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+            data = GL.glReadPixels(0, 0, width, height, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+        finally:
+            target.delete()
+        return np.frombuffer(data, np.uint8).reshape(height, width, 3)[::-1].copy()
+
     def _composite_text_layer(self, viewport) -> None:
         """Puts the resolved layer over the bound target, writing its depth for the grid overlay.
 
@@ -231,7 +260,7 @@ class Compositor:
         x, y, _, _ = viewport
         program = self.layer_program
         program.use()
-        self.text_layer.color.bind(0)
+        self.text_color.bind(0)
         self.text_layer.depth.bind(1)
         program.set_int("u_color", 0)
         program.set_int("u_depth", 1)

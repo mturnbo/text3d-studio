@@ -881,3 +881,133 @@ void main() {
 }
 """
 
+
+# Bloom: the part of the (premultiplied) text layer brighter than the threshold, per channel, rescaled to 0-1.
+BLOOM_EXTRACT_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_image;
+uniform float u_threshold;
+out vec4 frag;
+void main() {
+    vec4 color = texture(u_image, v_uv);
+    vec3 bright = max(color.rgb - vec3(u_threshold) * color.a, 0.0) / max(1.0 - u_threshold, 1e-3);
+    frag = vec4(bright, 0.0);
+}
+"""
+
+
+# Passes on the text itself, over the resolved text layer (premultiplied), one texel per pixel: colour grade, then
+# film grain, both on the straight (un-premultiplied) colour. The grain is value noise on a fixed lattice of
+# u_grain_cell pixels, seeded, so it is the same in every frame.
+TEXT_FINISH_FS = """
+#version 410 core
+uniform sampler2D u_image;
+uniform float u_brightness;
+uniform float u_contrast;
+uniform float u_saturation;
+uniform vec3 u_warmth;     // per-channel gain
+uniform float u_grain_amount;
+uniform float u_grain_cell;
+uniform uint u_seed;
+out vec4 frag;
+
+float lattice(ivec2 p) {
+    uint n = uint(p.x) * 1597334677u ^ uint(p.y) * 3812015801u ^ u_seed;
+    n = (n ^ (n >> 16)) * 0x7feb352du;
+    n = (n ^ (n >> 15)) * 0x846ca68bu;
+    n ^= n >> 16;
+    return float(n) / 4294967295.0 * 2.0 - 1.0;
+}
+
+float grain(vec2 position) {
+    vec2 cell = position / u_grain_cell;
+    ivec2 i = ivec2(floor(cell));
+    vec2 f = smoothstep(0.0, 1.0, fract(cell));
+    return mix(mix(lattice(i), lattice(i + ivec2(1, 0)), f.x),
+               mix(lattice(i + ivec2(0, 1)), lattice(i + ivec2(1, 1)), f.x), f.y);
+}
+
+void main() {
+    vec4 color = texelFetch(u_image, ivec2(gl_FragCoord.xy), 0);
+    if (color.a <= 0.0) {
+        frag = color;
+        return;
+    }
+    vec3 rgb = color.rgb / color.a;
+    rgb = (rgb * (1.0 + u_brightness) - 0.5) * u_contrast + 0.5;
+    rgb = mix(vec3(dot(rgb, vec3(0.2126, 0.7152, 0.0722))), rgb, u_saturation);
+    rgb = clamp(rgb * u_warmth, 0.0, 1.0);
+    rgb = clamp(rgb + u_grain_amount * grain(gl_FragCoord.xy), 0.0, 1.0);
+    frag = vec4(rgb * color.a, color.a);
+}
+"""
+
+
+# Depth of field, step 1: each pixel's blur radius in pixels (its circle of confusion), from the text layer's depth.
+# A pixel takes the largest radius of any text whose blur reaches it (a sample's radius covers the distance) and
+# isn't behind its own text, so blurred text spreads past its outline and over farther text, never over nearer.
+DOF_COC_FS = """
+#version 410 core
+uniform sampler2D u_depth;
+uniform float u_near;
+uniform float u_far;
+uniform float u_focus;
+uniform float u_max_coc;   // pixels, for text infinitely far from the focus
+out vec4 frag;
+const int SAMPLES = 48;
+const float GOLDEN_ANGLE = 2.39996323;
+
+float coc_of(float depth) {
+    float ndc = depth * 2.0 - 1.0;
+    float distance = 2.0 * u_near * u_far / (u_far + u_near - ndc * (u_far - u_near));
+    return u_max_coc * min(abs(1.0 - u_focus / distance), 1.0);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    ivec2 last = textureSize(u_depth, 0) - 1;
+    float depth = texelFetch(u_depth, texel, 0).r;
+    bool text = depth < 1.0;  // the layer's depth is cleared to 1 where there is no text
+    float coc = text ? coc_of(depth) : 0.0;
+    for (int i = 1; i <= SAMPLES; ++i) {
+        float angle = float(i) * GOLDEN_ANGLE;
+        vec2 offset = u_max_coc * sqrt(float(i) / float(SAMPLES)) * vec2(cos(angle), sin(angle));
+        float other = texelFetch(u_depth, clamp(texel + ivec2(round(offset)), ivec2(0), last), 0).r;
+        if (other >= 1.0 || (text && other > depth)) continue;
+        float reach = coc_of(other);
+        if (reach >= length(offset)) coc = max(coc, reach);
+    }
+    frag = vec4(coc, 0.0, 0.0, 1.0);
+}
+"""
+
+# Depth of field, step 2: BLUR_RGBA_FS with each pixel's own radius (u_coc, pixels) instead of a fixed step.
+DOF_BLUR_FS = """
+#version 410 core
+uniform sampler2D u_image;
+uniform sampler2D u_coc;
+uniform vec2 u_direction;  // (1, 0) or (0, 1)
+uniform float u_step;      // tap spacing per pixel of radius
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    float radius = texelFetch(u_coc, texel, 0).r;
+    if (radius < 0.5) {
+        frag = texelFetch(u_image, texel, 0);
+        return;
+    }
+    vec2 size = vec2(textureSize(u_image, 0));
+    vec2 uv = gl_FragCoord.xy / size;
+    vec2 step = u_direction * radius * u_step / size;
+    vec4 total = vec4(0.0);
+    float weights = 0.0;
+    for (int i = -12; i <= 12; ++i) {
+        float x = float(i) / 6.0;
+        float w = exp(-0.5 * x * x);
+        total += texture(u_image, uv + step * float(i)) * w;
+        weights += w;
+    }
+    frag = total / weights;
+}
+"""
