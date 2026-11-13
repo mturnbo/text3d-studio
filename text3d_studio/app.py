@@ -1,5 +1,6 @@
 """Application entry point: configures the OpenGL surface, wires Model -> ViewModel -> Views."""
 
+import os
 import sys
 
 from PyQt6.QtCore import QSettings
@@ -23,6 +24,12 @@ def configure_opengl() -> None:
     QSurfaceFormat.setDefaultFormat(fmt)
 
 
+def open_command_line_file(window: MainWindow, args: list[str]) -> None:
+    """Opens the first argument, a photo or a .t3d project; absolute so Open Recent and saves keep working."""
+    if args:
+        window.open_path(os.path.abspath(args[0]))
+
+
 def main() -> int:
     configure_opengl()
     app = QApplication(sys.argv)
@@ -31,8 +38,7 @@ def main() -> int:
 
     window = MainWindow(SceneViewModel(Document()), Preferences(QSettings()))
     window.show()
-    if len(sys.argv) > 1:
-        window.load_image_path(sys.argv[1])
+    open_command_line_file(window, sys.argv[1:])
     return app.exec()
 
 
