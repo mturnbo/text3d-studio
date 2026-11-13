@@ -7,6 +7,7 @@ from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 from PyQt6.QtWidgets import QMessageBox
 
+from text3d_studio.app import open_command_line_file
 from text3d_studio.image_io import save_image
 from text3d_studio.model import Document, LightParams
 from text3d_studio.preferences import Preferences
@@ -601,3 +602,55 @@ def test_sliders_show_the_nearest_value_in_range(window, value):
     row.set_value(value)
     assert row.spin.minimum() <= row.spin.value() <= row.spin.maximum()
     assert row.slider.minimum() <= row.slider.value() <= row.slider.maximum()
+
+
+# ----- Command line ------------------------------------------------------------------------------
+
+
+def test_command_line_a_project_argument_opens_the_project(window, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    warned = errors(monkeypatch)
+    open_command_line_file(window, [path])
+    assert warned == []
+    assert window.project_path == path
+    assert [o.text.content for o in window.vm.scene.objects] == ["HELLO", "SECOND"]
+    assert window.vm.document.background_path == str(tmp_path / "photo.png")
+
+
+def test_command_line_an_uppercase_extension_opens_as_a_project(window, tmp_path, monkeypatch, preferences):
+    path = str(tmp_path / "SCENE.T3D")
+    os.rename(saved_project(tmp_path, monkeypatch, preferences), path)
+    warned = errors(monkeypatch)
+    open_command_line_file(window, [path])
+    assert warned == []
+    assert window.project_path == path
+    assert [o.text.content for o in window.vm.scene.objects] == ["HELLO", "SECOND"]
+
+
+def test_command_line_a_relative_project_path_is_remembered_absolute(window, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    monkeypatch.chdir(tmp_path)
+    warned = errors(monkeypatch)
+    open_command_line_file(window, [os.path.basename(path)])
+    assert warned == []
+    assert window.project_path == path
+    assert preferences.recent_files()[0] == path
+
+
+def test_command_line_a_missing_project_shows_the_project_warning(window, tmp_path, monkeypatch):
+    warned = errors(monkeypatch)
+    open_command_line_file(window, [str(tmp_path / "gone.t3d")])
+    assert [args[1] for args in warned] == ["Could not open project"]
+    assert window.project_path is None and window.vm.document.background is None
+
+
+def test_command_line_an_image_argument_still_loads_the_photo(window, tmp_path):
+    photo = image_file(tmp_path)
+    open_command_line_file(window, [photo])
+    assert window.vm.document.background_path == photo and window.project_path is None
+
+
+def test_command_line_no_argument_opens_nothing(window, monkeypatch):
+    warned = errors(monkeypatch)
+    open_command_line_file(window, [])
+    assert warned == [] and window.vm.document.background is None

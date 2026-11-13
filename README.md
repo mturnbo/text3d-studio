@@ -8,7 +8,7 @@ and soft ground shadows. Exports at the photo's native resolution.
 
 ```bash
 uv sync
-uv run text3d-studio path/to/photo.jpg   # the image argument is optional
+uv run text3d-studio path/to/photo.jpg   # or a .t3d project; the argument is optional
 uv run pytest                            # 47 tests, including GPU render tests
 ```
 
@@ -61,7 +61,7 @@ Any of these loads a PNG, JPG, BMP, WebP or TIFF as the background:
 - **Open Image…** on the toolbar, in the File menu, or on the canvas prompt (⌘O / Ctrl+O)
 - Drag a single image file onto the canvas
 - **File → Open Recent** (last 8 images and projects). The Open dialog starts in the folder you last used.
-- Pass a path on the command line: `uv run text3d-studio photo.jpg`
+- Pass a path on the command line: `uv run text3d-studio photo.jpg`, or a project: `uv run text3d-studio scene.t3d`
 
 Exports render at the loaded image's size. The status bar shows it, and says so when a new image changes it.
 
