@@ -466,7 +466,8 @@ UI · v0.3.1 UI polish · v0.4.0 adaptive layer density + docs · v0.5.0 image o
 (ground model B, grid overlay, Move Text / Adjust Grid / Fit Rectangle tools) · v0.7.0 materials
 (PBR shading, metal / plastic / stone / wood / glass, procedural textures, glass refraction) · v0.7.1 input
 fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel scrolling, G from number fields) ·
-v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save and open).
+v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save and open) · v0.9.0 workflow and
+layout (looks, transparent/batch export, zoom, multi-line and arc text, wall mounting, Match Sun, eyedropper).
 
 ### Project files (.t3d)
 
