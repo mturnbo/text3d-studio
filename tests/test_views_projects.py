@@ -512,6 +512,29 @@ def test_oversized_and_non_finite_values_open_safely_and_show_in_range(window, t
     window.canvas.grab()  # paints, rasterizing the loaded text
 
 
+def test_hostile_shading_values_open_safely_and_show_in_range(window, tmp_path, qapp):
+    from PyQt6.QtWidgets import QComboBox
+
+    path = write_project_text(tmp_path / "hostile-shading.t3d", """{
+        "objects": [{"id": 0, "material": {"kind": "neon", "side_kind": "cheese", "outline_width": NaN,
+                                           "outline_metallic": 1e300, "outline_color": [9, -1, 0.5],
+                                           "emission_strength": Infinity, "emission_color": [0.5, "x", 1]}},
+                    {"id": 1, "material": {"kind": "glass", "side_kind": 12, "outline_width": 1e300,
+                                           "emission_strength": -5}}]
+    }""")
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    first, second = (obj.material for obj in window.vm.scene.objects)
+    assert (first.side_kind, first.outline_width, first.outline_metallic) == ("same", 0.0, 1.0)
+    assert first.outline_color == (1.0, 0.0, 0.5)
+    assert first.emission_strength == 0.0 and first.emission_color == (1.0, 0.25, 0.75)  # defaults
+    assert (second.side_kind, second.outline_width, second.emission_strength) == ("same", 1.0, 0.0)
+    assert window.panel.findChild(QComboBox, "material.side_kind").currentData() == "same"
+    assert slider_value(window, "material.outline_metallic") == 1.0
+    window.canvas.grab()  # paints every object
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1e12, 1e12])
 def test_sliders_show_the_nearest_value_in_range(window, value):
     row = window.panel.findChild(SliderRow, "light.intensity")
