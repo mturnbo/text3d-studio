@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -101,3 +103,341 @@ def test_covers_follows_the_ink_and_its_holes(qapp):
 @pytest.mark.parametrize("point", [(-10.0, 0.3), (10.0, 0.3), (0.0, -5.0), (0.0, 5.0)])
 def test_covers_is_false_off_the_raster(qapp, point):
     assert not rasterize_text(TextParams(content="H")).covers(*point)
+
+
+# ----- Multi-line text ----------------------------------------------------------------------------------
+
+
+def ink_bands(raster):
+    """The (first, last) row of each horizontal band of ink, top to bottom."""
+    rows = raster.rgba[..., 3].max(axis=1) > 5
+    edges = np.diff(np.concatenate([[0], rows.astype(np.int8), [0]]))
+    return list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1))
+
+
+def ink_columns(raster, band):
+    """The (first, last) column with ink within one band's rows."""
+    cols = np.flatnonzero(raster.rgba[band[0] : band[1] + 1, :, 3].max(axis=0) > 127)
+    return cols[0], cols[-1]
+
+
+def assert_walls_closed(raster):
+    """Every vertex of the traced outline joins an even number of unit wall edges, so no wall is left open."""
+    from collections import Counter
+
+    from text3d_studio.text_raster import WALL_STEP
+
+    height, width = raster.rgba.shape[:2]
+    quads = raster.walls.reshape(-1, 6, 3)
+    assert len(quads) > 0
+    p0, p1 = quads[:, 0, :2], quads[:, 1, :2]
+    to_grid = lambda p: np.rint(np.stack([
+        (p[:, 0] - raster.origin[0]) / raster.size[0] * width,
+        (1 - (p[:, 1] - raster.origin[1]) / raster.size[1]) * height,
+    ], axis=1) / WALL_STEP).astype(int)
+    degree = Counter()
+    for (x0, y0), (x1, y1) in zip(to_grid(p0), to_grid(p1)):
+        steps = max(abs(x1 - x0), abs(y1 - y0))
+        dx, dy = np.sign(x1 - x0), np.sign(y1 - y0)
+        for i in range(steps):
+            degree[(x0 + i * dx, y0 + i * dy)] += 1
+            degree[(x0 + (i + 1) * dx, y0 + (i + 1) * dy)] += 1
+    assert all(count % 2 == 0 for count in degree.values())
+
+
+@pytest.mark.parametrize("lines", [2, 3])
+def test_each_line_is_its_own_band_of_ink(qapp, lines):
+    single = rasterize_text(TextParams(content="HI"))
+    raster = rasterize_text(TextParams(content="\n".join(["HI"] * lines)))
+    assert len(ink_bands(raster)) == lines
+    assert raster.rgba.shape[0] > single.rgba.shape[0] * (lines - 0.5)
+    assert raster.size[1] > single.size[1] * (lines - 0.5)
+    assert_walls_closed(raster)
+
+
+def test_lines_are_one_line_spacing_apart(qapp):
+    raster = rasterize_text(TextParams(content="HI\nHI"))
+    first, second = ink_bands(raster)
+    em_rows = raster.rgba.shape[0] / raster.size[1]  # pixels per em
+    assert (second[0] - first[0]) / em_rows == pytest.approx(1.0, abs=0.02)  # Helvetica's line spacing is 1 em
+
+
+def test_blank_line_keeps_its_height(qapp):
+    tight = ink_bands(rasterize_text(TextParams(content="HI\nHI")))
+    spaced_raster = rasterize_text(TextParams(content="HI\n\nHI"))
+    spaced = ink_bands(spaced_raster)
+    em_rows = spaced_raster.rgba.shape[0] / spaced_raster.size[1]
+    assert len(spaced) == 2
+    assert ((spaced[1][0] - spaced[0][0]) - (tight[1][0] - tight[0][0])) / em_rows == pytest.approx(1.0, abs=0.02)
+
+
+@pytest.mark.parametrize("content", ["HI\n", "HI\n\n", "\nHI", "\n\nHI\n"])
+def test_leading_and_trailing_newlines_change_nothing(qapp, content):
+    plain = rasterize_text(TextParams(content="HI"))
+    raster = rasterize_text(TextParams(content=content))
+    assert np.array_equal(raster.rgba, plain.rgba)
+    assert raster.origin == plain.origin and raster.size == plain.size
+
+
+@pytest.mark.parametrize("content", ["\n", "\n\n", " \n \t\n"])
+def test_text_of_only_blank_lines_returns_none(qapp, content):
+    assert rasterize_text(TextParams(content=content)) is None
+
+
+def test_ink_bottom_of_the_last_line_sits_on_local_ground(qapp):
+    raster = rasterize_text(TextParams(content="HI\nHH"))
+    last = ink_bands(raster)[-1]
+    height = raster.rgba.shape[0]
+    bottom_local = raster.origin[1] + (1 - (last[1] + 1) / height) * raster.size[1]
+    assert bottom_local == pytest.approx(0.0, abs=2 / height * raster.size[1])
+
+
+def test_many_lines_are_clamped_to_the_texture_limit(qapp):
+    raster = rasterize_text(TextParams(content="\n".join(["HI"] * 40)))
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+    assert len(ink_bands(raster)) == 40
+
+
+def test_covers_hits_the_second_line(qapp):
+    raster = rasterize_text(TextParams(content="I\nOOOO"))
+    first, second = ink_bands(raster)
+    row = (second[0] + second[1]) // 2
+    col = int(np.flatnonzero(raster.rgba[row, :, 3] == 255)[0]) + 2
+    height, width = raster.rgba.shape[:2]
+    x = raster.origin[0] + (col + 0.5) / width * raster.size[0]
+    y = raster.origin[1] + (1 - (row + 0.5) / height) * raster.size[1]
+    assert raster.covers(x, y)
+    gap_row = (first[1] + second[0]) // 2
+    assert not raster.covers(x, raster.origin[1] + (1 - (gap_row + 0.5) / height) * raster.size[1])
+
+
+# ----- Alignment ----------------------------------------------------------------------------------------
+
+ALIGN_CONTENT = "HHHHHH\nHH\nHHHH"  # flat-sided letters, so ink extents are exact
+
+
+@pytest.mark.parametrize("align", ["left", "center", "right"])
+def test_lines_line_up_as_aligned(qapp, align):
+    raster = rasterize_text(TextParams(content=ALIGN_CONTENT, align=align))
+    extents = [ink_columns(raster, band) for band in ink_bands(raster)]
+    assert len(extents) == 3
+    lefts, rights = [e[0] for e in extents], [e[1] for e in extents]
+    centers = [(e[0] + e[1]) / 2 for e in extents]
+    lined_up = {"left": lefts, "center": centers, "right": rights}[align]
+    assert max(lined_up) - min(lined_up) <= 3
+    assert max(rights) - min(lefts) - max(e[1] - e[0] for e in extents) <= 3  # the widest line sets the span
+
+
+def test_alignment_changes_nothing_for_a_single_line(qapp):
+    rasters = [rasterize_text(TextParams(content="HELLO", align=a)) for a in ("left", "center", "right")]
+    assert all(np.array_equal(r.rgba, rasters[0].rgba) for r in rasters)
+
+
+def test_left_and_right_alignment_mirror_the_short_lines(qapp):
+    left = rasterize_text(TextParams(content=ALIGN_CONTENT, align="left"))
+    right = rasterize_text(TextParams(content=ALIGN_CONTENT, align="right"))
+    width = left.rgba.shape[1]
+    short_left = ink_columns(left, ink_bands(left)[1])
+    short_right = ink_columns(right, ink_bands(right)[1])
+    assert short_left[0] < width / 3 and short_right[1] > width * 2 / 3
+    assert left.rgba.shape == right.rgba.shape
+
+
+def test_unknown_alignment_falls_back_to_center(qapp):
+    # Text params can come from a project file; rasterizing runs inside the canvas paint, so it must not raise.
+    assert np.array_equal(rasterize_text(TextParams(content="HI\nHELLO", align="justify")).rgba,
+                          rasterize_text(TextParams(content="HI\nHELLO", align="center")).rgba)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("line_height", 1e9), ("line_height", -1e9), ("letter_spacing", 1e6), ("letter_spacing", -1e6),
+    ("arc", 1e9), ("bevel_width", 1e7), ("bevel_width", -5.0),
+    ("line_height", float("nan")), ("letter_spacing", float("inf")), ("arc", float("-inf")),
+])
+def test_extreme_layout_values_from_a_project_stay_within_the_texture_limit(qapp, field, value):
+    raster = rasterize_text(TextParams(content="AB\nCD", **{field: value}))
+    assert raster is not None
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+
+
+@pytest.mark.parametrize("field, value, clamped", [
+    ("line_height", 50.0, 2.0), ("letter_spacing", -3.0, -0.1), ("arc", 400.0, 180.0), ("bevel_width", 0.0, 1.0),
+])
+def test_out_of_range_layout_values_render_like_the_range_ends(qapp, field, value, clamped):
+    params = TextParams(content="AB\nCD")
+    out = rasterize_text(dataclasses.replace(params, **{field: value}))
+    end = rasterize_text(dataclasses.replace(params, **{field: clamped}))
+    assert np.array_equal(out.rgba, end.rgba)
+
+
+@pytest.mark.parametrize("arc", [5e-324, -5e-324, 1e-300, 1e-4])
+def test_vanishing_arcs_render_as_straight_text(qapp, arc):
+    assert np.array_equal(rasterize_text(TextParams(content="AB\nCD", arc=arc)).rgba,
+                          rasterize_text(TextParams(content="AB\nCD", arc=0.0)).rgba)
+
+
+def test_text_too_long_for_the_limit_even_at_the_smallest_font_is_clipped(qapp):
+    raster = rasterize_text(TextParams(content="W" * 5000))
+    assert raster is not None
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+
+
+# ----- Letter spacing and line height -------------------------------------------------------------------
+
+
+def test_letter_spacing_widens_the_mask_by_the_gaps_between_letters(qapp):
+    widths = {s: rasterize_text(TextParams(content="HHHH", letter_spacing=s)).size[0] for s in (-0.1, 0.0, 0.2, 0.5)}
+    assert widths[-0.1] < widths[0.0] < widths[0.2] < widths[0.5]
+    assert widths[0.2] - widths[0.0] == pytest.approx(3 * 0.2, abs=0.02)  # three gaps, no trailing space
+    assert widths[0.0] - widths[-0.1] == pytest.approx(3 * 0.1, abs=0.02)
+
+
+def test_letter_spacing_keeps_the_height(qapp):
+    plain = rasterize_text(TextParams(content="HI"))
+    spaced = rasterize_text(TextParams(content="HI", letter_spacing=0.5))
+    assert spaced.rgba.shape[0] == plain.rgba.shape[0]
+
+
+def test_letter_spacing_applies_to_every_line_and_keeps_them_aligned(qapp):
+    raster = rasterize_text(TextParams(content="HHHH\nHH", letter_spacing=0.3, align="left"))
+    extents = [ink_columns(raster, band) for band in ink_bands(raster)]
+    assert abs(extents[0][0] - extents[1][0]) <= 3
+
+
+@pytest.mark.parametrize("spacing", [-0.1, -0.3])
+def test_negative_letter_spacing_overlaps_letters_with_closed_walls(qapp, spacing):
+    raster = rasterize_text(TextParams(content="HOHO", letter_spacing=spacing))
+    assert raster.rgba[..., 3].max() == 255
+    assert_walls_closed(raster)
+
+
+@pytest.mark.parametrize("line_height", [1.0, 1.5, 2.0])
+def test_line_height_sets_the_distance_between_lines(qapp, line_height):
+    raster = rasterize_text(TextParams(content="HI\nHI", line_height=line_height))
+    first, second = ink_bands(raster)
+    em_rows = raster.rgba.shape[0] / raster.size[1]
+    assert (second[0] - first[0]) / em_rows == pytest.approx(line_height, abs=0.02)
+
+
+def test_tight_line_height_shrinks_the_mask_and_keeps_walls_closed(qapp):
+    normal = rasterize_text(TextParams(content="HI\nHI\nHI"))
+    tight = rasterize_text(TextParams(content="HI\nHI\nHI", line_height=0.7))
+    assert tight.size[1] == pytest.approx(normal.size[1] - 2 * 0.3, abs=0.02)
+    assert_walls_closed(tight)
+
+
+def test_line_height_changes_nothing_for_a_single_line(qapp):
+    plain = rasterize_text(TextParams(content="HI"))
+    assert np.array_equal(rasterize_text(TextParams(content="HI", line_height=2.0)).rgba, plain.rgba)
+
+
+# ----- Arc ----------------------------------------------------------------------------------------------
+
+
+def ink_row_center(alpha, cols):
+    """Mean row of the ink within a range of columns."""
+    rows, _ = np.nonzero(alpha[:, cols] > 127)
+    return rows.mean()
+
+
+def middle_minus_ends(raster):
+    """How far the ink's middle third sits below its outer thirds, in rows (negative: the middle is higher)."""
+    alpha = raster.rgba[..., 3]
+    third = alpha.shape[1] // 3
+    middle = ink_row_center(alpha, slice(third, 2 * third))
+    ends = (ink_row_center(alpha, slice(0, third)) + ink_row_center(alpha, slice(2 * third, None))) / 2
+    return middle - ends
+
+
+def test_zero_arc_is_straight_text(qapp):
+    straight = rasterize_text(TextParams(content="HELLO\nWORLD"))
+    arced = rasterize_text(TextParams(content="HELLO\nWORLD", arc=0.0))
+    assert np.array_equal(arced.rgba, straight.rgba)
+
+
+def test_a_tiny_arc_matches_straight_text(qapp):
+    straight = rasterize_text(TextParams(content="HELLO"))
+    arced = rasterize_text(TextParams(content="HELLO", arc=0.01))
+    assert abs(arced.rgba.shape[0] - straight.rgba.shape[0]) <= 2
+    assert abs(arced.rgba.shape[1] - straight.rgba.shape[1]) <= 2
+    height = min(arced.rgba.shape[0], straight.rgba.shape[0])
+    width = min(arced.rgba.shape[1], straight.rgba.shape[1])
+    a = arced.rgba[:height, :width, 3] > 127
+    b = straight.rgba[:height, :width, 3] > 127
+    assert (a & b).sum() / (a | b).sum() > 0.95
+
+
+def test_positive_arc_bends_the_middle_up_and_negative_down(qapp):
+    straight = rasterize_text(TextParams(content="HELLO WORLD"))
+    up = rasterize_text(TextParams(content="HELLO WORLD", arc=90))
+    down = rasterize_text(TextParams(content="HELLO WORLD", arc=-90))
+    em_rows = straight.rgba.shape[0] / straight.size[1]
+    assert abs(middle_minus_ends(straight)) < 0.05 * em_rows
+    assert middle_minus_ends(up) < -0.5 * em_rows
+    assert middle_minus_ends(down) > 0.5 * em_rows
+    assert up.size[1] > straight.size[1] and down.size[1] > straight.size[1]
+
+
+def test_arc_ink_bottom_sits_on_local_ground_and_is_centered(qapp):
+    raster = rasterize_text(TextParams(content="HELLO", arc=120))
+    alpha = raster.rgba[..., 3]
+    height = alpha.shape[0]
+    ink_rows = np.flatnonzero(alpha.max(axis=1) > 5)
+    bottom_local = raster.origin[1] + (1 - (ink_rows[-1] + 1) / height) * raster.size[1]
+    assert bottom_local == pytest.approx(0.0, abs=2 / height * raster.size[1])
+    assert raster.origin[0] == pytest.approx(-raster.size[0] / 2)
+
+
+def test_arced_lines_stay_on_separate_concentric_arcs(qapp):
+    raster = rasterize_text(TextParams(content="HHHHH\nHHHHH", arc=60))
+    alpha = raster.rgba[..., 3]
+    middle = alpha[:, alpha.shape[1] // 2 - 3 : alpha.shape[1] // 2 + 3].max(axis=1) > 127
+    runs = np.flatnonzero(np.diff(np.concatenate([[0], middle.astype(np.int8), [0]])) == 1)
+    assert len(runs) == 2  # down the middle: one letter from each line, with a gap between
+    assert_walls_closed(raster)
+
+
+@pytest.mark.parametrize("arc", [-180, -45, 45, 180])
+def test_arced_text_has_closed_walls(qapp, arc):
+    raster = rasterize_text(TextParams(content="ARC\nTEXT", arc=arc, letter_spacing=-0.05))
+    assert_walls_closed(raster)
+
+
+@pytest.mark.parametrize("arc", [-180, 180])
+def test_half_circle_arcs_stay_within_the_texture_limit(qapp, arc):
+    raster = rasterize_text(TextParams(content="W" * 120 + "\n" + "W" * 60, arc=arc))
+    assert max(raster.rgba.shape[:2]) <= MAX_TEXTURE_WIDTH
+    assert raster.rgba[..., 3].max() == 255
+
+
+def test_half_circle_arc_reaches_down_to_its_ends(qapp):
+    raster = rasterize_text(TextParams(content="HHHHHHHHHHHH", arc=180))
+    width, height = raster.size
+    assert height > 0.4 * width  # a semicircle of letters: about half as tall as wide
+
+
+def test_edge_directions_point_outward_on_rotated_glyphs(qapp):
+    raster = rasterize_text(TextParams(content="IIIIIII", arc=150))
+    alpha = raster.rgba[..., 3].astype(np.float64) / 255
+    direction = decode_direction(raster.rgba)
+    grad_row, grad_col = np.gradient(alpha)
+    outward = np.stack([-grad_col, grad_row], axis=-1)  # toward lower coverage, y up
+    edge = (alpha > 0.3) & (alpha < 0.7) & (np.linalg.norm(outward, axis=-1) > 0.05)
+    outward = outward[edge] / np.linalg.norm(outward[edge], axis=-1, keepdims=True)
+    assert edge.sum() > 1000
+    assert np.mean(np.sum(direction[edge] * outward, axis=-1)) > 0.9
+    assert np.median(raster.rgba[..., 2][edge]) > 150  # the bevel is high at the silhouette
+
+
+def test_covers_hits_the_ink_of_arced_text(qapp):
+    raster = rasterize_text(TextParams(content="HELLO WORLD", arc=120))
+    alpha = raster.rgba[..., 3]
+    height, width = alpha.shape
+    to_local = lambda row, col: (
+        raster.origin[0] + (col + 0.5) / width * raster.size[0],
+        raster.origin[1] + (1 - (row + 0.5) / height) * raster.size[1],
+    )
+    rows, cols = np.nonzero(alpha == 255)
+    for i in np.linspace(0, len(rows) - 1, 25).astype(int):
+        assert raster.covers(*to_local(rows[i], cols[i]))
+    assert not raster.covers(*to_local(height - 10, width // 2))  # under the arch: empty

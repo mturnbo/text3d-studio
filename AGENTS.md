@@ -24,12 +24,13 @@ uv run pytest -q tests/test_render.py    # GPU/render tests only
 
 ```
 model.py            Pure dataclasses: Scene{objects: [TextObject{id, text, transform, material}], ground, grid,
-                    light, shadow, camera}, Document. No Qt, no OpenGL. Document.native_size is the export size.
+                    light, shadow, camera, wall}, Document. No Qt, no OpenGL. Document.native_size is the export size.
 viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
                       set(section, field, value) / nudge(...) / set_background(pixels, path)
                       "text", "transform" and "material" (OBJECT_SECTIONS) address the SELECTED object
                       (vm.selected, vm.selected_object: editor state); other sections are shared by the scene
                       add_object() / duplicate_object() / delete_object() / select(index)
+                      set_mount("floor" | "wall"): moves the selected object, keeping it where it appears
                       undo() / redo() / can_undo / can_redo / begin_edit() / end_edit() / clear_history()
                       load_document(document) / dirty / mark_saved()
                       signals: scene_changed(section, field), text_changed(), background_changed(),
@@ -38,14 +39,17 @@ viewmodel.py        SceneViewModel(QObject): the ONLY mutation point.
 history.py          History: bounded (100) undo/redo stacks of opaque states, with burst merging. No Qt.
 views/              Qt widgets only. Never touch GL state or numpy image math here.
   main_window.py      menus (Edit › Undo/Redo in _build_edit_menu, File › project actions in
-                      _build_project_actions), status bar, file dialogs, unsaved-changes prompt
+                      _build_project_actions, Looks in _build_looks_menu), status bar, file dialogs,
+                      unsaved-changes prompt, BatchExportDialog
   control_panel.py    Objects list (Add / Duplicate / Delete) + declarative slider/colour/checkbox layout,
                       two-way bound to the ViewModel; a selection change refreshes every per-object control
   image_canvas.py     QOpenGLWidget: owns the GL context, mouse→ViewModel edits, delegates drawing.
                       Keeps a CPU raster per object id (re-rasterized only when that object's text changes),
                       uploads them to the compositor and uses them to pick objects under the cursor.
-                      Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL), which is editor state, not
-                      scene state. FitHandlesOverlay (a plain child widget) draws the fit handles
+                      Holds the active tool (TEXT_TOOL / GRID_TOOL / FIT_TOOL / WALL_TOOL / SUN_TOOL) and the
+                      eyedropper, which are editor state, not scene state. FitHandlesOverlay and ToolOverlay (plain
+                      child widgets) draw the fit handles, the wall preview and the Match Sun points
+                      Also view state: zoom/pan (in _image_rect) and the before/after toggle
 render/             OpenGL, no widget imports. Usable from any current GL context.
   gl_utils.py         ShaderProgram, UnitQuad, TriangleBuffer, Texture2D, ColorTarget, RenderTarget
   shaders.py          all GLSL 4.10 sources as strings
@@ -54,7 +58,8 @@ render/             OpenGL, no widget imports. Usable from any current GL contex
   shadow_renderer.py  half-res shadow mask (all objects) → separable Gaussian blur → multiply composite
   compositor.py       frame orchestration: background → shadow → text layer (every object, composited over).
                       Holds a Glyph per object id: set_glyph(id, raster|None), retain_glyphs(ids)
-  exporter.py         offscreen 8× MSAA render at native size → resolve → glReadPixels
+  exporter.py         offscreen 8× MSAA render at native size (× scale) → resolve → glReadPixels;
+                      transparent export (compose_transparent); batch naming (batch_jobs)
   grid_renderer.py    editor-only overlay: ground grid, text footprint and lanes, horizon,
                       vanishing-point rings. Drawn by ImageCanvas after Compositor.render
 math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-major float32.
@@ -64,11 +69,18 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
 materials.py        Material KINDS (metal, plastic, stone, wood, glass) and their PRESETS (every MaterialParams
                     field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset
 ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
-                    placement on it (text_position, text_model_matrix, world_to_ground, text_distance)
-lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix
-text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles
+                    placement on it (text_position, text_model_matrix, world_to_ground, text_distance);
+                    the wall (wall_rotation, wall_to_world, world_to_wall, wall_plane, wall_through,
+                    reanchor_wall, reanchor_wall_text, mount_on_wall, mount_on_floor, wall_grid_lines)
+lighting.py         LightingEngine: (light, ground) → world light dir, colours, ground plane, shadow matrix;
+                    solve_sun: azimuth and elevation from a vertical object's top, base and shadow tip
+text_raster.py      QFont → mask (RG edge dir, B bevel, A coverage) + traced side-wall triangles. Lays out
+                    multi-line text (align, letter spacing, line height) and bends it along arcs
 image_io.py         QImage ⇄ numpy RGBA (top row first); SUPPORTED_EXTENSIONS for dialogs and drops
-preferences.py      QSettings-backed last folder + recent files (images and projects, max 8). MainWindow requires one.
+preferences.py      QSettings-backed last folder + recent files (images and projects, max 8), and the looks folder
+                    (injectable: Preferences(settings, looks_directory)). MainWindow requires one.
+presets.py          Looks: material + light + shadow. BUILTIN_LOOKS, apply_look(vm, look) (one undo step),
+                    capture_look, user looks as JSON files: load_user_looks / save_user_look / delete_user_look
 project_io.py       .t3d project files: save_project(path, document, embed_photo) / load_project(path) -> LoadedProject
 app.py              configure_opengl() + main()
 ```
@@ -112,6 +124,18 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   distance along that ray (so apparent size is kept), and text yaw offsets grid yaw. Expect
   `transform.x/z/rot_y/size` change events (for any object, not only the selected one) after a ground edit.
   An object whose ray misses the new ground is left as is.
+- **The wall** (`scene.wall`, `WallParams`) is an upright plane on the ground. Its frame is
+  `ground rotation · Ry(wall.angle)` (x along the base line, y = ground up, z = its normal, facing the camera's
+  side), and its base line passes `wall.offset` from the point below the camera, so it stands at local
+  z = −offset. Wall coordinates are (along, height above the floor). `transform.mount` picks the placement:
+  `"floor"` uses `x/z/rot_y`, `"wall"` uses `wall_x/wall_y` and ignores the floor fields (and yaw). Wall text's
+  back cap lies on the wall (`T(wall point + normal · depth · size) · wall rotation · S(size)`). Every
+  placement function takes the scene's wall (`text_model_matrix(ground, transform, wall)`); pass it
+  everywhere, or wall text renders on the floor. Wall text still casts a planar shadow on the floor only.
+- **Ground edits keep the wall where it appears too.** `_place_objects_from` re-places the wall first
+  (`reanchor_wall`: the plane through the camera and the old base line meets the new ground), then wall text
+  along its camera ray onto the new wall (`reanchor_wall_text`). `placement_snapshot()` is
+  `(ground, [transforms], wall)`. Wall edits themselves move wall text with the wall (it's attached).
 - The default scene (pitch 0, height 1.5, text at z −12, yaw −20) renders pixel-identically to
   v0.5.0's defaults. `tests/test_ground.py` holds the legacy conversion if old values ever need migrating.
 - Image arrays are `(H, W, 4) uint8`, top row first. Texture row 0 = v 0, so quads sample `1 - y`.
@@ -149,6 +173,42 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - Render tests check *properties* (highlight tint, roughness spread, reflection follows the photo)
   using interior pixels (`text_pixels` erodes antialiased edges), not reference images.
 
+### Workflow features (wave 1A)
+
+- **Looks** (`presets.py`). A look is a dict per section (`material`, `light`, `shadow`) of field → value.
+  `apply_look` sets only fields the model knows, inside one `begin_edit`/`end_edit`, so it's one undo step and
+  touches only the selected object's material and the shared light and shadow. Built-ins are full presets
+  (`materials.PRESETS` + overrides, dataclass defaults + overrides), so a new Material/Light/Shadow field
+  appears in them automatically. User looks are `{"format": "text3d-studio-look", "version": 1, "name", ...}`
+  files in `Preferences.looks_directory()` (AppDataLocation/looks). Loading checks each value against the
+  default's type and skips a bad file with a warning (shown in the status bar). Names compare case-insensitively;
+  a built-in's name is refused, a user look's asks to replace. The Looks menu reads the folder only when it
+  opens (`aboutToShow`), so building a MainWindow never touches it; tests pass a `tmp_path` folder.
+- **Transparent export** (`render_document(..., transparent=True)`). After the normal render, it reads
+  `text_layer.color` (premultiplied) and renders the shadow twice into an RGBA16F target with
+  `Compositor.render_shadow_factor`: once colored, once `strength_only` (every caster darkens all channels).
+  On white, these give `1 − opacity·strength·(1 − color)` and `1 − opacity·strength`, from which
+  `compose_transparent` recovers alpha = opacity × strength and the per-pixel shadow color (glass tints
+  included), then puts the text over it as straight alpha. Glass still refracts the photo and its shadow
+  (that is what it shows); the photo itself isn't drawn. Over a photo, alpha-over only approximates the
+  multiplied shadow (the photo's own color doesn't show through). PNG only: the UI refuses other extensions.
+- **Scaled and batch export.** `render_document(..., scale=s)` renders at `scaled_size(native, s)`; the scene is
+  resolution independent (projection follows the aspect, shadow softness is relative to image height), so a
+  half-size export matches a downscaled native one. `batch_jobs` names files `<photo>_3d_<w>x<h>.png|.jpg` and
+  `..._transparent.png`, exports a repeated size once, and never replaces a file: it adds `-2`, `-3`, ….
+  `MainWindow.run_batch_export(folder, scales, formats)` renders once per (size, transparent) and stops at
+  the first failure, saying how many files were written.
+- **Before/after.** Holding backslash on the focused canvas (or View › Show Original Photo) renders a copy of
+  the scene with no objects and skips the grid and fit handles. Auto-repeat is ignored and losing focus ends
+  the hold. Preview only.
+- **Zoom and pan.** `_image_rect(scale)` is the one mapping between widget pixels (origin top left) and the
+  image; zoom (`_zoom`, device pixels per image pixel, `None` = fit) and pan (`_pan`, widget pixels, clamped
+  so a zoomed image keeps covering the canvas) live there, so picking, drags, the grid and the fit handles
+  follow. `paintGL` flips its y to GL's bottom-left origin (needed once the image is panned). The compositor
+  renders the *whole* zoomed image into a viewport larger than the framebuffer (its layers are sized to it),
+  so zoom stops at `MAX_ZOOMED_SIDE_PX` (6144) on the longer side. A new photo or project resets to Fit.
+  Space + left-drag pans and never opens an undo step.
+
 ## Hard-won gotchas (read before touching render code)
 
 - **macOS caps OpenGL at 4.1 core.** Keep shaders at `#version 410 core`. Every draw needs a bound
@@ -169,8 +229,8 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   `MIN_SHADOW_ELEVATION` (3°).
 - **Keep samplers complete.** Upload a 1×1 placeholder before real data. An incomplete bound texture
   triggers macOS "unloadable texture" warnings.
-- **Rasterizing is CPU work (~0.2 s).** Only `text.{content, font_family, bold, italic, bevel_width}`
-  (`viewmodel.RASTER_FIELDS`) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`). The canvas
+- **Rasterizing is CPU work (~0.2 s; arced text ~0.4 s).** Only `text.*` fields (`viewmodel.RASTER_FIELDS`,
+  which a test keeps equal to every `TextParams` field) re-rasterize, and the canvas debounces them (`TEXT_DEBOUNCE_MS`). The canvas
   compares each object's `TextParams` with the one its raster came from, so only changed objects
   re-rasterize; added objects skip the debounce (`objects_changed`). Everything else is a uniform and must
   stay cheap. Never re-rasterize per frame.
@@ -202,6 +262,32 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 - `ShaderProgram` caches uniform locations. Setting a uniform the shader optimized away is a
   harmless no-op (location −1).
 
+### Text layout (text_raster.py)
+
+- **Lines.** `content` is split on `\n`; line *k*'s baseline sits `k × lineSpacing × line_height` below the
+  first. Blank lines keep their height, but the mask is cropped to the ink, so leading and trailing blank lines
+  (and a trailing newline) change nothing, and the last line's ink bottom stays at local y=0. Text of only
+  blank lines rasterizes to `None`.
+- **Alignment** (`align`: `ALIGNMENTS` left/center/right; anything else raises `ValueError`) lines up each
+  line's *ink* (`QFontMetricsF.tightBoundingRect`), not its advance, within the widest line's ink. So leading
+  and trailing spaces don't indent a line.
+- **Letter spacing** is `QFont.setLetterSpacing(AbsoluteSpacing, letter_spacing × font px)`: em fractions,
+  negative overlaps letters (walls stay closed because they're traced from the union mask).
+- **Arc** (`arc`, degrees). 0 takes the straight path (whole lines drawn with `drawText`, so arc 0 is exactly
+  straight text). Otherwise every glyph comes from a `QTextLayout` glyph run (keeps kerning, spacing and font
+  fallback) and is drawn alone with `drawGlyphRun`, translated onto its arc and rotated to the tangent. The
+  widest line's ink spans `arc` degrees on a circle through its baseline (center below the text for positive
+  arcs, so the middle bends up; above for negative). Other lines sit on concentric circles one pitch nearer or
+  farther and keep their arc length (letter spacing), so alignment is measured along the arc. A line whose
+  radius would reach the center is clamped to a 1 px radius (its glyphs bunch up; only extreme line heights).
+- The mask encoding (edge direction, bevel) and the walls are derived from the final composited alpha, so
+  rotated and overlapping glyphs need nothing special, and picking (`GlyphRaster.covers`) follows the bent ink.
+- **Texture limit.** `MAX_TEXTURE_WIDTH` bounds *both* sides of the mask. The layout's bounds (rotated glyph
+  boxes for arcs, plus italic slack) are measured first, and the font size shrinks (`MIN_FONT_PIXEL_SIZE`
+  floor) until they fit; em units don't change, so the text's world size stays the same.
+- Tests check masks directly: `ink_bands`/`ink_columns` for lines and alignment, `assert_walls_closed` (every
+  wall vertex has even degree) for the shadow walls.
+
 ### Editor overlays (the perspective grid)
 
 - Overlays are **preview only**. They're drawn in `ImageCanvas.paintGL` *after* `Compositor.render` and
@@ -223,6 +309,21 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
 | **Move Text** (V) | press: select the object under the cursor (empty ground keeps the selection) · drag: move the selected object on screen at constant on-screen size (size rescales with distance) · Shift: lock to dominant axis · Option/Alt: slide on the ground in perspective (grabbed point stays under the cursor) · Cmd/Ctrl: yaw | text yaw | size (pinch too); Ctrl/Cmd: distance |
 | **Adjust Grid** (P) | horizon middle: tilt · horizon outer 15%: roll around its center · ground: shift grid lines (`grid.offset_*`) | grid yaw | cell size |
 | **Fit Rectangle** (R) | drag the 4 corner handles onto a rectangle in the photo; the ground is solved live (`ground.fit_ground_to_rectangle`) | — | — |
+| **Set Wall** (W) | drag along the wall's foot: the base line runs through the press and the cursor (`ground.wall_through`); from or into the sky does nothing | — | — |
+| **Match Sun** (L) | click top, base, shadow tip; the third click sets azimuth + elevation as one undo step (`lighting.solve_sun`), a fourth starts over; problems go to `tool_status` | — | — |
+
+With wall-mounted text selected, Move Text drags it on the wall: plain drag keeps its on-screen size (the anchor
+follows the cursor's pixels onto `ground.wall_plane`), Option slides it along the wall (`wall_point_at`), and it
+never goes below `wall_y = 0`. Cmd/Ctrl yaw and Cmd/Ctrl+wheel distance don't apply to it.
+
+**Eyedropper.** The panel's **Pick** buttons (`EYEDROPPER_COLORS`: light colour and ambient colour) emit
+`eyedropper_requested(section, field)`; `MainWindow` calls `canvas.start_eyedropper`. The next press on the photo
+sets the colour to the 5×5 photo-pixel average under it, mapped through `_image_rect`, as one undo step; a press
+off the photo keeps it waiting, Escape (`keyPressEvent`) or a tool change cancels it.
+
+`ToolOverlay` draws the wall preview (base line + grid up the wall, `math3d.project_segment` clips segments
+behind the camera) and the Match Sun points, clipped to the photo. Like `FitHandlesOverlay` it's a child widget,
+so exports can't contain it.
 
 Qt reports macOS's Command key as `ControlModifier` and Option as `AltModifier`. The drag mode is fixed on
 press; Shift can be toggled mid-drag. Pinch arrives as a native gesture, caught by `PinchFilter`. Every
@@ -235,7 +336,8 @@ aren't pickable. With a single object no picking runs (nothing to choose, and no
 overlay's footprint, lanes and vanishing points follow the selected object.
 
 **Control panel input:** `WheelGuard` sends the wheel to the panel's scroll bar unless the control under the
-pointer has focus (sliders, spin boxes and combos are click/Tab focus only). `LetterShortcuts` keeps a
+pointer has focus (sliders, spin boxes and combos are click/Tab focus only; the Text field's viewport is
+guarded too). `LetterShortcuts` keeps a
 focused spin box from swallowing G/V/P/R.
 
 **Focus in tests:** use `activate(window, qapp)` (`QApplication.setActiveWindow`) and `setFocus()`, not
@@ -265,7 +367,8 @@ glyphs. Use a child widget overlay (like `FitHandlesOverlay` and the empty-state
 
 Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_horizon_through` and
 `tilt_for_horizon_through`. Drag tests drive real `QMouseEvent`s on a sized, unshown canvas; see
-`tests/test_views.py` (`drag`, `grid_canvas`).
+`tests/test_views.py` (`drag`, `grid_canvas`); the wall, sun and eyedropper tools are tested in
+`tests/test_views_tools.py`, which reuses those helpers.
 
 ### Undo history
 
@@ -293,7 +396,9 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 - `set_background` isn't undoable and clears the history; so does `load_document` (opening a project).
 - **Shortcuts.** Spin boxes and combo boxes claim Cmd+Z for their own text undo; `control_panel.UndoShortcuts`
   leaves that claim unaccepted so the Edit menu's shortcut runs (like `LetterShortcuts`). The Text field
-  keeps its native undo.
+  (a `QPlainTextEdit`, object name `text.content`, no wrapping, Tab moves focus) keeps its native undo, which
+  steps back a typed line and its line break separately. The objects list shows each object's first non-blank
+  line.
 
 ## Adding things
 
@@ -330,8 +435,8 @@ Horizon handles use `math3d.horizon_line` (signed pixel distance), `pitch_for_ho
 - Never let tests touch the user's real settings. Build `Preferences` on a temporary INI file
   (`QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)`), as the `preferences`
   fixture in `tests/test_views.py` does.
-- Modal dialogs (`QFileDialog`, `QMessageBox`) block a test run. Monkeypatch them on the
-  `text3d_studio.views.main_window` module. This is the one acceptable kind of mock.
+- Modal dialogs (`QFileDialog`, `QMessageBox`, `QInputDialog`, `BatchExportDialog.exec`) block a test run.
+  Monkeypatch them on the `text3d_studio.views.main_window` module. This is the one acceptable kind of mock.
 - **Visual check:** to confirm a UI or render change by eye, script a `MainWindow`, load an image,
   then `window.grab().save(...)` and `save_image(window.canvas.render_export(), ...)` from a
   `QTimer.singleShot`, and look at the PNGs.
@@ -395,12 +500,13 @@ v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save a
 - `MainWindow.open_path(path)` dispatches drops and Open Recent by extension to `open_project_path` or
   `load_image_path`.
 - Window tests that build a `MainWindow` must sort after `tests/test_render.py` (hence
-  `tests/test_views_projects.py`): a window destroyed earlier in the session leaves no current GL context for
-  the render fixtures.
+  `tests/test_views_projects.py`, `tests/test_views_workflow.py`): a window destroyed earlier in the session
+  leaves no current GL context for the render fixtures. `tests/test_export.py` (no windows) holds the
+  transparent, scaled and batch-naming render tests.
 
 ## Known limitations / next work
 
-- Text is a single line. The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
+- The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
 - Multiple text objects (wave 0.2): glass doesn't refract other text objects. New and
   duplicated objects are placed in front of the selected one (`ground.placement_in_front`), assuming a
@@ -410,5 +516,9 @@ v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save a
   `load_image_path(path)` is the single image load path used by the menu, toolbar, prompt, drops and Open Recent
   (both via `open_path`) and the CLI.
   Image decoding is synchronous (busy cursor only). Moving it to a worker thread is a possible follow-up.
+- Zoom renders the whole zoomed image each frame, hence the 6144 px cap: Actual Size isn't reachable for
+  photos longer than that. Rendering only the visible part (an off-center projection, with the shadow, glass
+  backdrop and text layer sized to it) would lift it. While zoomed, glass near the canvas edge can refract
+  undefined pixels from outside the framebuffer.
 - Roadmap (README): perspective solver from drawn lines, MSDF glyphs, true mesh extrusion mode,
   tiled export, packaging.

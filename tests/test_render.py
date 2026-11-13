@@ -838,3 +838,103 @@ def test_two_objects_stay_above_30_fps(compositor):
     finally:
         target.delete()
     assert fps > 30, f"only {fps:.1f} FPS"
+
+
+# ----- Wall-mounted text ------------------------------------------------------------------------
+
+WALL_GROUND = {"pitch": 12.0, "height": 1.5}
+WALL = {"angle": 20.0, "offset": 10.0}
+
+
+def wall_text_object(object_id=0, **transform):
+    return text_object(object_id, mount="wall", **{"wall_x": 0.0, "wall_y": 0.8, "size": 1.6, "depth": 0.3, **transform})
+
+
+def wall_face_center_px(doc):
+    """Pixel (x, y, top row first) where the wall text's face shows, from its model matrix."""
+    from text3d_studio import ground, math3d
+
+    scene = doc.scene
+    model = ground.text_model_matrix(scene.ground, scene.objects[0].transform, scene.wall)
+    center = model @ np.array([0.0, 0.35, 0.0, 1.0])
+    return math3d.project_to_image(center[:3], scene.camera.fov, doc.native_size)
+
+
+def test_wall_text_shows_its_face_where_the_wall_puts_it(compositor):
+    doc = scene_of(wall_text_object(), ground=WALL_GROUND, wall=WALL)
+    mask = changed_mask(render(compositor, doc))
+    assert mask.sum() > 1500
+    rows, cols = np.nonzero(mask)
+    u, v = wall_face_center_px(doc)
+    assert abs(cols.mean() - u) < 25 and abs(rows.mean() - v) < 25
+
+
+def test_wall_text_faces_the_camera_side_of_the_wall(compositor):
+    """The face normal is the wall's: a light in front of the wall lights it, one behind the wall doesn't."""
+    facing = WALL["angle"]  # light azimuth along the wall's normal (the ground has no yaw)
+    front = scene_of(wall_text_object(), ground=WALL_GROUND, wall=WALL, light={"azimuth": facing, "elevation": 15})
+    behind = scene_of(wall_text_object(), ground=WALL_GROUND, wall=WALL, light={"azimuth": facing + 180, "elevation": 15})
+    lit, unlit = text_pixels(compositor, front), text_pixels(compositor, behind)
+    assert len(lit) > 500 and len(unlit) > 500
+    assert luminance(lit).mean() > luminance(unlit).mean() + 40
+
+
+def test_wall_text_casts_its_shadow_on_the_floor(compositor):
+    from text3d_studio import ground, math3d
+
+    light = {"azimuth": WALL["angle"] + 160, "elevation": 40}  # from behind the wall, so the shadow falls in front of it
+    shadow = {"enabled": True, "softness": 0.1, "opacity": 0.8, "falloff": 0.0}
+    objects = (wall_text_object(wall_y=0.3),)
+    lit = render(compositor, scene_of(*objects, ground=WALL_GROUND, wall=WALL, light=light))
+    doc = scene_of(*objects, ground=WALL_GROUND, wall=WALL, light=light, shadow=shadow)
+    dark = render(compositor, doc)
+    darker = (luminance(lit) - luminance(dark) > 10) & ~changed_mask(lit)
+    assert darker.sum() > 300
+    scene = doc.scene
+    plane = ground.ground_plane(scene.ground)
+    rows, cols = np.nonzero(darker)
+    for u, v in zip(cols[::25], rows[::25]):
+        ray = math3d.image_ray((u + 0.5, v + 0.5), scene.camera.fov, doc.native_size)
+        hit = math3d.intersect_ray_plane((0, 0, 0), ray, plane)
+        assert hit is not None  # below the horizon: on the floor
+        wall_plane = ground.wall_plane(scene.ground, scene.wall)
+        assert wall_plane[:3] @ hit + wall_plane[3] > -0.05  # on the camera's side of the wall
+
+
+# ----- Text layout ------------------------------------------------------------------------------------
+
+
+def rendered_rows(pixels):
+    """Mean image row of the text in the middle third of its columns, and in its outer thirds."""
+    rows, cols = np.nonzero(changed_mask(pixels))
+    left, right = cols.min(), cols.max()
+    third = (right - left) / 3
+    middle = (cols > left + third) & (cols < right - third)
+    return rows[middle].mean(), rows[~middle].mean()
+
+
+@pytest.mark.parametrize("arc", [100, -100])
+def test_arced_text_renders_bent(compositor, arc):
+    base = {"transform": {"rot_y": 0, "z": -16}, "shadow": {"enabled": False}}
+    middle, ends = rendered_rows(render(compositor, make_document(text={"content": "HELLO WORLD", "arc": arc}, **base)))
+    straight = rendered_rows(render(compositor, make_document(text={"content": "HELLO WORLD"}, **base)))
+    bend = (middle - ends) - (straight[0] - straight[1])  # image rows grow downward
+    assert (bend < -5) if arc > 0 else (bend > 5)
+
+
+def test_multi_line_text_renders_taller(compositor):
+    base = {"transform": {"rot_y": 0}, "shadow": {"enabled": False}}
+    one = changed_mask(render(compositor, make_document(text={"content": "HELLO"}, **base)))
+    two = changed_mask(render(compositor, make_document(text={"content": "HELLO\nHELLO"}, **base)))
+    one_rows, two_rows = np.flatnonzero(one.any(axis=1)), np.flatnonzero(two.any(axis=1))
+    assert two_rows[-1] - two_rows[0] > 1.7 * (one_rows[-1] - one_rows[0])
+    assert two_rows[-1] == pytest.approx(one_rows[-1], abs=2)  # the last line stands on the ground
+
+
+def test_arced_text_casts_a_shadow_at_grazing_light(compositor):
+    text = {"content": "ARC\nTEXT", "arc": 90}
+    light = {"azimuth": 90, "elevation": 20}
+    lit = make_document(text=text, transform={"rot_y": 0}, light=light, shadow={"softness": 0.05})
+    unlit = make_document(text=text, transform={"rot_y": 0}, light=light, shadow={"enabled": False})
+    darker = render(compositor, unlit)[..., :3].astype(int).sum(-1) - render(compositor, lit)[..., :3].astype(int).sum(-1)
+    assert (darker > 30).sum() > 500

@@ -307,3 +307,33 @@ def horizon_line(up, fov_y_degrees: float, image_size) -> np.ndarray | None:
     if scale < 1e-9:
         return None
     return np.array([a, b, c]) / scale
+
+
+def project_segment(a, b, fov_y_degrees: float, image_size, near: float = 1e-2) -> tuple[np.ndarray, np.ndarray] | None:
+    """Pixel end points of a camera-space segment, clipped to the part at least `near` in front of the camera.
+
+    None when the whole segment is behind that plane.
+    """
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    if a[2] > -near and b[2] > -near:
+        return None
+    if a[2] > -near:
+        a = a + (b - a) * (-near - a[2]) / (b[2] - a[2])
+    elif b[2] > -near:
+        b = b + (a - b) * (-near - b[2]) / (a[2] - b[2])
+    return project_to_image(a, fov_y_degrees, image_size), project_to_image(b, fov_y_degrees, image_size)
+
+
+def closest_line_parameter(point, direction, ray_origin, ray_direction) -> float | None:
+    """Parameter t of the point `point + t * direction` on a line that comes closest to a ray (or its line).
+
+    None when the two run parallel, so no single point is closest.
+    """
+    p, u = np.asarray(point, dtype=np.float64), np.asarray(direction, dtype=np.float64)
+    o, r = np.asarray(ray_origin, dtype=np.float64), np.asarray(ray_direction, dtype=np.float64)
+    w = p - o
+    a, b, c = u @ u, u @ r, r @ r
+    denominator = a * c - b * b
+    if denominator < 1e-12 * a * c:
+        return None
+    return float((b * (r @ w) - c * (u @ w)) / denominator)

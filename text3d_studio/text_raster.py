@@ -7,17 +7,29 @@ Output RGBA channels:
 """
 
 import math
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter
+from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QGlyphRun, QImage, QPainter, QTextLayout, QTransform
 
 from .image_io import qimage_to_rgba
 from .model import TextParams
 
 FONT_PIXEL_SIZE = 384
-MAX_TEXTURE_WIDTH = 8192
+MAX_TEXTURE_WIDTH = 8192  # the mask's limit on both sides; larger text is rasterized at a smaller font size
+MIN_FONT_PIXEL_SIZE = 16
+ALIGNMENTS = {"left": 0.0, "center": 0.5, "right": 1.0}  # TextParams.align -> share of the slack put before a line
+# The layout values' allowed ranges (the panel's sliders use them too). Text params can come from a project file,
+# so rasterize_text clamps them: extreme values would otherwise defeat the size limit or crash the paint.
+MIN_ARC_DEGREES = 1e-3  # smaller bends are straight text
+LAYOUT_RANGES = {
+    "bevel_width": (1.0, 20.0),
+    "letter_spacing": (-0.1, 0.5),
+    "line_height": (0.7, 2.0),
+    "arc": (-180.0, 180.0),
+}
 WALL_STEP = 2  # outline tracing resolution (texels per step); the shadow is blurred, so coarse is fine
 
 
@@ -39,21 +51,21 @@ class GlyphRaster:
 
 
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
-    text = params.content
-    if not text.strip():
+    """Rasterizes every line of the text, stacked downward and optionally bent along an arc. Blank lines keep
+    their height; the mask is cropped to the ink, so leading and trailing blank lines don't count."""
+    params = sanitized_text_params(params)
+    if not params.content.strip():
         return None
 
     pad = int(math.ceil(params.bevel_width * 3)) + 8
     font_px = FONT_PIXEL_SIZE
-    font = _make_font(params, font_px)
-    bounds = QFontMetricsF(font).boundingRect(text)
-    needed_width = bounds.width() + 2 * pad + font_px * 0.5
-    if needed_width > MAX_TEXTURE_WIDTH:
-        font_px = max(16, int(font_px * MAX_TEXTURE_WIDTH / needed_width))
-        font = _make_font(params, font_px)
-        bounds = QFontMetricsF(font).boundingRect(text)
+    lines, glyphs, bounds = _layout(params, font_px)
+    limit = MAX_TEXTURE_WIDTH - 2 * pad
+    while max(bounds.width(), bounds.height()) > limit and font_px > MIN_FONT_PIXEL_SIZE:
+        font_px = max(MIN_FONT_PIXEL_SIZE, int(font_px * limit / max(bounds.width(), bounds.height())))
+        lines, glyphs, bounds = _layout(params, font_px)
 
-    alpha = _paint_alpha(text, font, bounds, pad, font_px)
+    alpha = _paint_alpha(lines, glyphs, _make_font(params, font_px), bounds, pad)
     cropped = _crop_to_ink(alpha, pad)
     if cropped is None:
         return None
@@ -67,6 +79,20 @@ def rasterize_text(params: TextParams) -> GlyphRaster | None:
         size=size,
         walls=extract_walls(cropped, origin, size),
     )
+
+
+def sanitized_text_params(params: TextParams) -> TextParams:
+    """The params with layout values clamped to LAYOUT_RANGES; a non-finite value or an unknown alignment
+    falls back to the default."""
+    defaults = TextParams()
+    values = {}
+    for name, (low, high) in LAYOUT_RANGES.items():
+        value = getattr(params, name)
+        values[name] = min(max(value, low), high) if math.isfinite(value) else getattr(defaults, name)
+    if abs(values["arc"]) < MIN_ARC_DEGREES:
+        values["arc"] = 0.0  # a vanishing bend would put the arc's center at infinity (or divide by zero)
+    align = params.align if params.align in ALIGNMENTS else defaults.align
+    return dataclasses.replace(params, align=align, **values)
 
 
 def extract_walls(alpha: np.ndarray, origin, size, step: int = WALL_STEP) -> np.ndarray:
@@ -115,13 +141,86 @@ def _make_font(params: TextParams, pixel_size: int) -> QFont:
     font.setPixelSize(pixel_size)
     font.setBold(params.bold)
     font.setItalic(params.italic)
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, params.letter_spacing * pixel_size)
     return font
 
 
-def _paint_alpha(text, font, bounds, pad, font_px) -> np.ndarray:
-    slack = int(font_px * 0.25)  # room for italic overhang the bounding rect may miss
-    width = int(math.ceil(bounds.width())) + 2 * (pad + slack)
-    height = int(math.ceil(bounds.height())) + 2 * (pad + slack)
+def _layout(params: TextParams, font_px: int):
+    """Places each line's text at its baseline start, in pixels (y down), aligning the lines' ink.
+
+    Returns (lines, glyphs, bounds): straight text is drawn a line at a time as `lines` [(text, start)]; arced
+    text a glyph at a time as `glyphs` [(glyph run, anchor, degrees)]. `bounds` is the box their ink can reach,
+    with slack for italic overhang the metrics may miss.
+    """
+    font = _make_font(params, font_px)
+    metrics = QFontMetricsF(font)
+    lines = params.content.split("\n")
+    inks = [metrics.tightBoundingRect(line) if line.strip() else None for line in lines]
+    widest = max(ink.width() for ink in inks if ink is not None)
+    pitch = metrics.lineSpacing() * params.line_height
+    slack = font_px * 0.25
+    placed, bounds = [], QRectF()
+    for index, (line, ink) in enumerate(zip(lines, inks)):
+        if ink is None:
+            continue
+        start = QPointF((widest - ink.width()) * ALIGNMENTS[params.align] - ink.left(), index * pitch)
+        placed.append((line, start))
+        bounds = bounds.united(ink.translated(start).adjusted(-slack, -slack, slack, slack))
+        if ink.width() == widest:
+            widest_baseline = start.y()
+    if params.arc == 0:
+        return placed, [], bounds
+    glyphs, bounds = _bend(placed, font, widest, widest_baseline, math.radians(params.arc), slack)
+    return [], glyphs, bounds
+
+
+def _bend(placed, font, widest, widest_baseline, angle, slack):
+    """Lays the lines' glyphs along concentric arcs, each turned to its arc's tangent.
+
+    The widest line's ink spans `angle` on a circle through its baseline; the other lines keep their letter
+    spacing on circles one line pitch nearer or farther. The circle's center lies below the text for a positive
+    angle (the middle bends up) and above it for a negative one. Positions stay measured along the arc, so
+    alignment carries over.
+    """
+    metrics = QFontMetricsF(font)
+    sign = 1.0 if angle > 0 else -1.0
+    radius = widest / abs(angle)
+    center = QPointF(widest / 2, widest_baseline + sign * radius)
+    glyphs, bounds = [], QRectF()
+    for line, start in placed:
+        line_radius = max(radius - sign * (start.y() - widest_baseline), 1.0)
+        layout = QTextLayout(line, font)
+        layout.beginLayout()
+        layout.createLine().setLineWidth(1e9)
+        layout.endLayout()
+        for run in layout.glyphRuns():
+            indexes = run.glyphIndexes()
+            advances = run.rawFont().advancesForGlyphIndexes(indexes)
+            for index, position, advance in zip(indexes, run.positions(), advances):
+                half = advance.x() / 2
+                turn = (start.x() + position.x() + half - center.x()) / line_radius
+                anchor = QPointF(
+                    center.x() + line_radius * math.sin(turn),
+                    center.y() - sign * line_radius * math.cos(turn),
+                )
+                degrees = math.degrees(sign * turn)
+                glyph = QGlyphRun()
+                glyph.setRawFont(run.rawFont())
+                glyph.setGlyphIndexes([index])
+                glyph.setPositions([QPointF(-half, 0.0)])
+                glyphs.append((glyph, anchor, degrees))
+                box = QRectF(-half, -metrics.ascent(), 2 * half, metrics.ascent() + metrics.descent())
+                placement = QTransform().translate(anchor.x(), anchor.y()).rotate(degrees)
+                bounds = bounds.united(placement.mapRect(box.adjusted(-slack, -slack, slack, slack)))
+    return glyphs, bounds
+
+
+def _paint_alpha(lines, glyphs, font, bounds, pad) -> np.ndarray:
+    # Text that still overflows at the smallest font size (very long lines) is clipped. Ink starts after the
+    # leading pad and cropping adds a pad back on each side, so leaving out one pad keeps the result in the limit.
+    cap = MAX_TEXTURE_WIDTH - pad
+    width = min(int(math.ceil(bounds.width())) + 2 * pad, cap)
+    height = min(int(math.ceil(bounds.height())) + 2 * pad, cap)
     image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
@@ -129,7 +228,15 @@ def _paint_alpha(text, font, bounds, pad, font_px) -> np.ndarray:
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setFont(font)
     painter.setPen(QColor(255, 255, 255))
-    painter.drawText(QPointF(pad + slack - bounds.left(), pad + slack - bounds.top()), text)
+    painter.translate(pad - bounds.left(), pad - bounds.top())
+    for text, start in lines:
+        painter.drawText(start, text)
+    for glyph, anchor, degrees in glyphs:
+        painter.save()
+        painter.translate(anchor)
+        painter.rotate(degrees)
+        painter.drawGlyphRun(QPointF(0.0, 0.0), glyph)
+        painter.restore()
     painter.end()
     return qimage_to_rgba(image)[..., 3].astype(np.float32) / 255.0
 
