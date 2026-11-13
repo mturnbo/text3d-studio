@@ -558,6 +558,27 @@ def test_hostile_shading_values_open_safely_and_show_in_range(window, tmp_path, 
     window.canvas.grab()  # paints every object
 
 
+def test_hostile_effect_values_open_safely_and_paint(window, tmp_path, qapp):
+    path = write_project_text(tmp_path / "hostile-effects.t3d", """{
+        "shadow": {"contact_strength": Infinity, "contact_size": -1e300},
+        "effects": {"bloom_strength": 1e300, "bloom_radius": NaN, "grain_amount": -Infinity, "grain_size": 0,
+                    "blur_radius": 1e9, "grade_contrast": "high", "grade_warmth": -1e9, "dof_focus": 0,
+                    "dof_aperture": Infinity, "reflection_fade": -3}
+    }""")
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    effects = window.vm.scene.effects
+    assert (effects.bloom_strength, effects.bloom_radius, effects.grain_amount, effects.grain_size) == (2.0, 0.3, 0.0, 0.5)
+    assert (effects.blur_radius, effects.grade_contrast, effects.grade_warmth) == (1.0, 1.0, -1.0)
+    assert (effects.dof_focus, effects.dof_aperture, effects.reflection_fade) == (0.5, 0.0, 0.1)
+    shadow = window.vm.scene.shadow
+    assert (shadow.contact_strength, shadow.contact_size) == (0.0, 0.02)
+    assert slider_value(window, "effects.bloom_strength") == 2.0
+    assert slider_value(window, "effects.dof_focus") == 0.5
+    window.canvas.grab()  # paints with every effect at its limit
+
+
 @pytest.mark.parametrize("kind", ["cheese", 12, None])
 def test_an_unknown_material_kind_opens_as_the_default_kind(window, tmp_path, qapp, kind):
     import json

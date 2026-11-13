@@ -28,7 +28,7 @@ from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
 from ..materials import KINDS, SHADING_RANGES, SIDE_KINDS
 from ..text_raster import ALIGNMENTS
 from ..text_raster import LAYOUT_RANGES
-from ..model import FIELD_RANGES, MaskParams
+from ..model import FIELD_RANGES, EffectsParams, MaskParams, ShadowParams
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)
@@ -88,6 +88,8 @@ SLIDERS = {
         ("opacity", "Opacity", 0, 1, 2),
         ("softness", "Softness", 0, 1, 2),
         ("falloff", "Falloff", 0, 3, 2),
+        ("contact_strength", "Contact shadow", *FIELD_RANGES[ShadowParams]["contact_strength"], 2),
+        ("contact_size", "Contact size", *FIELD_RANGES[ShadowParams]["contact_size"], 2),
     ],
     "wall": [
         ("angle", "Facing", -180, 180, 1),
@@ -96,6 +98,23 @@ SLIDERS = {
     "mask": [
         ("brush_size", "Brush size", *FIELD_RANGES[MaskParams]["brush_size"], 3),
         ("feather", "Feather", *FIELD_RANGES[MaskParams]["feather"], 2),
+    ],
+    "effects": [
+        ("reflection_strength", "Reflection", *FIELD_RANGES[EffectsParams]["reflection_strength"], 2),
+        ("reflection_roughness", "Reflection blur", *FIELD_RANGES[EffectsParams]["reflection_roughness"], 2),
+        ("reflection_fade", "Reflection fade", *FIELD_RANGES[EffectsParams]["reflection_fade"], 1),
+        ("bloom_strength", "Bloom", *FIELD_RANGES[EffectsParams]["bloom_strength"], 2),
+        ("bloom_threshold", "Bloom threshold", *FIELD_RANGES[EffectsParams]["bloom_threshold"], 2),
+        ("bloom_radius", "Bloom radius", *FIELD_RANGES[EffectsParams]["bloom_radius"], 2),
+        ("grain_amount", "Grain", *FIELD_RANGES[EffectsParams]["grain_amount"], 2),
+        ("grain_size", "Grain size", *FIELD_RANGES[EffectsParams]["grain_size"], 1),
+        ("blur_radius", "Blur", *FIELD_RANGES[EffectsParams]["blur_radius"], 2),
+        ("grade_brightness", "Brightness", *FIELD_RANGES[EffectsParams]["grade_brightness"], 2),
+        ("grade_contrast", "Contrast", *FIELD_RANGES[EffectsParams]["grade_contrast"], 2),
+        ("grade_saturation", "Saturation", *FIELD_RANGES[EffectsParams]["grade_saturation"], 2),
+        ("grade_warmth", "Warmth", *FIELD_RANGES[EffectsParams]["grade_warmth"], 2),
+        ("dof_focus", "Focus distance", *FIELD_RANGES[EffectsParams]["dof_focus"], 1),
+        ("dof_aperture", "Aperture", *FIELD_RANGES[EffectsParams]["dof_aperture"], 2),
     ],
 }
 
@@ -161,6 +180,7 @@ GROUP_TITLES = [
     ("shadow", "Shadow"),
     ("wall", "Wall"),
     ("mask", "Mask"),
+    ("effects", "Effects"),
 ]
 
 

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QMessageBox
 
 from text3d_studio import ground as ground_model
 from text3d_studio import math3d
-from text3d_studio.model import Document
+from text3d_studio.model import FIELD_RANGES, Document, EffectsParams, ShadowParams
 from text3d_studio.preferences import Preferences
 from text3d_studio.viewmodel import SceneViewModel
 from text3d_studio.views.image_canvas import TEXT_TOOL, WALL_TOOL
@@ -740,3 +740,68 @@ def test_the_wall_group_has_a_checkbox_for_a_wall_in_the_photo(window):
     assert window.vm.scene.wall.enabled
     window.vm.undo()
     assert not box.isChecked()
+
+
+# ----- Effects and contact shadow controls --------------------------------------------------------
+
+EFFECT_SLIDERS = [("effects", f.name) for f in dataclasses.fields(EffectsParams)] + [
+    ("shadow", "contact_strength"), ("shadow", "contact_size")]
+
+
+def test_every_effect_and_the_contact_shadow_have_a_slider_over_their_range(window):
+    from text3d_studio.views.control_panel import SliderRow
+
+    for section, name in EFFECT_SLIDERS:
+        row = window.panel.findChild(SliderRow, f"{section}.{name}")
+        assert row is not None, name
+        owner = EffectsParams if section == "effects" else ShadowParams
+        assert (row.spin.minimum(), row.spin.maximum()) == FIELD_RANGES[owner][name]
+        assert row.spin.value() == pytest.approx(getattr(getattr(window.vm.scene, section), name))
+
+
+def test_the_effects_group_holds_the_effects_and_the_shadow_group_the_contact_shadow(window):
+    from PyQt6.QtWidgets import QGroupBox
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    groups = {box.title(): box for box in window.panel.findChildren(QGroupBox)}
+    effects = {row.objectName() for row in groups["Effects"].findChildren(SliderRow)}
+    assert effects == {f"effects.{f.name}" for f in dataclasses.fields(EffectsParams)}
+    shadow = {row.objectName() for row in groups["Shadow"].findChildren(SliderRow)}
+    assert {"shadow.contact_strength", "shadow.contact_size"} <= shadow
+
+
+@pytest.mark.parametrize("section, name", EFFECT_SLIDERS)
+def test_dragging_an_effect_slider_sets_the_model_as_one_undo_step(window, qapp, section, name):
+    from test_views import activate, drag_slider, undo_steps
+
+    from text3d_studio.views.control_panel import SliderRow
+
+    activate(window, qapp)
+    row = window.panel.findChild(SliderRow, f"{section}.{name}")
+    window.panel.ensureWidgetVisible(row)
+    qapp.processEvents()
+    before = getattr(getattr(window.vm.scene, section), name)
+    values = []
+    window.vm.scene_changed.connect(
+        lambda s, f: values.append(getattr(getattr(window.vm.scene, s), f)) if (s, f) == (section, name) else None)
+    drag_slider(row.slider, 80)
+    after = getattr(getattr(window.vm.scene, section), name)
+    assert after > before
+    assert row.spin.value() == pytest.approx(after)
+    assert len(set(values)) > 2  # the drag passed through several values
+    assert undo_steps(window.vm) == 1
+    assert getattr(getattr(window.vm.scene, section), name) == before
+
+
+def test_the_effects_typed_into_the_panel_reach_the_render(window, qapp):
+    from text3d_studio.views.control_panel import SliderRow
+
+    window.show()
+    window.vm.set_background(photo())
+    plain = window.canvas.render_export()
+    window.panel.findChild(SliderRow, "effects.grade_saturation").spin.setValue(0.0)
+    window.panel.findChild(SliderRow, "effects.grain_amount").spin.setValue(0.5)
+    assert (window.vm.scene.effects.grade_saturation, window.vm.scene.effects.grain_amount) == (0.0, 0.5)
+    assert not np.array_equal(window.canvas.render_export(), plain)
+    window.vm.mark_saved()
