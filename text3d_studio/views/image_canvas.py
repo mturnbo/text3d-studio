@@ -351,7 +351,10 @@ class ImageCanvas(QOpenGLWidget):
         if self._mask_pending is not None:
             rect = None if self._mask_pending is True else self._mask_pending
             self._mask_pending = None
-            self.compositor.set_mask(self.vm.document.mask, rect)
+            try:
+                self.compositor.set_mask(self.vm.document.mask, rect)
+            except ValueError as exc:
+                self.error.emit(str(exc))
         if self._glyph_dirty:
             self._glyph_dirty = False
             self._update_rasters()

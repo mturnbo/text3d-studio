@@ -65,6 +65,12 @@ class Compositor:
         if mask is None:
             self.has_mask = False
             return
+        height, width = mask.shape[:2]
+        if max(width, height) > self.max_texture_size:
+            self.has_mask = False
+            raise ValueError(
+                f"Mask is {width}x{height}; this GPU supports up to {self.max_texture_size}px per side."
+            )
         if rect is None or not self.has_mask or (self.mask.height, self.mask.width) != mask.shape:
             self.mask.upload(mask)
         else:

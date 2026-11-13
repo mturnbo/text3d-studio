@@ -436,8 +436,36 @@ def test_no_mask_is_saved_as_null_and_loads_as_none(qapp, tmp_path):
 
 @pytest.mark.parametrize("entry", [{"embedded_png": "not base64!"}, {"embedded_png": "aGVsbG8="}, {"other": 1}, "png"])
 def test_a_damaged_mask_is_left_out_with_a_warning(qapp, tmp_path, entry):
-    loaded = load_project(write_json(tmp_path / "bad.t3d", project_dict(mask=entry)))
+    loaded = load_project(write_json(tmp_path / "bad.t3d", project_dict(mask=entry, photo=embedded_photo())))
+    assert loaded.document.background is not None
     assert loaded.document.mask is None
+    assert any("mask" in warning and "could not be read" in warning for warning in loaded.warnings)
+
+
+def embedded_photo():
+    from text3d_studio.project_io import _encode_png
+
+    return {"embedded_png": _encode_png(photo_pixels())}
+
+
+def png_header_only(width, height):
+    """A PNG that claims to be width x height but holds no pixel data: a crafted file's way to ask for a huge
+    allocation. Only its header may be read."""
+    import base64
+    import struct
+    import zlib
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    chunk = b"IHDR" + ihdr
+    png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", len(ihdr)) + chunk + struct.pack(">I", zlib.crc32(chunk))
+    return {"embedded_png": base64.b64encode(png).decode("ascii")}
+
+
+@pytest.mark.parametrize("width, height", [(100000, 100000), (2**31 - 1, 1), (50, 30)])
+def test_an_oversized_or_empty_mask_is_refused_from_its_header(qapp, tmp_path, width, height):
+    loaded = load_project(write_json(tmp_path / "huge.t3d", project_dict(mask=png_header_only(width, height),
+                                                                          photo=embedded_photo())))
+    assert loaded.document.mask is None and loaded.document.background is not None
     assert any("mask" in warning for warning in loaded.warnings)
 
 
@@ -451,7 +479,7 @@ def test_a_mask_that_does_not_fit_the_photo_is_left_out_with_a_warning(qapp, tmp
     assert any("size" in warning for warning in loaded.warnings)
 
 
-def test_a_mask_whose_photo_is_missing_is_kept_for_when_the_photo_is_found(qapp, tmp_path):
+def test_a_mask_whose_photo_is_missing_or_rejected_is_left_out_with_a_warning(qapp, tmp_path):
     document = Document(background=photo_pixels(), background_path=photo_file(tmp_path))
     document.mask = soft_mask()
     path = str(tmp_path / "masked.t3d")
@@ -459,7 +487,10 @@ def test_a_mask_whose_photo_is_missing_is_kept_for_when_the_photo_is_found(qapp,
     os.remove(document.background_path)
     loaded = load_project(path)
     assert loaded.missing_photo is not None
-    assert np.array_equal(loaded.document.mask, document.mask)
+    assert loaded.document.mask is None
+    assert any("mask" in warning for warning in loaded.warnings)
+    no_photo = load_project(write_json(tmp_path / "nophoto.t3d", project_dict(mask={"embedded_png": "aGVsbG8="})))
+    assert no_photo.document.mask is None and any("mask" in warning for warning in no_photo.warnings)
 
 
 @pytest.mark.parametrize("value, expected", [

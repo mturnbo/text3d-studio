@@ -708,3 +708,16 @@ def test_the_panel_sets_the_brush_and_clears_the_mask(window):
     assert vm.document.mask is None and not button.isEnabled()
     vm.undo()
     assert vm.document.mask is not None and button.isEnabled()
+
+
+def test_a_mask_the_gpu_cannot_hold_is_reported_not_raised_while_painting(vm):
+    canvas = sized_canvas(vm)
+    errors = []
+    canvas.error.connect(errors.append)
+    canvas.show()
+    canvas.grab()  # creates the GL context
+    vm.document.mask = np.zeros((1, canvas.compositor.max_texture_size + 1), np.uint8)
+    vm.mask_changed.emit(None)
+    canvas.grab()  # paints; the upload's error goes to the signal
+    assert errors and "Mask is" in errors[0]
+    canvas.close()

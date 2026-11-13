@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QImage, QImageReader
 
 from .image_io import SUPPORTED_EXTENSIONS, load_image, qimage_to_rgba, rgba_to_qimage
 from .model import (
@@ -242,27 +242,39 @@ def _encode_mask_png(mask) -> str:
 
 
 def _load_mask(entry, loaded: LoadedProject) -> None:
-    """The occlusion mask, a grayscale PNG. One that can't be read, or doesn't fit the photo, is dropped with a warning."""
+    """The occlusion mask, a grayscale PNG of exactly the photo's size. A crafted file can carry anything, so the
+    PNG's size is read from its header and checked against the loaded photo before any pixels are decoded: a mask
+    without a photo, of another size, or that can't be read is left out with a warning."""
     if not entry:
         return
-    image = QImage()
+    photo = loaded.document.background
+    if photo is None:
+        loaded.warnings.append("The occlusion mask was left out because the project's photo couldn't be loaded")
+        return
     try:
         data = base64.b64decode(entry.get("embedded_png", "") if isinstance(entry, dict) else "", validate=True)
     except (ValueError, TypeError):
         data = b""
-    if not image.loadFromData(data, "PNG"):
+    buffer = QBuffer()
+    buffer.setData(QByteArray(data))
+    buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buffer, b"PNG")
+    size = reader.size()  # from the header; nothing is decoded yet
+    if not size.isValid():
+        loaded.warnings.append("The occlusion mask in this project could not be read")
+        return
+    if (size.height(), size.width()) != photo.shape[:2]:
+        loaded.warnings.append("The occlusion mask doesn't match the photo's size and was left out")
+        return
+    image = reader.read()
+    if image.isNull() or (image.height(), image.width()) != photo.shape[:2]:
         loaded.warnings.append("The occlusion mask in this project could not be read")
         return
     image = image.convertToFormat(QImage.Format.Format_Grayscale8)
     width, height = image.width(), image.height()
     ptr = image.constBits()
     ptr.setsize(image.sizeInBytes())
-    mask = np.frombuffer(ptr, np.uint8).reshape(height, image.bytesPerLine())[:, :width].copy()
-    photo = loaded.document.background
-    if photo is not None and photo.shape[:2] != mask.shape:
-        loaded.warnings.append("The occlusion mask doesn't match the photo's size and was left out")
-        return
-    loaded.document.mask = mask
+    loaded.document.mask = np.frombuffer(ptr, np.uint8).reshape(height, image.bytesPerLine())[:, :width].copy()
 
 
 def is_allowed_photo_path(path: str, windows: bool = os.name == "nt") -> bool:

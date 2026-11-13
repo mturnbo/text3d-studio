@@ -119,6 +119,17 @@ def test_a_mask_of_another_size_than_the_photo_is_ignored(compositor):
     assert np.array_equal(render(compositor, doc), reference)
 
 
+def test_an_oversized_mask_is_refused_and_leaves_no_mask(compositor):
+    doc = make_document()
+    reference = render(compositor, doc)
+    compositor.set_mask(left_half_mask(doc))
+    with pytest.raises(ValueError):
+        compositor.set_mask(np.zeros((1, compositor.max_texture_size + 1), np.uint8))
+    assert not compositor.has_mask
+    compositor.set_background(doc.background)
+    assert np.array_equal(render_document(compositor, doc), reference)
+
+
 def test_transparent_export_leaves_masked_text_and_shadow_out(compositor):
     plain = make_document(light={"azimuth": -110, "elevation": 30})
     masked = make_document(light={"azimuth": -110, "elevation": 30})
