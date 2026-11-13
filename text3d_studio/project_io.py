@@ -14,6 +14,7 @@ from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
 from PyQt6.QtGui import QImage, QImageReader
 
 from .image_io import SUPPORTED_EXTENSIONS, load_image, qimage_to_rgba, rgba_to_qimage
+from .materials import sanitized_material_params
 from .model import (
     CameraParams,
     Document,
@@ -42,7 +43,7 @@ FORMAT_VERSION = 1
 # Colour fields are tuples in the model but lists in JSON; these are turned back into tuples on load.
 COLOR_FIELDS = {
     GridParams: ("color", "accent_color"),
-    MaterialParams: ("face_color", "side_color", "secondary_color"),
+    MaterialParams: ("face_color", "side_color", "secondary_color", "outline_color", "emission_color"),
     LightParams: ("color", "ambient_color"),
     ShadowParams: ("color",),
 }
@@ -166,7 +167,7 @@ def _params_from_dict(cls, data: dict | None):
     """One flat parameter section: known fields only, colours back to tuples, anything missing left at its default.
 
     A non-finite number (JSON allows NaN and Infinity) takes the field's default, and text layout values are
-    clamped to their ranges, so a crafted file can't reach the panel's controls or the renderer with them.
+    clamped to their ranges (material shading options too), so a crafted file can't reach the panel's controls or the renderer with them.
     """
     data = data or {}
     names = {f.name for f in dataclasses.fields(cls)}
@@ -184,7 +185,11 @@ def _params_from_dict(cls, data: dict | None):
             setattr(params, name, getattr(cls(), name))
         else:
             setattr(params, name, min(max(float(value), low), high))
-    return sanitized_text_params(params) if cls is TextParams else params
+    if cls is TextParams:
+        return sanitized_text_params(params)
+    if cls is MaterialParams:
+        return sanitized_material_params(params)
+    return params
 
 
 def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
