@@ -1,5 +1,7 @@
 """ControlPanel: declarative slider/picker layout bound two-way to the SceneViewModel."""
 
+import math
+
 from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence
 from PyQt6.QtWidgets import (
@@ -249,6 +251,11 @@ class SliderRow(QWidget):
         self.value_changed.emit(value)
 
     def set_value(self, value: float) -> None:
+        # Shows the nearest value in range: QSlider overflows on huge numbers and round() fails on NaN, and a
+        # model value can come from a project file.
+        if not math.isfinite(value):
+            value = self.spin.minimum()
+        value = min(max(value, self.spin.minimum()), self.spin.maximum())
         for widget, v in ((self.slider, round(value * self.factor)), (self.spin, value)):
             widget.blockSignals(True)
             widget.setValue(v)

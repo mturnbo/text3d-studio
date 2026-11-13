@@ -8,7 +8,7 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 from PyQt6.QtWidgets import QMessageBox
 
 from text3d_studio.image_io import save_image
-from text3d_studio.model import Document
+from text3d_studio.model import Document, LightParams
 from text3d_studio.preferences import Preferences
 from text3d_studio.project_io import load_project
 from text3d_studio.viewmodel import SceneViewModel
@@ -483,3 +483,38 @@ def test_opening_a_project_disables_undo(window, tmp_path, monkeypatch, preferen
     assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
     window.undo_action.trigger()
     assert window.vm.scene.camera.fov != 21.0
+
+
+# ----- Hostile values ---------------------------------------------------------------------------
+
+
+def write_project_text(path, scene_json):
+    path.write_text('{"format": "text3d-studio-project", "version": 1, "scene": ' + scene_json + "}")
+    return str(path)
+
+
+def test_oversized_and_non_finite_values_open_safely_and_show_in_range(window, tmp_path, qapp):
+    # Python's json reads NaN and Infinity, so a crafted file can carry them. They used to crash the panel's
+    # sliders (QSlider overflows, round(NaN) raises) before the rasterizer's own clamps could help.
+    path = write_project_text(tmp_path / "hostile.t3d", """{
+        "objects": [{"id": 0, "text": {"content": "HI", "line_height": 1e9, "letter_spacing": NaN,
+                                       "arc": -Infinity, "bevel_width": 1e300}}],
+        "light": {"intensity": 1e9, "azimuth": NaN}
+    }""")
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    text = window.vm.scene.objects[0].text
+    assert (text.line_height, text.letter_spacing, text.arc, text.bevel_width) == (2.0, 0.0, 0.0, 20.0)
+    assert window.vm.scene.light.azimuth == LightParams().azimuth  # non-finite -> default
+    assert slider_value(window, "text.line_height") == 2.0
+    assert slider_value(window, "light.intensity") == 3.0  # in the model as loaded, shown at the slider's end
+    window.canvas.grab()  # paints, rasterizing the loaded text
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1e12, 1e12])
+def test_sliders_show_the_nearest_value_in_range(window, value):
+    row = window.panel.findChild(SliderRow, "light.intensity")
+    row.set_value(value)
+    assert row.spin.minimum() <= row.spin.value() <= row.spin.maximum()
+    assert row.slider.minimum() <= row.slider.value() <= row.slider.maximum()

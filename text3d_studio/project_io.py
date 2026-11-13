@@ -3,6 +3,7 @@
 import base64
 import dataclasses
 import json
+import math
 import os
 import re
 import tempfile
@@ -26,6 +27,7 @@ from .model import (
     TransformParams,
     WallParams,
 )
+from .text_raster import sanitized_text_params
 
 PROJECT_EXTENSION = ".t3d"
 PROJECT_FILTER = f"Text3D Studio project (*{PROJECT_EXTENSION})"
@@ -150,14 +152,22 @@ def _object_from_dict(data: dict) -> TextObject:
 
 
 def _params_from_dict(cls, data: dict | None):
-    """One flat parameter section: known fields only, colours back to tuples, anything missing left at its default."""
+    """One flat parameter section: known fields only, colours back to tuples, anything missing left at its default.
+
+    A non-finite number (JSON allows NaN and Infinity) takes the field's default, and text layout values are
+    clamped to their ranges, so a crafted file can't reach the panel's controls or the renderer with them.
+    """
     data = data or {}
     names = {f.name for f in dataclasses.fields(cls)}
-    values = {name: value for name, value in data.items() if name in names}
+    values = {
+        name: value for name, value in data.items()
+        if name in names and not (isinstance(value, float) and not math.isfinite(value))
+    }
     for name in COLOR_FIELDS.get(cls, ()):
         if name in values:
             values[name] = tuple(values[name])
-    return cls(**values)
+    params = cls(**values)
+    return sanitized_text_params(params) if cls is TextParams else params
 
 
 def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:
