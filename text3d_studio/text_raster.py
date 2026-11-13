@@ -53,7 +53,7 @@ class GlyphRaster:
 def rasterize_text(params: TextParams) -> GlyphRaster | None:
     """Rasterizes every line of the text, stacked downward and optionally bent along an arc. Blank lines keep
     their height; the mask is cropped to the ink, so leading and trailing blank lines don't count."""
-    params = _sanitized(params)
+    params = sanitized_text_params(params)
     if not params.content.strip():
         return None
 
@@ -81,7 +81,7 @@ def rasterize_text(params: TextParams) -> GlyphRaster | None:
     )
 
 
-def _sanitized(params: TextParams) -> TextParams:
+def sanitized_text_params(params: TextParams) -> TextParams:
     """The params with layout values clamped to LAYOUT_RANGES; a non-finite value or an unknown alignment
     falls back to the default."""
     defaults = TextParams()
