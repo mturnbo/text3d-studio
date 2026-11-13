@@ -37,6 +37,10 @@ class ShadowRenderer:
         self.pong = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)  # blur scratch
         self.wall = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)  # the wall's shadow
         self.contact = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)  # the contact shadow
+        # The surfaces composite samples both even when only one is in use; give each storage up front so the
+        # unused one is a complete texture, not an empty one the driver warns about.
+        self.wall.resize(1, 1)
+        self.contact.resize(1, 1)
         # For the composite, from the last render_mask: (tan_half, ground plane, wall plane or None, contact drawn),
         # or None when only the floor's shadow was drawn.
         self._surfaces = None
