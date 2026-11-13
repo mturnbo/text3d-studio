@@ -8,11 +8,11 @@ from OpenGL import GL
 from .. import ground as ground_model
 from .. import math3d
 from ..lighting import LightingState, srgb_to_linear
-from ..materials import PRESETS, TRANSMISSION
+from ..materials import PRESETS, TRANSMISSION, transmits
 from ..model import Scene, TextObject, TransformParams
 from ..text_raster import GlyphRaster
 from . import shaders
-from .gl_utils import ShaderProgram, Texture2D, TriangleBuffer, UnitQuad
+from .gl_utils import ColorTarget, RenderTarget, ShaderProgram, Texture2D, TriangleBuffer, UnitQuad
 
 IDENTITY_GL = math3d.to_gl(math3d.identity())
 PATTERNS = {"stone": 1, "wood": 2}  # material kinds with a procedural texture (see LAYER_STACK_FS)
@@ -26,6 +26,10 @@ SIDE_GLOW = 0.35  # the side walls and back cap glow with this fraction of their
 # whose samples belong to several slices. (An early synthetic benchmark suggested 2x; real textures did not.)
 # The shading pass keeps its alpha test. False renders the stack in one pass.
 DEPTH_PREPASS = True
+
+# Glass shows its own back cap and side walls (drawn into the backdrop before it is shaded); False shows only
+# what is behind the text.
+GLASS_FAR_WALLS = True
 
 
 class Glyph:
@@ -52,6 +56,8 @@ class Text3DRenderer:
     def __init__(self, quad: UnitQuad):
         self.quad = quad
         self.depth_prepass = DEPTH_PREPASS
+        self.glass_far_walls = GLASS_FAR_WALLS
+        self.far_target: RenderTarget | None = None  # sized to the backdrop when glass is drawn
         self.beauty = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_STACK_FS)
         self.depth = ShaderProgram(shaders.LAYER_STACK_VS, shaders.LAYER_DEPTH_FS)
         self.cap_shadow = ShaderProgram(shaders.LAYER_STACK_VS, shaders.SHADOW_FS)
@@ -76,7 +82,51 @@ class Text3DRenderer:
         program = self.beauty
         self._bind_common(program, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting)
         program.set_int("u_layers", layers)
-        m = obj.material
+        self._bind_material(program, scene, obj.material, lighting, environment, backdrop)
+        program.set_int("u_far_walls", 0)
+        self.quad.draw(layers)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDepthMask(GL.GL_TRUE)
+
+    def draw_far_walls(
+        self, scene: Scene, drawn: list[tuple[TextObject, Glyph]], proj: np.ndarray, lighting: LightingState,
+        backdrop: ColorTarget, environment: Texture2D | None = None,
+    ) -> None:
+        """Draws what each transmissive object's front looks through, its back cap and side walls seen from
+        inside (the farthest slice at each pixel), into the captured `backdrop`, and rebuilds its mipmaps. Glass
+        then refracts its own far walls and their tint, not just the photo. Leaves the far-walls target bound."""
+        transmissive = [(obj, glyph) for obj, glyph in drawn if transmits(obj.material) and obj.transform.depth > 1e-4]
+        if not (self.glass_far_walls and transmissive):
+            return
+        width, height = backdrop.width, backdrop.height
+        if self.far_target is None or (self.far_target.width, self.far_target.height) != (width, height):
+            if self.far_target is not None:
+                self.far_target.delete()
+            self.far_target = RenderTarget(width, height)
+        _blit(backdrop.fbo, self.far_target.fbo, width, height)  # walls go over a copy: the shader reads backdrop
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.far_target.fbo)
+        GL.glViewport(0, 0, width, height)
+        GL.glClearDepth(0.0)
+        GL.glClear(GL.GL_DEPTH_BUFFER_BIT)
+        GL.glClearDepth(1.0)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthFunc(GL.GL_GREATER)  # the farthest slice: where the view leaves the text
+        program = self.beauty
+        for obj, glyph in transmissive:
+            layers = self.effective_layers(scene, obj.transform, height)
+            self._bind_common(program, scene, obj.transform, glyph, proj, IDENTITY_GL, lighting)
+            program.set_int("u_layers", layers)
+            self._bind_material(program, scene, obj.material, lighting, environment, backdrop.texture)
+            program.set_int("u_far_walls", 1)
+            self.quad.draw(layers)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        _blit(self.far_target.fbo, backdrop.fbo, width, height)
+        backdrop.texture.bind(0)
+        GL.glGenerateMipmap(GL.GL_TEXTURE_2D)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.far_target.fbo)
+
+    def _bind_material(self, program, scene, m, lighting, environment, backdrop) -> None:
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
@@ -102,9 +152,6 @@ class Text3DRenderer:
             program.set_int("u_environment", 1)
             program.set_float("u_environment_lod", environment.max_lod)
             program.set_float("u_environment_strength", scene.light.reflection_strength)
-        self.quad.draw(layers)
-        GL.glDepthFunc(GL.GL_LESS)
-        GL.glDepthMask(GL.GL_TRUE)
 
     def draw_shadow_caster(
         self, scene: Scene, obj: TextObject, glyph: Glyph, proj: np.ndarray, lighting: LightingState, darken,
@@ -164,6 +211,14 @@ class Text3DRenderer:
         self.depth.delete()
         self.cap_shadow.delete()
         self.wall_shadow.delete()
+        if self.far_target is not None:
+            self.far_target.delete()
+
+
+def _blit(source_fbo: int, target_fbo: int, width: int, height: int) -> None:
+    GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, source_fbo)
+    GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, target_fbo)
+    GL.glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST)
 
 
 def _set_surface(

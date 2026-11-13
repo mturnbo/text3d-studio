@@ -1017,7 +1017,7 @@ def test_glass_sides_show_the_photo_through_an_opaque_face(compositor):
         return render(compositor, doc)[..., :3].astype(float)
 
     warm, cool = colors("glass", (220, 160, 60)), colors("glass", (60, 120, 230))
-    assert (warm - cool)[walls][:, 0].mean() > 40  # the walls show what is behind them
+    assert (warm - cool)[walls][:, 0].mean() > 15  # the walls show what is behind them (through tinted glass)
     np.testing.assert_array_equal(warm[face], cool[face])  # the plastic face doesn't
     np.testing.assert_array_equal(colors("same", (220, 160, 60))[walls], colors("same", (60, 120, 230))[walls])
 
@@ -1191,3 +1191,103 @@ def test_a_neon_face_can_have_stone_sides_and_an_unlit_outline(compositor):
     assert saturation_of(pixels[walls]).mean() < 0.5 * saturation_of(glowing[walls]).mean()  # gray stone walls
     outlined = text_pixels(compositor, neon_document(outline_width=1.0, outline_color=(0.05, 0.05, 0.05))).mean()
     assert outlined < text_pixels(compositor, neon_document()).mean()  # the dark outline band doesn't glow
+
+
+# ----- Glass far walls ----------------------------------------------------------------------------
+
+
+def compositor_with_far_walls(monkeypatch, enabled):
+    import text3d_studio.render.text3d_renderer as text3d_renderer
+
+    monkeypatch.setattr(text3d_renderer, "GLASS_FAR_WALLS", enabled)
+    return Compositor()
+
+
+def thick_glass_document(kind="glass", **material):
+    doc = glass_document(kind, **material)
+    doc.scene.objects[0].transform.depth = 0.8
+    doc.scene.objects[0].transform.rot_y = -30.0
+    return doc
+
+
+def render_with_far_walls(monkeypatch, doc, enabled):
+    compositor = compositor_with_far_walls(monkeypatch, enabled)
+    try:
+        return render(compositor, doc)
+    finally:
+        compositor.delete()
+
+
+def test_thick_glass_shows_its_far_walls_on_a_flat_background(gl_context, monkeypatch):
+    doc = thick_glass_document()
+    with_walls = render_with_far_walls(monkeypatch, doc, True)
+    without = render_with_far_walls(monkeypatch, doc, False)
+    compositor = Compositor()
+    try:
+        _, interior = text_image(compositor, thick_glass_document("plastic"), erode=3)
+    finally:
+        compositor.delete()
+    # The flat photo seen through the glass is nearly uniform; the far walls behind the front break it up.
+    assert luminance(with_walls)[interior].std() > 1.3 * luminance(without)[interior].std()
+    assert np.mean(np.any(with_walls != without, axis=-1)[interior]) > 0.3
+
+
+def test_far_walls_take_the_side_tint(gl_context, monkeypatch):
+    blue = (0.3, 0.5, 1.0)
+
+    def mean_color(enabled):
+        doc = thick_glass_document(side_color=blue, face_color=(1.0, 1.0, 1.0), absorption=0.5)
+        doc.background[..., :3] = 255
+        return render_with_far_walls(monkeypatch, doc, enabled)[..., :3].astype(float)
+
+    compositor = Compositor()
+    try:
+        _, interior = text_image(compositor, thick_glass_document("plastic"), erode=3)
+    finally:
+        compositor.delete()
+    with_walls, without = mean_color(True)[interior].mean(axis=0), mean_color(False)[interior].mean(axis=0)
+    assert (with_walls[2] - with_walls[0]) > (without[2] - without[0]) + 10  # bluer through the tinted walls
+
+
+def test_glass_face_shows_opaque_sides_through_it_only_with_far_walls(gl_context, monkeypatch):
+    def interior_pixels(side_kind, enabled):
+        compositor = compositor_with_far_walls(monkeypatch, enabled)
+        try:
+            _, interior = text_image(compositor, thick_glass_document("plastic"), erode=3)
+            doc = thick_glass_document(side_kind=side_kind)
+            return render(compositor, doc)[interior].astype(float)
+        finally:
+            compositor.delete()
+
+    # Without far walls the face only refracts the photo, whatever the sides are made of.
+    assert np.abs(interior_pixels("wood", False) - interior_pixels("same", False)).mean() < 15
+    assert np.abs(interior_pixels("wood", True) - interior_pixels("same", True)).mean() > 15
+
+
+def test_opaque_objects_are_unaffected_by_far_walls(gl_context, monkeypatch):
+    plastic, glass = text_object(0, material="plastic", x=-3.0), text_object(1, material="glass", x=3.0)
+    for obj in (plastic, glass):
+        obj.transform.depth = 0.8
+    doc = scene_of(plastic, glass)
+    with_walls = render_with_far_walls(monkeypatch, doc, True)
+    without = render_with_far_walls(monkeypatch, doc, False)
+    glass_only = scene_of(text_object(1, material="plastic", x=3.0, depth=0.8))
+    compositor = Compositor()
+    try:
+        _, glass_area = text_image(compositor, glass_only, erode=0)
+    finally:
+        compositor.delete()
+    changed = np.any(with_walls != without, axis=-1)
+    assert changed.any()
+    assert not changed[~glass_area].any()  # the plastic object and the photo are untouched
+    for kind in ("metal", "stone", "neon"):
+        opaque = make_document(material={"kind": kind}, transform={"depth": 0.8, "rot_y": -40})
+        np.testing.assert_array_equal(
+            render_with_far_walls(monkeypatch, opaque, True), render_with_far_walls(monkeypatch, opaque, False)
+        )
+
+
+def test_flat_glass_has_no_far_walls_to_show(gl_context, monkeypatch):
+    doc = thick_glass_document()
+    doc.scene.objects[0].transform.depth = 0.0
+    np.testing.assert_array_equal(render_with_far_walls(monkeypatch, doc, True), render_with_far_walls(monkeypatch, doc, False))

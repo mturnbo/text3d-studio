@@ -179,6 +179,7 @@ uniform float u_backdrop_lod;        // smallest mip level
 uniform float u_outline_width;       // in bevel widths; 0 = no outline
 uniform vec3 u_outline_color;        // linear
 uniform float u_outline_metallic;
+uniform bool u_far_walls;            // draws the inside of the back cap and side walls, for glass to look through
 uniform mat4 u_proj;
 uniform float u_depth;
 uniform float u_world_size;
@@ -376,11 +377,27 @@ vec3 opaque(Surface s, vec3 n, vec3 coat_local, vec3 v, vec3 l, vec3 h, vec3 bas
     return color;
 }
 
+// The inside of a glass wall, seen through the text's front: the scene behind, along the ray bent out of the
+// glass or, past the critical angle, reflected back into it (that light too comes from the scene, further
+// along). The front already tints the view by the slab's thickness; a wall seen at a slant adds the extra glass
+// the view runs along it, tinted the wall's color.
+vec3 glass_far_wall(Surface s, vec3 n_in, vec3 v, vec3 tint) {
+    float facing = max(dot(n_in, v), 0.3);
+    vec3 transmittance = pow(max(tint, vec3(1e-3)), vec3(s.absorption * u_depth * (1.0 / facing - 1.0)));
+    vec3 out_dir = refract(-v, n_in, GLASS_IOR);  // glass to air
+    if (dot(out_dir, out_dir) == 0.0) out_dir = reflect(-v, n_in);  // total internal reflection
+    vec4 clip = u_proj * vec4(v_pos + out_dir * (REFRACTION_DEPTH * u_world_size), 1.0);
+    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, 0.0, 1.0);
+    return srgb_to_linear(textureLod(u_backdrop, uv, 0.0).rgb) * transmittance;
+}
+
 void main() {
     vec4 m;
     float coverage = mask_coverage(u_mask, v_uv, m);
     float bevel_step = max(fwidth(m.b), 1e-4);  // before the discard, so neighbouring pixels still take part
     if (coverage <= 0.0) discard;
+    // The far walls are drawn without multisampling, into the backdrop; the front is never a far wall.
+    if (u_far_walls && (coverage < 0.5 || v_layer == 0)) discard;
 
     vec2 dir = m.rg * 2.0 - 1.0;
     Surface s;
@@ -428,6 +445,14 @@ void main() {
     vec3 h = normalize(l + v);
 
     vec3 color;
+    if (u_far_walls) {
+        // Seen from inside the text, every far surface faces back toward the camera.
+        color = s.transmissive
+            ? glass_far_wall(s, -n, v, base)
+            : opaque(s, -n, -coat_local, v, l, h, base, metallic, roughness);
+        frag = vec4(linear_to_srgb(color + s.emission), 1.0);
+        return;
+    }
     if (s.transmissive) {
         color = glass(s, n, v, l, h, base, roughness);
         if (outline > 0.0) {  // the outline is opaque, even on glass
