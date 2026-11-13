@@ -145,6 +145,8 @@ class EffectsParams:
     bloom_threshold: float = 0.8  # brightness (0-1) above which the text glows
     bloom_radius: float = 0.3  # how far the glow spreads, relative to the image height
     blur_radius: float = 0.0  # softens the text to match a soft photo; 0 = off
+    dof_focus: float = 12.0  # depth of field: the distance (world units along the view) that stays sharp
+    dof_aperture: float = 0.0  # how strongly text away from the focus blurs; 0 = off
     grain_amount: float = 0.0  # film grain on the text; 0 = off
     grain_size: float = 1.0  # size of a grain, in thousandths of the image height
     # Colour grade of the text alone; each is neutral at its default.
@@ -209,6 +211,8 @@ FIELD_RANGES = {
         "bloom_threshold": (0.0, 1.0),
         "bloom_radius": (0.0, 1.0),
         "blur_radius": (0.0, 1.0),
+        "dof_focus": (0.5, 200.0),
+        "dof_aperture": (0.0, 1.0),
         "grain_amount": (0.0, 1.0),
         "grain_size": (0.5, 5.0),
         "grade_brightness": (-1.0, 1.0),

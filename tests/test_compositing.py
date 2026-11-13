@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from text3d_studio.materials import PRESETS
-from text3d_studio.model import Document
+from text3d_studio.model import Document, MaterialParams
 from text3d_studio.render.compositor import Compositor
 from text3d_studio.render.exporter import render_document
 from text3d_studio.text_raster import rasterize_text
@@ -664,6 +664,59 @@ def test_the_grade_is_in_the_transparent_export(compositor):
     assert (channels.max(axis=1) - channels.min(axis=1)).max() <= 2
 
 
+NEAR_Z, FAR_Z = -6.0, -24.0  # two objects' distances; with pitch 0 their view distance is nearly -z
+
+
+def two_distances(**effects):
+    """A near object on the left and a far one on the right, each covering about the same height on screen."""
+    near = text_object(0, "NEAR", x=-2.2, z=NEAR_Z, size=1.0)
+    far = text_object(1, "FAR", x=6.0, z=FAR_Z, size=4.0)
+    for obj in (near, far):
+        obj.material = MaterialParams(**{**PRESETS["plastic"], "kind": "plastic", "face_color": (0.55, 0.45, 0.35)})
+    doc = make_document(shadow=NO_SHADOW, effects=effects)
+    doc.scene.objects = [near, far]
+    return doc
+
+
+def per_object_sharpness(compositor, pixels):
+    plain = render(compositor, two_distances())
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    left, right = text.copy(), text.copy()
+    left[:, 320:], right[:, :320] = False, False
+    assert left.sum() > 1000 and right.sum() > 1000  # both objects are in the picture, one on each side
+    return edge_sharpness(pixels, left), edge_sharpness(pixels, right)
+
+
+@pytest.mark.parametrize("focus, sharp_side", [(6.2, 0), (24.5, 1)], ids=["near-focus", "far-focus"])
+def test_the_object_out_of_focus_blurs_more(compositor, focus, sharp_side):
+    plain = per_object_sharpness(compositor, render(compositor, two_distances()))
+    focused = per_object_sharpness(compositor, render(compositor, two_distances(dof_focus=focus, dof_aperture=1.0)))
+    blurred_side = 1 - sharp_side
+    assert focused[sharp_side] > 0.85 * plain[sharp_side]  # in focus: about as sharp as before
+    assert focused[blurred_side] < 0.6 * plain[blurred_side]
+
+
+def test_a_wider_aperture_blurs_more(compositor):
+    slight = per_object_sharpness(compositor, render(compositor, two_distances(dof_focus=6.2, dof_aperture=0.2)))
+    strong = per_object_sharpness(compositor, render(compositor, two_distances(dof_focus=6.2, dof_aperture=1.0)))
+    assert strong[1] < slight[1]
+
+
+def test_zero_aperture_is_identical_to_before(compositor):
+    plain = render(compositor, two_distances())
+    assert np.array_equal(plain, render(compositor, two_distances(dof_focus=50.0, dof_aperture=0.0)))
+
+
+def test_depth_of_field_blurs_the_edge_in_the_transparent_export(compositor):
+    plain = render(compositor, two_distances(), transparent=True)
+    soft = render(compositor, two_distances(dof_focus=6.2, dof_aperture=1.0), transparent=True)
+    text = plain[..., 3] > 0
+    outside = dilated(text, 3) & ~dilated(text, 1)
+    outside[:, :320] = False  # around the far, blurred object
+    assert soft[outside][:, 3].mean() > 10
+    assert not soft[~dilated(text, round(0.04 * 400) + 3)][:, 3].any()  # no farther than the largest blur
+
+
 def test_the_preview_stays_opaque_with_every_effect_on(compositor):
     doc = bloom_document(reflection_strength=1.0)
     doc.scene.shadow.enabled = True
@@ -671,3 +724,4 @@ def test_the_preview_stays_opaque_with_every_effect_on(compositor):
     doc.scene.wall.enabled = True
     doc.mask = left_half_mask(doc)
     assert render_preview(compositor, doc, mask_overlay=True)[..., 3].min() == 255
+

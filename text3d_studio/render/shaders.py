@@ -942,3 +942,72 @@ void main() {
     frag = vec4(rgb * color.a, color.a);
 }
 """
+
+
+# Depth of field, step 1: each pixel's blur radius in pixels (its circle of confusion), from the text layer's depth.
+# A pixel takes the largest radius of any text whose blur reaches it (a sample's radius covers the distance) and
+# isn't behind its own text, so blurred text spreads past its outline and over farther text, never over nearer.
+DOF_COC_FS = """
+#version 410 core
+uniform sampler2D u_depth;
+uniform float u_near;
+uniform float u_far;
+uniform float u_focus;
+uniform float u_max_coc;   // pixels, for text infinitely far from the focus
+out vec4 frag;
+const int SAMPLES = 48;
+const float GOLDEN_ANGLE = 2.39996323;
+
+float coc_of(float depth) {
+    float ndc = depth * 2.0 - 1.0;
+    float distance = 2.0 * u_near * u_far / (u_far + u_near - ndc * (u_far - u_near));
+    return u_max_coc * min(abs(1.0 - u_focus / distance), 1.0);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    ivec2 last = textureSize(u_depth, 0) - 1;
+    float depth = texelFetch(u_depth, texel, 0).r;
+    bool text = depth < 1.0;  // the layer's depth is cleared to 1 where there is no text
+    float coc = text ? coc_of(depth) : 0.0;
+    for (int i = 1; i <= SAMPLES; ++i) {
+        float angle = float(i) * GOLDEN_ANGLE;
+        vec2 offset = u_max_coc * sqrt(float(i) / float(SAMPLES)) * vec2(cos(angle), sin(angle));
+        float other = texelFetch(u_depth, clamp(texel + ivec2(round(offset)), ivec2(0), last), 0).r;
+        if (other >= 1.0 || (text && other > depth)) continue;
+        float reach = coc_of(other);
+        if (reach >= length(offset)) coc = max(coc, reach);
+    }
+    frag = vec4(coc, 0.0, 0.0, 1.0);
+}
+"""
+
+# Depth of field, step 2: BLUR_RGBA_FS with each pixel's own radius (u_coc, pixels) instead of a fixed step.
+DOF_BLUR_FS = """
+#version 410 core
+uniform sampler2D u_image;
+uniform sampler2D u_coc;
+uniform vec2 u_direction;  // (1, 0) or (0, 1)
+uniform float u_step;      // tap spacing per pixel of radius
+out vec4 frag;
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    float radius = texelFetch(u_coc, texel, 0).r;
+    if (radius < 0.5) {
+        frag = texelFetch(u_image, texel, 0);
+        return;
+    }
+    vec2 size = vec2(textureSize(u_image, 0));
+    vec2 uv = gl_FragCoord.xy / size;
+    vec2 step = u_direction * radius * u_step / size;
+    vec4 total = vec4(0.0);
+    float weights = 0.0;
+    for (int i = -12; i <= 12; ++i) {
+        float x = float(i) / 6.0;
+        float w = exp(-0.5 * x * x);
+        total += texture(u_image, uv + step * float(i)) * w;
+        weights += w;
+    }
+    frag = total / weights;
+}
+"""

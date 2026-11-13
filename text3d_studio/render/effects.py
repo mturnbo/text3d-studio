@@ -4,7 +4,8 @@
   half-resolution layer; faded with depth below the ground and blurred by roughness, then put over the floor before
   the text.
 - Text finishing: passes on the resolved text layer alone, each into a full-size copy (ping-pong), so the composite,
-  the bloom and the transparent export all see the finished text, in this order: blur (premultiplied, so the edge
+  the bloom and the transparent export all see the finished text, in this order: depth of field (a blur radius per
+  pixel from the layer's depth, spread past the text's outline, then a separable blur by it), blur (premultiplied, so the edge
   softens into transparency), then colour grade and film grain (seeded value noise, fixed to the image) in one pass.
 - Bloom: what is brighter than the threshold in the text layer, at half resolution, blurred and added over the
   composite. It is light, with no alpha of its own; the transparent export gives it its brightest channel as alpha.
@@ -26,6 +27,7 @@ BLUR_ITERATIONS = 2
 REFLECTION_SAMPLES = 4
 REFLECTION_BLUR = 0.04  # the reflection's blur radius at roughness 1, as a fraction of the image height
 BLOOM_SPREAD = 0.15  # the glow's blur radius at bloom_radius 1, as a fraction of the image height
+DOF_BLUR = 0.04  # the blur radius of text far out of focus at aperture 1, as a fraction of the image height
 TEXT_BLUR = 0.02  # the text's blur radius at blur_radius 1, as a fraction of the image height
 WARMTH_SHIFT = 0.2  # how much warmth 1 raises red and lowers blue (as gains)
 GRAIN_CONTRAST = 0.3  # how far grain at amount 1 moves a channel (0-1) either way
@@ -46,11 +48,14 @@ class EffectsRenderer:
         self.reflection_fade = ShaderProgram(shaders.FULLSCREEN_VS, shaders.REFLECTION_FADE_FS)
         self.bloom_extract = ShaderProgram(shaders.FULLSCREEN_VS, shaders.BLOOM_EXTRACT_FS)
         self.text_finish = ShaderProgram(shaders.FULLSCREEN_VS, shaders.TEXT_FINISH_FS)
+        self.dof_coc = ShaderProgram(shaders.FULLSCREEN_VS, shaders.DOF_COC_FS)
+        self.dof_blur = ShaderProgram(shaders.FULLSCREEN_VS, shaders.DOF_BLUR_FS)
         self.reflection_layer = LayerTarget()
         self.reflection = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)  # faded and blurred, premultiplied
         self.half_scratch = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
         self.bloom = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
         self.finished = (ColorTarget(GL.GL_RGBA8, GL.GL_RGBA), ColorTarget(GL.GL_RGBA8, GL.GL_RGBA))  # ping-pong
+        self.coc = ColorTarget(GL.GL_R16F, GL.GL_RED)  # depth of field: blur radius per pixel
         self.has_reflection = False
         self.has_bloom = False
 
@@ -114,11 +119,42 @@ class EffectsRenderer:
 
     # ----- Text finishing ----------------------------------------------------------------------------
 
-    def finish_text_layer(self, scene: Scene, layer: LayerTarget) -> Texture2D:
+    def finish_text_layer(self, scene: Scene, layer: LayerTarget, near: float, far: float) -> Texture2D:
         """Runs the passes that change the text itself on the resolved `layer` and returns the texture to composite:
-        the layer's own color, untouched, when they are all off."""
+        the layer's own color, untouched, when they are all off. `near` and `far`: the projection's clip planes."""
         effects = scene.effects
         color = layer.color
+        if effects.dof_aperture > 0:
+            max_coc = effects.dof_aperture * DOF_BLUR * layer.height
+            self.coc.resize(layer.width, layer.height)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.coc.fbo)
+            GL.glViewport(0, 0, layer.width, layer.height)
+            program = self.dof_coc
+            program.use()
+            program.set_int("u_depth", 0)
+            program.set_float("u_near", near)
+            program.set_float("u_far", far)
+            program.set_float("u_focus", effects.dof_focus)
+            program.set_float("u_max_coc", max_coc)
+            layer.depth.bind(0)
+            self.quad.draw()
+            target, scratch = self.finished
+            target.resize(layer.width, layer.height)
+            scratch.resize(layer.width, layer.height)
+            program = self.dof_blur
+            program.use()
+            program.set_int("u_image", 0)
+            program.set_int("u_coc", 1)
+            program.set_float("u_step", 1.0 / BLUR_TAPS / BLUR_ITERATIONS)
+            self.coc.texture.bind(1)
+            for iteration in range(BLUR_ITERATIONS):
+                first = color if iteration == 0 else target.texture
+                for image, dest, direction in ((first, scratch, (1.0, 0.0)), (scratch.texture, target, (0.0, 1.0))):
+                    GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, dest.fbo)
+                    image.bind(0)
+                    program.set_vec2("u_direction", direction)
+                    self.quad.draw()
+            color = target.texture
         if effects.blur_radius > 0:
             target, scratch = self.finished if color is not self.finished[1].texture else self.finished[::-1]
             target.resize(layer.width, layer.height)
@@ -222,6 +258,9 @@ class EffectsRenderer:
         self.reflection_fade.delete()
         self.bloom_extract.delete()
         self.text_finish.delete()
+        self.dof_coc.delete()
+        self.dof_blur.delete()
+        self.coc.delete()
         for target in self.finished:
             target.delete()
         self.bloom.delete()

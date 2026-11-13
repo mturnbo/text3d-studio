@@ -143,7 +143,7 @@ class Compositor:
                 environment = self.background if self.has_background and scene.light.reflect_photo else None
                 self.text.draw_far_walls(scene, drawn, proj, lighting, self.backdrop, environment)
             self._draw_text_layer(scene, drawn, proj, lighting, backdrop, max(MIN_LAYER_SAMPLES, target_samples))
-            self.text_color = self.effects.finish_text_layer(scene, self.text_layer)
+            self.text_color = self.effects.finish_text_layer(scene, self.text_layer, NEAR, FAR)
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
             GL.glViewport(x, y, width, height)
             GL.glEnable(GL.GL_SCISSOR_TEST)
