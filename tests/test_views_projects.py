@@ -535,6 +535,22 @@ def test_hostile_shading_values_open_safely_and_show_in_range(window, tmp_path, 
     window.canvas.grab()  # paints every object
 
 
+@pytest.mark.parametrize("kind", ["cheese", 12, None])
+def test_an_unknown_material_kind_opens_as_the_default_kind(window, tmp_path, qapp, kind):
+    import json
+
+    from PyQt6.QtWidgets import QComboBox
+
+    path = write_project_text(tmp_path / "unknown-kind.t3d", '{"objects": [{"id": 0, "material": {"kind": %s}}]}'
+                              % json.dumps(kind))
+    window.show()
+    window.open_project_path(path)
+    qapp.processEvents()
+    assert window.vm.scene.objects[0].material.kind == "metal"
+    assert window.panel.findChild(QComboBox, "material.kind").currentData() == "metal"
+    window.canvas.grab()
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1e12, 1e12])
 def test_sliders_show_the_nearest_value_in_range(window, value):
     row = window.panel.findChild(SliderRow, "light.intensity")

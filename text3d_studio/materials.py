@@ -74,10 +74,14 @@ def transmits(material) -> bool:
 
 
 def sanitized_material_params(params):
-    """The params with the shading options a project file could set badly brought back: an unknown side kind
-    falls back to "same", a number or colour that isn't one takes its default, and values are clamped to range."""
+    """The params with the shading options a project file could set badly brought back: an unknown kind takes the
+    default kind and an unknown side kind falls back to "same", a number or colour that isn't one takes its default,
+    and values are clamped to range."""
     defaults = type(params)()
-    values = {"side_kind": params.side_kind if params.side_kind in SIDE_KINDS else "same"}
+    values = {
+        "kind": params.kind if params.kind in KINDS else defaults.kind,
+        "side_kind": params.side_kind if params.side_kind in SIDE_KINDS else "same",
+    }
     for name, (low, high) in SHADING_RANGES.items():
         value = getattr(params, name)
         values[name] = min(max(value, low), high) if _is_finite_number(value) else getattr(defaults, name)
