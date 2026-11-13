@@ -66,8 +66,9 @@ math3d.py           row-major numpy 4x4 helpers; to_gl() transposes to column-ma
                     Also image-space perspective: project_to_image / image_ray (pixels, origin
                     top-left, y down), intersect_ray_plane, 4-point homography, vanishing points,
                     focal_from_vanishing_points, ground_pose_from_rectangle, ground_angles_from_rotation
-materials.py        Material KINDS (metal, plastic, stone, wood, glass) and their PRESETS (every MaterialParams
-                    field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset
+materials.py        Material KINDS (metal, plastic, stone, wood, glass, neon) and their PRESETS (every MaterialParams
+                    field except `kind`). SceneViewModel.apply_material(kind) sets the kind and loads its preset.
+                    SIDE_KINDS, transmits(material), sanitized_material_params (project loading)
 ground.py           Ground model B: ground pose (GroundParams) → plane, origin, light frame; text
                     placement on it (text_position, text_model_matrix, world_to_ground, text_distance);
                     the wall (wall_rotation, wall_to_world, world_to_wall, wall_plane, wall_through,
@@ -155,14 +156,52 @@ Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `
   is reflected instead. The split-sum environment BRDF uses Karis's analytic fit (`environment_brdf`).
 - **Procedural textures** (stone, wood) sample `NOISE_GLSL` at `v_local` (text space, em units), so
   patterns are continuous from face to side walls and stick to the text. Relief (bump) only runs on the
-  front and back slices. `u_pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
+  front and back slices. A surface's `pattern` comes from `text3d_renderer.PATTERNS`; varnish is a general clear coat.
+- **Surfaces.** `LAYER_STACK_FS` shades from two `Surface` uniforms: `u_face` (the object's material, face color)
+  and `u_side` (side walls and back cap). With `material.side_kind == "same"` the side surface is the material
+  with its side color, exactly as before; with another kind (`materials.SIDE_KINDS`) it is that kind's preset
+  (colors, roughness, metallic, pattern, transmission, glow), so the side color doesn't apply (the panel hides
+  it). `text3d_renderer._set_surface` fills one. A preset covers every field, so picking a material resets
+  `side_kind`. `materials.transmits` (face or sides glass) decides whether an object needs the backdrop; the
+  object's shadow still follows its face kind.
+- **Outline** (`outline_width` in bevel widths, 0 = off; `outline_color`, `outline_metallic`). Face only: the
+  band is where the mask's bevel factor (B: 1 at the silhouette, 0 one bevel width in) exceeds
+  `1 − width`, antialiased with `fwidth(B)` (taken before the discard). So it follows the glyph contour, can't
+  be wider than the bevel rim (raise `text.bevel_width`), and widens a little at concave corners, where the
+  blurred mask spreads. It mixes albedo and metallic, keeps roughness and the pattern underneath, is opaque
+  on glass, and doesn't glow. Width 0 skips the branch, so it renders exactly as without.
+- **Emission** (`emission_color`, `emission_strength`; the `neon` kind's preset glows, every other preset has
+  strength 0, but any kind honours it). Unlit, added in linear light after shading; the side surface glows
+  `text3d_renderer.SIDE_GLOW` (0.35) as strongly. Values above 1 are **not preserved**: `linear_to_srgb`
+  clamps per channel and the text layer is RGBA8, so a strong glow saturates (and drifts toward white) in
+  `text_layer.color`. A bloom pass can only find glow as near-saturated layer pixels; keeping HDR values would
+  need a float text layer or a separate emission output.
+- **Baked noise** (`text3d_renderer.BAKED_NOISE`, on). `NoiseVolume` renders `gradient_noise` once per renderer
+  into a 128³ R16F `GL_REPEAT` 3D texture (`shaders.NOISE_PERIOD` 16 cells, `NOISE_TEXELS_PER_CELL` 8; the
+  bake wraps lattice cells with `WRAP_LATTICE`, so it tiles; ~8 ms). Texel k holds the noise at its center,
+  (k + 0.5)/8 cells, so trilinear filtering reproduces it there. Only `fbm`'s octaves read it (`octave_noise`);
+  direct `gradient_noise` calls (stone speckle and fine bump, wood streaks) stay procedural, because a
+  finite-difference bump over trilinear texels shows the texels as a grid. The shader picks the version
+  through `shaders.with_define(LAYER_STACK_FS, "BAKED_NOISE")`; the procedural build is unchanged bit for bit.
+  Patterns differ in detail (wrapped lattice) but not in character. Deep stone ~11.1 → ~6.1 ms per 1600×1000
+  4× MSAA frame, wood ~8.6 → ~7.1 ms (Apple GPU). Keep it bound on unit 3 for every beauty draw: an unbound
+  sampler3D triggers macOS "unloadable texture" warnings.
 - **Glass** (kinds in `materials.TRANSMISSION`). Before drawing any text, the compositor blits the
   viewport (background + shadow, MSAA resolved) into the mipmapped `backdrop` texture, once per frame for
   all glass objects. So glass doesn't show the other text objects behind it. The shader samples
   it along the refracted ray (IOR 1.5, `REFRACTION_DEPTH` em behind the surface, projected back to the
   screen), blurs it by roughness (shown as **Frost**), tints it by Beer-Lambert absorption
   (`tint^(path × absorption)`, path = depth along the view), and splits it from the surface reflection by
-  Fresnel. The output is still opaque. Glass only shows the backdrop, not the text's own far walls.
+  Fresnel. The output is still opaque.
+- **Glass far walls** (`text3d_renderer.GLASS_FAR_WALLS`, on). After the backdrop is captured,
+  `Text3DRenderer.draw_far_walls` copies it into a single-sample target, draws each transmissive object's
+  stack there with `u_far_walls` and `GL_GREATER` against depth cleared to 0 (the farthest slice: where the
+  view leaves the text; the face is skipped), copies the result back and rebuilds the mipmaps. A glass far
+  wall shows the backdrop along the ray bent out of the glass (or reflected, past the critical angle), tinted
+  by `tint^(absorption × depth × (1/facing − 1))`: the extra glass a slanted wall adds, nothing for a back cap
+  facing the camera (the front already tints by the full thickness). An opaque side kind is shaded normally
+  with its normal flipped, so a glass face with stone sides shows stone through it. All glass objects share the
+  backdrop, so where two overlap the nearer one can show the farther one's walls.
   `shadow_renderer.shadow_color(shadow, material)` lightens and tints that object's shadow by the transmission
   fraction.
 - **Materials.** `material.kind` picks a preset. The panel's Material dropdown calls `apply_material`, and
@@ -509,7 +548,8 @@ layout (looks, transparent/batch export, zoom, multi-line and arc text, wall mou
 
 - The background must fit `GL_MAX_TEXTURE_SIZE`. Faint slice banding is
   possible at near edge-on views.
-- Multiple text objects (wave 0.2): glass doesn't refract other text objects. New and
+- Multiple text objects (wave 0.2): glass doesn't refract other text objects (only other glass objects' far
+  walls, where they overlap). New and
   duplicated objects are placed in front of the selected one (`ground.placement_in_front`), assuming a
   cap-height ink; very tall or descending text can still overlap a little, and near the image's bottom edge
   the new object may be partly cut off.
