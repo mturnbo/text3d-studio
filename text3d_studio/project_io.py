@@ -166,18 +166,19 @@ def _object_from_dict(data: dict) -> TextObject:
 def _params_from_dict(cls, data: dict | None):
     """One flat parameter section: known fields only, colours back to tuples, anything missing left at its default.
 
-    A non-finite number (JSON allows NaN and Infinity) takes the field's default, and text layout values are
-    clamped to their ranges (material shading options too), so a crafted file can't reach the panel's controls or the renderer with them.
+    A number that isn't a finite float (NaN, Infinity, or an int too large to convert), on its own or in a colour,
+    takes the field's default, and text layout values are clamped to their ranges (material shading options too),
+    so a crafted file can't reach the panel's controls or the renderer with them.
     """
     data = data or {}
     names = {f.name for f in dataclasses.fields(cls)}
-    values = {
-        name: value for name, value in data.items()
-        if name in names and not (isinstance(value, float) and not math.isfinite(value))
-    }
+    values = {name: value for name, value in data.items() if name in names and not _is_unusable_number(value)}
     for name in COLOR_FIELDS.get(cls, ()):
         if name in values:
-            values[name] = tuple(values[name])
+            if isinstance(values[name], list) and any(_is_unusable_number(c) for c in values[name]):
+                del values[name]
+            else:
+                values[name] = tuple(values[name])
     params = cls(**values)
     for name, (low, high) in FIELD_RANGES.get(cls, {}).items():
         value = getattr(params, name)
@@ -190,6 +191,16 @@ def _params_from_dict(cls, data: dict | None):
     if cls is MaterialParams:
         return sanitized_material_params(params)
     return params
+
+
+def _is_unusable_number(value) -> bool:
+    """A number that isn't a finite float: NaN, Infinity, or an int too large to convert (JSON allows all three)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return not math.isfinite(float(value))
+    except OverflowError:
+        return True
 
 
 def _load_photo(path: str, photo: dict | None, loaded: LoadedProject) -> None:

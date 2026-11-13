@@ -62,7 +62,7 @@ def test_only_neon_glows_and_its_tube_is_dark():
 def test_sanitizing_clamps_the_glow():
     from text3d_studio.materials import sanitized_material_params
 
-    for value, expected in ((2.5, 2.5), (50.0, 5.0), (-1.0, 0.0), (float("nan"), 0.0), ("bright", 0.0)):
+    for value, expected in ((2.5, 2.5), (50.0, 5.0), (-1.0, 0.0), (float("nan"), 0.0), ("bright", 0.0), (10**400, 5.0)):
         params = sanitized_material_params(MaterialParams(emission_strength=value, emission_color=(1.5, 0.5, -1)))
         assert params.emission_strength == expected
         assert params.emission_color == (1.0, 0.5, 0.0)
@@ -97,7 +97,7 @@ def test_sanitizing_keeps_known_side_kinds_only(value, expected):
 
 @pytest.mark.parametrize("value, expected", [
     (0.5, 0.5), (0.0, 0.0), (1.0, 1.0), (5.0, 1.0), (-2.0, 0.0), (1, 1), (float("nan"), 0.0), (float("inf"), 0.0),
-    ("wide", 0.0), (True, 0.0), (None, 0.0),
+    ("wide", 0.0), (True, 0.0), (None, 0.0), (10**400, 1.0), (-10**400, 0.0),
 ])
 def test_sanitizing_clamps_the_outline_width_and_metallic(value, expected):
     from text3d_studio.materials import sanitized_material_params
@@ -109,6 +109,7 @@ def test_sanitizing_clamps_the_outline_width_and_metallic(value, expected):
 @pytest.mark.parametrize("value, expected", [
     ((0.2, 0.4, 0.6), (0.2, 0.4, 0.6)), ((2.0, -1.0, 0.5), (1.0, 0.0, 0.5)), ((1, 0, 0), (1.0, 0.0, 0.0)),
     ((0.1, 0.2), None), ((0.1, float("nan"), 0.3), None), (("red", 0.0, 0.0), None), (0.5, None), ("red", None),
+    ((10**400, 0, -10**400), (1.0, 0.0, 0.0)),
 ])
 def test_sanitizing_repairs_the_outline_color(value, expected):
     from text3d_studio.materials import sanitized_material_params

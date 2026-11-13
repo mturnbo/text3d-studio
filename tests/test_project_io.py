@@ -528,7 +528,9 @@ SECTION_NAMES = {type(getattr(Scene(), f.name)): f.name for f in dataclasses.fie
 
 
 @pytest.mark.parametrize("cls", list(model.FIELD_RANGES))
-@pytest.mark.parametrize("value, end", [(1e12, 1), (-1e12, 0), ("NaN", None), ("x", None), (None, None), ([1], None)])
+@pytest.mark.parametrize("value, end", [
+    (1e12, 1), (-1e12, 0), ("NaN", None), ("x", None), (None, None), ([1], None), (10**400, None), (-10**400, None),
+])
 def test_every_ranged_field_loads_clamped_or_defaulted(qapp, tmp_path, cls, value, end):
     section = SECTION_NAMES[cls]
     ranges = model.FIELD_RANGES[cls]
@@ -539,6 +541,48 @@ def test_every_ranged_field_loads_clamped_or_defaulted(qapp, tmp_path, cls, valu
     for name, bounds in ranges.items():
         expected = getattr(cls(), name) if end is None else bounds[end]
         assert getattr(params, name) == expected, name
+
+
+def numeric_fields(params):
+    return [f.name for f in dataclasses.fields(params)
+            if isinstance(getattr(params, f.name), (int, float)) and not isinstance(getattr(params, f.name), bool)]
+
+
+def color_fields(params):
+    return [f.name for f in dataclasses.fields(params) if isinstance(getattr(params, f.name), tuple)]
+
+
+@pytest.mark.parametrize("huge", [10**400, -10**400])
+def test_an_int_too_large_for_a_float_loads_as_the_default_in_every_section(qapp, tmp_path, huge):
+    obj = TextObject(id=0)
+    defaults = {name: getattr(Scene(), name) for name in SECTION_NAMES.values()}
+    object_defaults = {"text": obj.text, "transform": obj.transform, "material": obj.material}
+
+    def crafted(params):
+        values = {name: huge for name in numeric_fields(params)}
+        values.update({name: [huge, 0, huge] for name in color_fields(params)})
+        return values
+
+    scene = {name: crafted(params) for name, params in defaults.items()}
+    scene["objects"] = [{"id": 0, **{name: crafted(params) for name, params in object_defaults.items()}}]
+    loaded = load_project(write_json(tmp_path / "huge.t3d", project_dict(scene=scene))).document.scene
+    pairs = [(getattr(loaded, name), default) for name, default in defaults.items()]
+    pairs += [(getattr(loaded.objects[0], name), default) for name, default in object_defaults.items()]
+    for params, default in pairs:
+        for name in numeric_fields(default) + color_fields(default):
+            assert getattr(params, name) == getattr(default, name), (type(default).__name__, name)
+
+
+def test_a_huge_effect_or_material_value_loads_as_the_default(qapp, tmp_path):
+    crafted = project_dict(scene={
+        "effects": {"bloom_strength": 10**400},
+        "objects": [{"material": {"emission_strength": 10**400, "emission_color": [10**400, 0, 0]}}],
+    })
+    scene = load_project(write_json(tmp_path / "huge.t3d", crafted)).document.scene
+    assert scene.effects.bloom_strength == model.EffectsParams().bloom_strength
+    material = scene.objects[0].material
+    assert material.emission_strength == model.MaterialParams().emission_strength
+    assert material.emission_color == model.MaterialParams().emission_color
 
 
 def test_every_ranged_field_has_a_default_inside_its_range():

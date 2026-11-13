@@ -88,9 +88,11 @@ def sanitized_material_params(params):
     for name in SHADING_COLORS:
         color = getattr(params, name)
         valid = isinstance(color, tuple) and len(color) == 3 and all(_is_finite_number(c) for c in color)
-        values[name] = tuple(min(max(float(c), 0.0), 1.0) for c in color) if valid else getattr(defaults, name)
+        values[name] = tuple(float(min(max(c, 0.0), 1.0)) for c in color) if valid else getattr(defaults, name)
     return dataclasses.replace(params, **values)
 
 
 def _is_finite_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return isinstance(value, int) or math.isfinite(value)  # an int is always finite; math.isfinite overflows on a huge one
