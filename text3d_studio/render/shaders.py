@@ -897,11 +897,16 @@ void main() {
 """
 
 
-# Passes on the text itself, over the resolved text layer (premultiplied), one texel per pixel: film grain. The
-# grain is value noise on a fixed lattice of u_grain_cell pixels, seeded, so it is the same in every frame.
+# Passes on the text itself, over the resolved text layer (premultiplied), one texel per pixel: colour grade, then
+# film grain, both on the straight (un-premultiplied) colour. The grain is value noise on a fixed lattice of
+# u_grain_cell pixels, seeded, so it is the same in every frame.
 TEXT_FINISH_FS = """
 #version 410 core
 uniform sampler2D u_image;
+uniform float u_brightness;
+uniform float u_contrast;
+uniform float u_saturation;
+uniform vec3 u_warmth;     // per-channel gain
 uniform float u_grain_amount;
 uniform float u_grain_cell;
 uniform uint u_seed;
@@ -930,6 +935,9 @@ void main() {
         return;
     }
     vec3 rgb = color.rgb / color.a;
+    rgb = (rgb * (1.0 + u_brightness) - 0.5) * u_contrast + 0.5;
+    rgb = mix(vec3(dot(rgb, vec3(0.2126, 0.7152, 0.0722))), rgb, u_saturation);
+    rgb = clamp(rgb * u_warmth, 0.0, 1.0);
     rgb = clamp(rgb + u_grain_amount * grain(gl_FragCoord.xy), 0.0, 1.0);
     frag = vec4(rgb * color.a, color.a);
 }

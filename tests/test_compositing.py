@@ -525,6 +525,11 @@ def text_and_photo(compositor):
     return plain, text
 
 
+def solid_text(compositor, text):
+    """The text's interior where it fully covers the photo (a rare seam pixel is only partly covered)."""
+    return eroded(text, 3) & (render(compositor, finish_document(), transparent=True)[..., 3] == 255)
+
+
 def local_variance(pixels, mask):
     """Mean squared difference between horizontal neighbours inside the mask: high for fine noise."""
     lum = luminance(pixels)
@@ -606,6 +611,57 @@ def test_the_blurred_edge_is_soft_alpha_in_the_transparent_export(compositor):
 def test_zero_blur_is_identical_to_before(compositor):
     plain, _ = text_and_photo(compositor)
     assert np.array_equal(plain, render(compositor, finish_document(blur_radius=0.0)))
+
+
+def test_zero_saturation_makes_the_text_grey_and_leaves_the_photo(compositor):
+    plain, text = text_and_photo(compositor)
+    grey = render(compositor, finish_document(grade_saturation=0.0))
+    inside = solid_text(compositor, text)
+    channels = grey[inside][:, :3].astype(int)
+    assert (channels.max(axis=1) - channels.min(axis=1)).max() <= 2
+    plain_channels = plain[inside][:, :3].astype(int)
+    assert (plain_channels.max(axis=1) - plain_channels.min(axis=1)).mean() > 20  # it was coloured
+    assert np.array_equal(grey[~text], plain[~text])
+
+
+@pytest.mark.parametrize("warmth, redder", [(1.0, True), (-1.0, False)], ids=["warm", "cool"])
+def test_warmth_shifts_red_against_blue(compositor, warmth, redder):
+    plain, text = text_and_photo(compositor)
+    graded = render(compositor, finish_document(grade_warmth=warmth))
+    inside = solid_text(compositor, text)
+    red = graded[inside][:, 0].astype(int) - plain[inside][:, 0]
+    blue = graded[inside][:, 2].astype(int) - plain[inside][:, 2]
+    sign = 1 if redder else -1
+    assert sign * red.mean() > 5 and sign * blue.mean() < -5
+    assert np.array_equal(graded[~text], plain[~text])
+
+
+def test_brightness_and_contrast_reach_black_and_flat_grey(compositor):
+    _, text = text_and_photo(compositor)
+    inside = solid_text(compositor, text)
+    black = render(compositor, finish_document(grade_brightness=-1.0))
+    assert black[inside][:, :3].max() <= 1
+    flat = render(compositor, finish_document(grade_contrast=0.0))
+    assert np.abs(flat[inside][:, :3].astype(int) - 128).max() <= 1
+    brighter = render(compositor, finish_document(grade_brightness=0.5, grade_contrast=1.5))
+    plain = render(compositor, finish_document())
+    assert luminance(brighter)[inside].mean() > luminance(plain)[inside].mean() + 10
+
+
+def test_a_neutral_grade_is_identical_to_before(compositor):
+    plain, _ = text_and_photo(compositor)
+    neutral = finish_document(grade_brightness=0.0, grade_contrast=1.0, grade_saturation=1.0, grade_warmth=0.0)
+    assert np.array_equal(plain, render(compositor, neutral))
+
+
+def test_the_grade_is_in_the_transparent_export(compositor):
+    _, text = text_and_photo(compositor)
+    plain = render(compositor, finish_document(), transparent=True)
+    grey = render(compositor, finish_document(grade_saturation=0.0), transparent=True)
+    inside = solid_text(compositor, text)
+    assert np.array_equal(grey[..., 3], plain[..., 3])
+    channels = grey[inside][:, :3].astype(int)
+    assert (channels.max(axis=1) - channels.min(axis=1)).max() <= 2
 
 
 def test_the_preview_stays_opaque_with_every_effect_on(compositor):

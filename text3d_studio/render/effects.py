@@ -5,7 +5,7 @@
   the text.
 - Text finishing: passes on the resolved text layer alone, each into a full-size copy (ping-pong), so the composite,
   the bloom and the transparent export all see the finished text, in this order: blur (premultiplied, so the edge
-  softens into transparency), film grain (seeded value noise, fixed to the image).
+  softens into transparency), then colour grade and film grain (seeded value noise, fixed to the image) in one pass.
 - Bloom: what is brighter than the threshold in the text layer, at half resolution, blurred and added over the
   composite. It is light, with no alpha of its own; the transparent export gives it its brightest channel as alpha.
 """
@@ -17,7 +17,7 @@ from OpenGL import GL
 
 from .. import ground as ground_model
 from .. import math3d
-from ..model import Scene
+from ..model import EffectsParams, Scene
 from . import shaders
 from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
 
@@ -27,8 +27,15 @@ REFLECTION_SAMPLES = 4
 REFLECTION_BLUR = 0.04  # the reflection's blur radius at roughness 1, as a fraction of the image height
 BLOOM_SPREAD = 0.15  # the glow's blur radius at bloom_radius 1, as a fraction of the image height
 TEXT_BLUR = 0.02  # the text's blur radius at blur_radius 1, as a fraction of the image height
+WARMTH_SHIFT = 0.2  # how much warmth 1 raises red and lowers blue (as gains)
 GRAIN_CONTRAST = 0.3  # how far grain at amount 1 moves a channel (0-1) either way
 GRAIN_SEED = 0x7E47  # the same grain in every frame and export
+
+
+def graded_neutrally(effects) -> bool:
+    neutral = EffectsParams()
+    return all(getattr(effects, name) == getattr(neutral, name)
+               for name in ("grade_brightness", "grade_contrast", "grade_saturation", "grade_warmth"))
 
 
 class EffectsRenderer:
@@ -117,11 +124,16 @@ class EffectsRenderer:
             target.resize(layer.width, layer.height)
             self._blur(target, scratch, max(0.5, effects.blur_radius * TEXT_BLUR * layer.height), source=color)
             color = target.texture
-        if effects.grain_amount > 0:
+        if effects.grain_amount > 0 or not graded_neutrally(effects):
             target = self._spare(color, layer)
             program = self.text_finish
             program.use()
             program.set_int("u_image", 0)
+            program.set_float("u_brightness", effects.grade_brightness)
+            program.set_float("u_contrast", effects.grade_contrast)
+            program.set_float("u_saturation", effects.grade_saturation)
+            warmth = effects.grade_warmth * WARMTH_SHIFT
+            program.set_vec3("u_warmth", (1.0 + warmth, 1.0, 1.0 - warmth))
             program.set_float("u_grain_amount", effects.grain_amount * GRAIN_CONTRAST)
             program.set_float("u_grain_cell", effects.grain_size / 1000 * layer.height)
             program.set_uint("u_seed", GRAIN_SEED)

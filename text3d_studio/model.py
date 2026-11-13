@@ -147,6 +147,11 @@ class EffectsParams:
     blur_radius: float = 0.0  # softens the text to match a soft photo; 0 = off
     grain_amount: float = 0.0  # film grain on the text; 0 = off
     grain_size: float = 1.0  # size of a grain, in thousandths of the image height
+    # Colour grade of the text alone; each is neutral at its default.
+    grade_brightness: float = 0.0  # -1 black .. 1 twice as bright
+    grade_contrast: float = 1.0  # around mid grey; 0 = flat grey
+    grade_saturation: float = 1.0  # 0 = grey
+    grade_warmth: float = 0.0  # positive warms (more red, less blue), negative cools
 
 
 @dataclass
@@ -206,5 +211,9 @@ FIELD_RANGES = {
         "blur_radius": (0.0, 1.0),
         "grain_amount": (0.0, 1.0),
         "grain_size": (0.5, 5.0),
+        "grade_brightness": (-1.0, 1.0),
+        "grade_contrast": (0.0, 2.0),
+        "grade_saturation": (0.0, 2.0),
+        "grade_warmth": (-1.0, 1.0),
     },
 }
