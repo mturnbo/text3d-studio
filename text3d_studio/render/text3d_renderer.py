@@ -8,6 +8,7 @@ from OpenGL import GL
 from .. import ground as ground_model
 from .. import math3d
 from ..lighting import LightingState, srgb_to_linear
+from ..materials import PRESETS, TRANSMISSION
 from ..model import Scene, TextObject, TransformParams
 from ..text_raster import GlyphRaster
 from . import shaders
@@ -78,21 +79,15 @@ class Text3DRenderer:
         program.set_vec3("u_light_dir", lighting.light_dir)
         program.set_vec3("u_light_color", lighting.light_color)
         program.set_vec3("u_ambient", lighting.ambient)
-        program.set_vec3("u_face_color", srgb_to_linear(m.face_color))
-        program.set_vec3("u_side_color", srgb_to_linear(m.side_color))
         program.set_float("u_side_darkening", m.side_darkening)
         program.set_float("u_bevel_strength", m.bevel_strength)
-        program.set_float("u_metallic", m.metallic)
-        program.set_float("u_roughness", m.roughness)
-        program.set_int("u_pattern", PATTERNS.get(m.kind, 0))
-        program.set_vec3("u_secondary_color", srgb_to_linear(m.secondary_color))
-        program.set_float("u_texture_scale", m.texture_scale)
-        program.set_float("u_texture_strength", m.texture_strength)
-        program.set_float("u_bump_strength", m.bump_strength)
-        program.set_float("u_grain_angle", math.radians(m.grain_angle))
-        program.set_float("u_varnish", m.varnish)
-        program.set_float("u_absorption", m.absorption)
-        program.set_int("u_transmissive", int(backdrop is not None))
+        has_backdrop = backdrop is not None
+        _set_surface(program, "u_face", m.kind, vars(m), m.face_color, has_backdrop)
+        if m.side_kind in PRESETS:
+            side = PRESETS[m.side_kind]
+            _set_surface(program, "u_side", m.side_kind, side, side["side_color"], has_backdrop)
+        else:
+            _set_surface(program, "u_side", m.kind, vars(m), m.side_color, has_backdrop)
         if backdrop is not None:
             backdrop.bind(2)
             program.set_int("u_backdrop", 2)
@@ -165,3 +160,22 @@ class Text3DRenderer:
         self.depth.delete()
         self.cap_shadow.delete()
         self.wall_shadow.delete()
+
+
+def _set_surface(program: ShaderProgram, name: str, kind: str, values, color, has_backdrop: bool) -> None:
+    """Sets one `Surface` uniform of LAYER_STACK_FS from a kind and its material values (a MaterialParams' fields
+    or a preset). `color` is the plain albedo: the face color for the face, the side color for the walls. A
+    transmissive kind needs the backdrop to show through."""
+    program.set_vec3(f"{name}.color", srgb_to_linear(color))
+    program.set_vec3(f"{name}.pattern_color", srgb_to_linear(values["face_color"]))
+    program.set_vec3(f"{name}.secondary_color", srgb_to_linear(values["secondary_color"]))
+    program.set_float(f"{name}.metallic", values["metallic"])
+    program.set_float(f"{name}.roughness", values["roughness"])
+    program.set_int(f"{name}.pattern", PATTERNS.get(kind, 0))
+    program.set_float(f"{name}.texture_scale", values["texture_scale"])
+    program.set_float(f"{name}.texture_strength", values["texture_strength"])
+    program.set_float(f"{name}.bump_strength", values["bump_strength"])
+    program.set_float(f"{name}.grain_angle", math.radians(values["grain_angle"]))
+    program.set_float(f"{name}.varnish", values["varnish"])
+    program.set_int(f"{name}.transmissive", int(kind in TRANSMISSION and has_backdrop))
+    program.set_float(f"{name}.absorption", values["absorption"])

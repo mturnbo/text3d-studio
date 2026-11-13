@@ -87,6 +87,7 @@ class MaterialParams:
     grain_angle: float = 0.0  # wood grain direction on the face, degrees (0 = horizontal)
     varnish: float = 0.0  # glossy clear coat over the material
     absorption: float = 0.0  # glass: how quickly the tint deepens with the thickness light passes through
+    side_kind: str = "same"  # "same", or a kind whose preset look the side walls and back cap take (materials.SIDE_KINDS)
 
 
 @dataclass

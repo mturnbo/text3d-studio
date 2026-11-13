@@ -399,3 +399,15 @@ def test_wall_and_mounts_round_trip_and_default_when_missing(qapp, tmp_path):
     older = load_project(write_json(tmp_path / "old.t3d", project_dict(scene={"objects": [{"transform": {"x": 1.0}}]})))
     assert older.document.scene.wall == model.WallParams()
     assert older.document.scene.objects[0].transform.mount == "floor"
+
+
+def test_side_material_round_trips_and_an_unknown_one_loads_as_same(qapp, tmp_path):
+    scene = Scene(objects=[TextObject(id=0), TextObject(id=1)])
+    scene.objects[0].material.side_kind = "stone"
+    path = str(tmp_path / "sides.t3d")
+    save_project(path, Document(scene=scene))
+    assert [o.material.side_kind for o in load_project(path).document.scene.objects] == ["stone", "same"]
+    for value in ("cheese", 7, None, ["wood"]):
+        crafted = project_dict(scene={"objects": [{"material": {"kind": "metal", "side_kind": value}}]})
+        loaded = load_project(write_json(tmp_path / "crafted.t3d", crafted))
+        assert loaded.document.scene.objects[0].material.side_kind == "same", value

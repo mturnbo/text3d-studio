@@ -1118,6 +1118,64 @@ def test_untextured_materials_hide_texture_controls(vm, kind):
         assert not material_row_visible(panel, field), field
 
 
+def side_combo(panel):
+    from PyQt6.QtWidgets import QComboBox
+
+    return panel.findChild(QComboBox, "material.side_kind")
+
+
+def test_sides_picker_lists_same_and_every_kind(vm):
+    from text3d_studio.materials import SIDE_KINDS
+    from text3d_studio.views.control_panel import ControlPanel
+
+    combo = side_combo(ControlPanel(vm))
+    assert [combo.itemData(i) for i in range(combo.count())] == list(SIDE_KINDS)
+    assert combo.itemText(0) == "Same" and combo.currentData() == "same"
+    assert combo.isVisibleTo(combo.window())
+
+
+def test_choosing_sides_with_the_keyboard_sets_them_undoably(vm):
+    from PyQt6.QtTest import QTest
+
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    combo = side_combo(panel)
+    QTest.keyClick(combo, Qt.Key.Key_Down)
+    assert vm.scene.objects[0].material.side_kind == "metal"
+    QTest.keyClick(combo, Qt.Key.Key_End)
+    assert vm.scene.objects[0].material.side_kind == "glass"
+    vm.undo()  # quick successive picks merge into one step, like other quick edits of one field
+    assert vm.scene.objects[0].material.side_kind == "same"
+    assert combo.currentData() == "same"  # the picker follows the model
+
+
+def test_sides_of_another_kind_hide_the_side_color_and_a_new_material_resets_them(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.apply_material("plastic")
+    assert material_row_visible(panel, "side_color")
+    vm.set("material", "side_kind", "stone")
+    assert not material_row_visible(panel, "side_color")
+    vm.apply_material("metal")  # a preset covers every field, sides included
+    assert vm.scene.objects[0].material.side_kind == "same"
+    assert side_combo(panel).currentData() == "same"
+    assert material_row_visible(panel, "side_color")
+
+
+def test_selecting_another_object_shows_its_sides(vm):
+    from text3d_studio.views.control_panel import ControlPanel
+
+    panel = ControlPanel(vm)
+    vm.set("material", "side_kind", "wood")
+    vm.add_object()
+    assert side_combo(panel).currentData() == "same"
+    vm.select(0)
+    assert side_combo(panel).currentData() == "wood"
+    assert not material_row_visible(panel, "side_color")
+
+
 def test_glass_shows_frost_and_tint_depth_and_other_kinds_hide_them(vm):
     from PyQt6.QtWidgets import QWidget
 

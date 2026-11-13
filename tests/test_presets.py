@@ -129,6 +129,8 @@ def test_saving_creates_the_folder(vm, tmp_path):
     (json.dumps({"format": presets.FORMAT_NAME, "version": 1, "name": "x", "material": {}, "light": {}}), "ShadowParams"),
     (json.dumps({"format": presets.FORMAT_NAME, "version": 1, "name": "x", "material": {"kind": "cheese"},
                  "light": {}, "shadow": {}}), "unknown material"),
+    (json.dumps({"format": presets.FORMAT_NAME, "version": 1, "name": "x", "material": {"side_kind": "cheese"},
+                 "light": {}, "shadow": {}}), "unknown side material"),
     (json.dumps({"format": presets.FORMAT_NAME, "version": 1, "name": "x", "material": {"roughness": "high"},
                  "light": {}, "shadow": {}}), "roughness is not a number"),
     (json.dumps({"format": presets.FORMAT_NAME, "version": 1, "name": "x", "material": {},

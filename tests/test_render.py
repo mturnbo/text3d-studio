@@ -938,3 +938,103 @@ def test_arced_text_casts_a_shadow_at_grazing_light(compositor):
     unlit = make_document(text=text, transform={"rot_y": 0}, light=light, shadow={"enabled": False})
     darker = render(compositor, unlit)[..., :3].astype(int).sum(-1) - render(compositor, lit)[..., :3].astype(int).sum(-1)
     assert (darker > 30).sum() > 500
+
+
+# ----- Side materials -----------------------------------------------------------------------------
+
+
+def sided_document(side_kind="same", kind="metal", **material):
+    """Deep text turned well away from the camera, so its side walls cover plenty of pixels."""
+    from text3d_studio.materials import PRESETS
+
+    doc = material_document(**{**PRESETS[kind], "kind": kind, "side_kind": side_kind, **material})
+    doc.scene.objects[0].transform.rot_y = -60.0
+    doc.scene.objects[0].transform.depth = 0.8
+    doc.scene.objects[0].transform.size = 4.0
+    doc.scene.light.reflect_photo = False
+    return doc
+
+
+def face_and_wall_masks(compositor, erode=2):
+    """Pixels well inside the face and well inside the side walls and back cap: plastic whose walls are a
+    different color from its face, compared with plastic whose walls match it."""
+    same = render(compositor, sided_document(kind="plastic", side_color=RED, face_color=RED))
+    other = render(compositor, sided_document(kind="plastic", side_color=(0.1, 0.8, 0.1), face_color=RED))
+    _, interior = text_image(compositor, sided_document(kind="plastic"), erode=0)
+    walls = np.any(same != other, axis=-1) & interior
+    return eroded(interior & ~walls, erode), eroded(walls, erode)
+
+
+def masked_detail(pixels, mask):
+    """Mean luminance change between neighbouring pixels that are both inside `mask`."""
+    luminance = pixels[..., :3].astype(float).mean(-1)
+    vertical = np.abs(np.diff(luminance, axis=0))[mask[1:] & mask[:-1]].mean()
+    horizontal = np.abs(np.diff(luminance, axis=1))[mask[:, 1:] & mask[:, :-1]].mean()
+    return vertical + horizontal
+
+
+def saturation_of(colors):
+    colors = colors[..., :3].astype(float)
+    return (colors.max(-1) - colors.min(-1)) / np.maximum(colors.max(-1), 1)
+
+
+def test_stone_sides_keep_a_gold_face_and_texture_the_walls(compositor):
+    face, walls = face_and_wall_masks(compositor)
+    assert face.sum() > 2000 and walls.sum() > 2000
+    gold = render(compositor, sided_document("same"))
+    stone_sides = render(compositor, sided_document("stone"))
+    np.testing.assert_array_equal(stone_sides[face], gold[face])  # the face is untouched
+    assert masked_detail(stone_sides, walls) > 2 * masked_detail(gold, walls)  # the walls show stone grain
+    assert saturation_of(stone_sides[walls]).mean() < 0.5 * saturation_of(gold[walls]).mean()  # gray, not gold
+
+
+def test_same_sides_render_like_naming_the_objects_own_kind(compositor):
+    # The material is the unchanged preset, so its own values and the preset's are the same look.
+    for kind in ("metal", "stone", "wood"):
+        np.testing.assert_array_equal(
+            render(compositor, sided_document("same", kind=kind)), render(compositor, sided_document(kind, kind=kind))
+        )
+
+
+def test_same_sides_follow_the_materials_side_color_but_other_kinds_ignore_it(compositor):
+    _, walls = face_and_wall_masks(compositor)
+    green = (0.1, 0.8, 0.1)
+
+    def wall_mean(side_kind, side_color):
+        pixels = render(compositor, sided_document(side_kind, kind="plastic", side_color=side_color))
+        return pixels[walls][:, :3].astype(float).mean(axis=0)
+
+    assert wall_mean("same", green)[1] > wall_mean("same", RED)[1] + 40
+    np.testing.assert_array_equal(wall_mean("plastic", green), wall_mean("plastic", RED))
+
+
+def test_glass_sides_show_the_photo_through_an_opaque_face(compositor):
+    face, walls = face_and_wall_masks(compositor)
+
+    def colors(side_kind, rgb):
+        doc = sided_document(side_kind, kind="plastic")
+        doc.background[..., :3] = rgb
+        return render(compositor, doc)[..., :3].astype(float)
+
+    warm, cool = colors("glass", (220, 160, 60)), colors("glass", (60, 120, 230))
+    assert (warm - cool)[walls][:, 0].mean() > 40  # the walls show what is behind them
+    np.testing.assert_array_equal(warm[face], cool[face])  # the plastic face doesn't
+    np.testing.assert_array_equal(colors("same", (220, 160, 60))[walls], colors("same", (60, 120, 230))[walls])
+
+
+def test_an_unknown_side_kind_renders_like_same(compositor):
+    np.testing.assert_array_equal(render(compositor, sided_document("cheese")), render(compositor, sided_document("same")))
+
+
+@pytest.mark.parametrize("kind, side_kind", [("metal", "stone"), ("glass", "wood"), ("plastic", "glass")])
+def test_depth_prepass_matches_single_pass_with_other_sides(gl_context, monkeypatch, kind, side_kind):
+    from text3d_studio.materials import PRESETS
+
+    material = {**PRESETS[kind], "kind": kind, "side_kind": side_kind}
+    doc = make_document(material=material, transform={"depth": 0.8, "rot_y": -45})
+    single, prepass = compositor_with_prepass(monkeypatch, False), compositor_with_prepass(monkeypatch, True)
+    try:
+        np.testing.assert_array_equal(render(prepass, doc), render(single, doc))
+    finally:
+        single.delete()
+        prepass.delete()

@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
-from ..materials import KINDS
+from ..materials import KINDS, SIDE_KINDS
 from ..text_raster import ALIGNMENTS
 from ..text_raster import LAYOUT_RANGES
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
@@ -309,6 +309,7 @@ class ControlPanel(QScrollArea):
                 self._add_text_inputs(form)
             if section == "material":
                 self._add_material_picker(form)
+                self._add_side_picker(form)
             if section == "transform":
                 self._add_mount_picker(form)
             for field, label in CHECKBOXES.get(section, []):
@@ -450,6 +451,20 @@ class ControlPanel(QScrollArea):
         combo.activated.connect(lambda index: self.vm.apply_material(combo.itemData(index)))
         form.addRow("Material", combo)
 
+    def _add_side_picker(self, form: QFormLayout) -> None:
+        combo = QComboBox()
+        combo.setObjectName("material.side_kind")
+        for kind in SIDE_KINDS:
+            combo.addItem(kind.capitalize(), kind)
+
+        def set_side_kind(kind: str) -> None:
+            _set_quietly(combo, combo.setCurrentIndex, combo.findData(kind))
+
+        set_side_kind(self.vm.get("material", "side_kind"))
+        self._setters[("material", "side_kind")] = set_side_kind
+        combo.activated.connect(lambda index: self.vm.set("material", "side_kind", combo.itemData(index)))
+        form.addRow("Sides", combo)
+
     def _add_mount_picker(self, form: QFormLayout) -> None:
         combo = QComboBox()
         combo.setObjectName("transform.mount")
@@ -509,16 +524,19 @@ class ControlPanel(QScrollArea):
 
     def _show_material_controls(self, kind: str) -> None:
         labels = MATERIAL_LABELS.get(kind, {})
+        # Sides of another kind take that kind's preset colors, so the side color doesn't apply to them.
+        own_sides = self.vm.get("material", "side_kind") == "same"
         for field, (form, widget, default_label) in self._material_rows.items():
-            form.setRowVisible(widget, field in MATERIAL_CONTROLS[kind])
+            shown = field in MATERIAL_CONTROLS[kind] and (own_sides or field != "side_color")
+            form.setRowVisible(widget, shown)
             form.labelForField(widget).setText(labels.get(field, default_label))
 
     def _refresh(self, section: str, field: str) -> None:
         setter = self._setters.get((section, field))
         if setter is not None:
             setter(self.vm.get(section, field))
-        if (section, field) == ("material", "kind"):
-            self._show_material_controls(self.vm.get(section, field))
+        if (section, field) in (("material", "kind"), ("material", "side_kind")):
+            self._show_material_controls(self.vm.get("material", "kind"))
         if (section, field) == ("transform", "mount"):
             self._show_placement_controls(self.vm.get(section, field))
         if (section, field) == ("text", "content"):

@@ -13,7 +13,7 @@ from OpenGL import GL
 
 from .. import math3d
 from ..lighting import LightingEngine
-from ..materials import TRANSMISSION
+from ..materials import transmits
 from ..model import Scene, TextObject
 from ..text_raster import GlyphRaster
 from . import shaders
@@ -98,7 +98,7 @@ class Compositor:
 
         if drawn:
             backdrop = None
-            if any(obj.material.kind in TRANSMISSION for obj, _ in drawn):
+            if any(transmits(obj.material) for obj, _ in drawn):
                 self._capture_backdrop(target_fbo, viewport)
                 backdrop = self.backdrop.texture
             GL.glDisable(GL.GL_SCISSOR_TEST)
@@ -149,7 +149,7 @@ class Compositor:
         GL.glEnable(GL.GL_SAMPLE_ALPHA_TO_ONE)
         environment = self.background if self.has_background and scene.light.reflect_photo else None
         for obj, glyph in drawn:
-            transmissive = obj.material.kind in TRANSMISSION
+            transmissive = transmits(obj.material)
             self.text.draw_beauty(
                 scene, obj, glyph, proj, lighting, layer.height, environment, backdrop if transmissive else None
             )

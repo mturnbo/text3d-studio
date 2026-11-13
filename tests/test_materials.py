@@ -47,3 +47,30 @@ def test_only_glass_transmits_and_absorbs():
     assert set(TRANSMISSION) == {"glass"}
     assert all(0.0 < amount < 1.0 for amount in TRANSMISSION.values())
     assert [kind for kind in KINDS if PRESETS[kind]["absorption"] > 0] == ["glass"]
+
+
+def test_side_kinds_are_same_or_any_kind_and_presets_keep_their_own_sides():
+    from text3d_studio.materials import SIDE_KINDS
+
+    assert SIDE_KINDS == ("same",) + KINDS
+    assert all(PRESETS[kind]["side_kind"] == "same" for kind in KINDS)
+
+
+@pytest.mark.parametrize("kind, side_kind, expected", [
+    ("metal", "same", False), ("glass", "same", True), ("metal", "glass", True), ("glass", "stone", True),
+    ("plastic", "wood", False),
+])
+def test_a_material_transmits_when_its_face_or_its_sides_are_glass(kind, side_kind, expected):
+    from text3d_studio.materials import transmits
+
+    assert transmits(MaterialParams(kind=kind, side_kind=side_kind)) is expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("stone", "stone"), ("same", "same"), ("glass", "glass"), ("cheese", "same"), ("", "same"), (3, "same"),
+    (None, "same"), (["stone"], "same"),
+])
+def test_sanitizing_keeps_known_side_kinds_only(value, expected):
+    from text3d_studio.materials import sanitized_material_params
+
+    assert sanitized_material_params(MaterialParams(side_kind=value)).side_kind == expected
