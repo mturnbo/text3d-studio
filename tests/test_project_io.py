@@ -39,7 +39,7 @@ def busy_scene() -> Scene:
     scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4))
     scene.camera = dataclasses.replace(scene.camera, fov=55.0)
     scene.objects[1].transform = dataclasses.replace(scene.objects[1].transform, mount="wall", wall_x=-2.5, wall_y=1.25)
-    scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5)
+    scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5, enabled=True)
     scene.mask = dataclasses.replace(scene.mask, brush_size=0.12, feather=0.25)
     return scene
 
@@ -400,6 +400,20 @@ def test_wall_and_mounts_round_trip_and_default_when_missing(qapp, tmp_path):
     older = load_project(write_json(tmp_path / "old.t3d", project_dict(scene={"objects": [{"transform": {"x": 1.0}}]})))
     assert older.document.scene.wall == model.WallParams()
     assert older.document.scene.objects[0].transform.mount == "floor"
+
+
+@pytest.mark.parametrize("wall, mounts, expected", [
+    ({"angle": 5.0}, ["floor"], False),  # saved before walls caught shadows: no wall text, no wall
+    ({"angle": 5.0}, ["floor", "wall"], True),  # wall text means the photo showed a wall
+    ({"enabled": False}, ["wall"], False),
+    ({"enabled": True}, ["floor"], True),
+    ({"enabled": "yes"}, ["floor"], False),  # not a bool: worked out from the mounts
+    ({"enabled": 1}, ["wall"], True),
+])
+def test_whether_the_photo_shows_a_wall_loads_or_is_worked_out(qapp, tmp_path, wall, mounts, expected):
+    objects = [{"id": i, "transform": {"mount": mount}} for i, mount in enumerate(mounts)]
+    path = write_json(tmp_path / "wall.t3d", project_dict(scene={"wall": wall, "objects": objects}))
+    assert load_project(path).document.scene.wall.enabled is expected
 
 
 # ----- Occlusion mask ---------------------------------------------------------------------------

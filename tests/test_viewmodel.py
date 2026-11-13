@@ -956,6 +956,26 @@ def test_set_mount_only_moves_the_selected_object(vm):
     assert vm.scene.objects[0].transform == first and vm.scene.objects[1].transform.mount == "wall"
 
 
+def test_mounting_text_on_the_wall_says_the_photo_shows_a_wall_in_the_same_step(uvm):
+    assert not uvm.scene.wall.enabled
+    uvm.set_mount("wall")
+    assert uvm.scene.wall.enabled
+    uvm.undo()
+    assert not uvm.scene.wall.enabled and uvm.selected_object.transform.mount == "floor"
+    uvm.set_mount("wall")
+    uvm.set_mount("floor")  # the wall is still in the photo
+    assert uvm.scene.wall.enabled
+
+
+def test_ground_edits_move_the_wall_but_keep_whether_the_photo_shows_one(vm):
+    vm.set("wall", "enabled", True)
+    vm.set("ground", "pitch", 10.0)
+    assert vm.scene.wall.enabled
+    vm.set("wall", "enabled", False)
+    vm.set("ground", "pitch", 5.0)
+    assert not vm.scene.wall.enabled
+
+
 # ----- Occlusion mask -----------------------------------------------------------------------------
 
 

@@ -1109,6 +1109,7 @@ class ImageCanvas(QOpenGLWidget):
             return
         self.vm.set("wall", "angle", wall.angle)
         self.vm.set("wall", "offset", wall.offset)
+        self.vm.set("wall", "enabled", True)  # setting the wall says the photo shows one
 
     def wall_preview_px(self):
         """The wall preview in widget pixels: ([grid line end points], base line end points or None)."""

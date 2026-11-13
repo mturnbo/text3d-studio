@@ -51,6 +51,7 @@ class WallParams:
 
     angle: float = 0.0  # facing of the wall, like transform.rot_y: 0 runs the base line along the ground's x axis
     offset: float = 20.0  # distance of the base line from the point below the camera
+    enabled: bool = False  # the photo shows this wall: it catches shadows, and floor shadows stop at its base
 
 
 @dataclass

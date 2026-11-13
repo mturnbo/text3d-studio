@@ -100,6 +100,7 @@ CHECKBOXES = {
     "grid": [("visible", "Show grid"), ("fit_estimate_fov", "Fit: estimate field of view")],
     "light": [("reflect_photo", "Reflect the photo")],
     "shadow": [("enabled", "Cast shadow")],
+    "wall": [("enabled", "Wall in the photo (catches shadows)")],
 }
 
 COLORS = {

@@ -110,9 +110,9 @@ class SceneViewModel(QObject):
         """Aligning the ground to the photo shouldn't fling the text around: keep the wall and every object where they
         appeared on `base_ground`. When that's impossible on the new ground, fall back to the base placement."""
         wall = ground_model.reanchor_wall(base_ground, self.scene.ground, base_wall) or base_wall
-        for name, value in dataclasses.asdict(wall).items():
-            if getattr(self.scene.wall, name) != value:
-                self._assign(self.scene.wall, "wall", name, value)
+        for name in ("angle", "offset"):  # where the wall stands; whether the photo shows one stays as it is
+            if getattr(self.scene.wall, name) != getattr(wall, name):
+                self._assign(self.scene.wall, "wall", name, getattr(wall, name))
         for obj, base in zip(self.scene.objects, base_transforms, strict=True):
             if base.mount == "wall":
                 names = ("wall_x", "wall_y", "size")
@@ -143,6 +143,8 @@ class SceneViewModel(QObject):
         for name, value in placement:
             self.set("transform", name, value)
         self.set("transform", "mount", mount)
+        if mount == "wall":
+            self.set("wall", "enabled", True)  # text on the wall means the photo shows one
         self.end_edit()
 
     def apply_material(self, kind: str) -> None:

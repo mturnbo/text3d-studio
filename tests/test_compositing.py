@@ -174,3 +174,138 @@ def test_the_mask_overlay_tints_only_masked_pixels_and_stays_out_of_the_export(c
     assert not differs[doc.mask == 0].any()
     assert tinted[..., 3].min() == 255
     assert np.array_equal(render(compositor, doc), export)
+
+
+# ----- Shadows on the wall ------------------------------------------------------------------------
+
+WALL_GROUND = {"pitch": 12.0, "height": 1.5}
+WALL = {"angle": 0.0, "offset": 10.0, "enabled": True}
+FRONT_LIGHT = {"azimuth": 25.0, "elevation": 35.0}  # on the camera's side of the wall
+SHADOW = {"enabled": True, "opacity": 0.8, "softness": 0.05, "falloff": 0.0}
+
+
+def text_object(object_id=0, content="HI", **transform):
+    from text3d_studio.materials import PRESETS
+    from text3d_studio.model import MaterialParams, TextObject, TextParams, TransformParams
+
+    return TextObject(
+        id=object_id,
+        text=TextParams(content=content),
+        transform=TransformParams(**{"rot_y": 0.0, "size": 2.0, **transform}),
+        material=MaterialParams(**{**PRESETS["plastic"], "kind": "plastic"}),
+    )
+
+
+def wall_text(**transform):
+    return text_object(mount="wall", **{"wall_x": 0.0, "wall_y": 1.0, "size": 1.6, "depth": 0.3, **transform})
+
+
+def scene_of(*objects, **sections):
+    doc = make_document(**{"ground": WALL_GROUND, "wall": WALL, **sections})
+    doc.scene.objects = list(objects)
+    return doc
+
+
+def surfaces(doc):
+    """Per pixel (top row first): True where the camera ray shows the floor in front of the wall, False for the wall."""
+    from text3d_studio import ground, math3d
+
+    scene = doc.scene
+    width, height = doc.native_size
+    focal = math3d.focal_length_px(scene.camera.fov, height)
+    ys, xs = np.mgrid[0:height, 0:width] + 0.5
+    rays = np.stack([(xs - width / 2) / focal, -(ys - height / 2) / focal, -np.ones_like(xs)], axis=-1)
+    floor, wall = ground.ground_plane(scene.ground), ground.wall_plane(scene.ground, scene.wall)
+    toward = rays @ floor[:3]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hits = rays * (-floor[3] / toward)[..., None]
+    return (toward < 0) & (hits @ wall[:3] + wall[3] >= 0)
+
+
+def image_point(doc, point):
+    from text3d_studio import math3d
+
+    u, v = math3d.project_to_image(point, doc.scene.camera.fov, doc.native_size)
+    return int(v), int(u)
+
+
+def floor_shadow_of(doc, point):
+    """Where a point's shadow lands on the (infinite) floor, as a pixel (row, column)."""
+    from text3d_studio import ground
+    from text3d_studio.lighting import LightingEngine
+
+    light = LightingEngine().compute(doc.scene.light, doc.scene.ground).light_dir
+    plane = ground.ground_plane(doc.scene.ground)
+    point = np.asarray(point, float)
+    t = (plane[:3] @ point + plane[3]) / (plane[:3] @ light)
+    return image_point(doc, point - t * light)
+
+
+def darkening(compositor, doc):
+    """How much darker each pixel is than with the shadow off, and where the text is."""
+    import dataclasses
+
+    unshadowed = make_document()
+    unshadowed.scene = dataclasses.replace(doc.scene, shadow=dataclasses.replace(doc.scene.shadow, enabled=False))
+    lit = render(compositor, unshadowed)
+    return luminance(lit) - luminance(render(compositor, doc)), changed(lit, np.array(BG_COLOR)[None, None])
+
+
+def test_wall_text_darkens_the_wall_around_it_but_not_the_floor_behind_the_wall_line(compositor):
+    from text3d_studio import ground
+
+    doc = scene_of(wall_text(), light=FRONT_LIGHT, shadow=SHADOW)
+    darker, text = darkening(compositor, doc)
+    on_floor = surfaces(doc)
+    around = dilated(text, 12) & ~dilated(text, 1)
+    assert (darker[around & ~on_floor] > 8).sum() > 100  # the wall around the text
+    # The floor shadow would land behind the wall, where the wall shows: it must not appear there.
+    scene = doc.scene
+    middle = (ground.wall_to_world(scene.ground, scene.wall, 0.0, 1.0 + 0.4 * 1.6)
+              + 0.3 * 1.6 * ground.wall_normal(scene.ground, scene.wall))
+    row, column = floor_shadow_of(doc, middle)
+    assert 0 <= row < 400 and 0 <= column < 640 and not on_floor[row, column]
+    legacy, _ = darkening(compositor, scene_of(wall_text(), light=FRONT_LIGHT, shadow=SHADOW,
+                                               wall={**WALL, "enabled": False}))
+    window = (slice(row - 2, row + 3), slice(column - 2, column + 3))
+    assert legacy[window].mean() > 20  # without the wall, the floor shadow showed there
+    assert darker[window].mean() < 2
+
+
+def test_floor_text_near_the_wall_shadows_the_floor_as_before_and_climbs_the_wall(compositor):
+    objects = (text_object(z=-8.5, size=2.0),)
+    light = {"azimuth": 10.0, "elevation": 25.0}  # the shadow runs back toward the wall and reaches it
+    with_wall = render(compositor, scene_of(*objects, light=light, shadow=SHADOW))
+    legacy = render(compositor, scene_of(*objects, light=light, shadow=SHADOW, wall={**WALL, "enabled": False}))
+    doc = scene_of(*objects, light=light, shadow=SHADOW)
+    darker, text = darkening(compositor, doc)
+    on_floor = surfaces(doc)
+    boundary = dilated(on_floor, 2) & dilated(~on_floor, 2)
+    floor = on_floor & ~boundary
+    diff = np.abs(with_wall[floor].astype(int) - legacy[floor])
+    assert diff.max() <= 1  # the floor's shadow is the same, to rounding
+    assert (darker[~on_floor & ~text & ~boundary] > 8).sum() > 100  # and it carries on up the wall
+
+
+def test_a_light_behind_the_wall_casts_nothing_on_it(compositor):
+    behind = {"azimuth": 180.0, "elevation": 35.0}
+    doc = scene_of(wall_text(), light=behind, shadow=SHADOW)
+    darker, text = darkening(compositor, doc)
+    assert not (darker[~surfaces(doc) & ~dilated(text, 1)] > 1).any()
+
+
+def test_without_a_wall_in_the_photo_the_wall_changes_nothing(compositor):
+    objects = (text_object(z=-8.5),)
+    first = render(compositor, scene_of(*objects, light=FRONT_LIGHT, shadow=SHADOW, wall={**WALL, "enabled": False}))
+    moved = render(compositor, scene_of(*objects, light=FRONT_LIGHT, shadow=SHADOW,
+                                        wall={"angle": 30.0, "offset": 9.0, "enabled": False}))
+    assert np.array_equal(first, moved)
+
+
+def test_the_wall_shadow_is_in_the_transparent_export(compositor):
+    doc = scene_of(wall_text(), light=FRONT_LIGHT, shadow=SHADOW)
+    darker, text = darkening(compositor, doc)
+    pixels = render(compositor, doc, transparent=True)
+    shadowed = (darker > 15) & ~dilated(text, 1) & ~surfaces(doc)
+    assert shadowed.sum() > 50
+    assert (pixels[shadowed][:, 3] > 20).all()

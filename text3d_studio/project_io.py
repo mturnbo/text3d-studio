@@ -145,6 +145,9 @@ def _scene_from_dict(data: dict) -> Scene:
     )
     if objects:
         scene.objects = objects
+    if not isinstance(scene.wall.enabled, bool) or "enabled" not in (data.get("wall") or {}):
+        # Projects from before walls caught shadows: the photo shows a wall if some text was mounted on it.
+        scene.wall.enabled = any(obj.transform.mount == "wall" for obj in scene.objects)
     return scene
 
 

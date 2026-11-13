@@ -652,6 +652,41 @@ void main() {
 }
 """
 
+# Multiplies the shadows onto the surfaces that catch them. Each pixel's camera ray finds what it shows: the floor
+# when it meets the floor in front of the wall, else the wall. The floor shadow darkens only the floor and the
+# wall's shadow only the wall, so a floor shadow stops at the wall's base instead of carrying
+# on behind it. Masks hold each channel's darkening (see SHADOW_FS).
+SHADOW_SURFACES_FS = """
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_floor;
+uniform sampler2D u_wall;
+uniform float u_opacity;
+uniform bool u_has_wall;
+uniform vec2 u_tan_half;      // tan(fov / 2) * aspect, tan(fov / 2): turns the viewport into camera rays
+uniform vec4 u_ground_plane;
+uniform vec4 u_wall_plane;    // normal toward the camera's side
+out vec4 frag;
+void main() {
+    vec3 floor_dark = texture(u_floor, v_uv).rgb * u_opacity;
+    vec3 wall_dark = vec3(0.0);
+    if (u_has_wall) {
+        vec3 dir = vec3((v_uv * 2.0 - 1.0) * u_tan_half, -1.0);
+        float toward_floor = dot(u_ground_plane.xyz, dir);
+        bool on_floor = false;
+        if (toward_floor < 0.0) {
+            vec3 hit = dir * (-u_ground_plane.w / toward_floor);
+            on_floor = dot(u_wall_plane.xyz, hit) + u_wall_plane.w >= 0.0;
+        }
+        if (!on_floor) {
+            floor_dark = vec3(0.0);
+            if (dot(u_wall_plane.xyz, dir) < 0.0) wall_dark = texture(u_wall, v_uv).rgb * u_opacity;
+        }
+    }
+    frag = vec4((1.0 - floor_dark) * (1.0 - wall_dark), 1.0);
+}
+"""
+
 # The mask resampled to a target (the transparent export reads it back).
 MASK_VALUE_FS = """
 #version 410 core

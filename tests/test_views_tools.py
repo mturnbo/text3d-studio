@@ -721,3 +721,22 @@ def test_a_mask_the_gpu_cannot_hold_is_reported_not_raised_while_painting(vm):
     canvas.grab()  # paints; the upload's error goes to the signal
     assert errors and "Mask is" in errors[0]
     canvas.close()
+
+
+def test_setting_the_wall_says_the_photo_shows_one_in_the_same_undo_step(vm):
+    canvas = wall_canvas(vm)
+    vm.clear_history()
+    drag(canvas, (200, 400), (600, 350))
+    assert vm.scene.wall.enabled
+    assert vm.undo() and not vm.scene.wall.enabled and not vm.can_undo
+
+
+def test_the_wall_group_has_a_checkbox_for_a_wall_in_the_photo(window):
+    from PyQt6.QtWidgets import QCheckBox
+
+    box = next(b for b in window.panel.findChildren(QCheckBox) if "Wall in the photo" in b.text())
+    assert not box.isChecked()
+    box.setChecked(True)
+    assert window.vm.scene.wall.enabled
+    window.vm.undo()
+    assert not box.isChecked()
