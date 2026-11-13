@@ -309,3 +309,57 @@ def test_the_wall_shadow_is_in_the_transparent_export(compositor):
     shadowed = (darker > 15) & ~dilated(text, 1) & ~surfaces(doc)
     assert shadowed.sum() > 50
     assert (pixels[shadowed][:, 3] > 20).all()
+
+
+# ----- Contact shadow -----------------------------------------------------------------------------
+
+CONTACT_GROUND = {"pitch": 15.0, "height": 1.5}
+
+
+def contact_document(**shadow):
+    shadow = {"enabled": True, "opacity": 0.0, "contact_strength": 1.0, "contact_size": 0.15, **shadow}
+    return make_document(ground=CONTACT_GROUND, transform={"z": -8.0, "rot_y": -20.0}, shadow=shadow)
+
+
+def test_zero_contact_strength_is_identical_to_before(compositor):
+    reference = render(compositor, make_document(ground=CONTACT_GROUND))
+    unused = render(compositor, make_document(ground=CONTACT_GROUND, shadow={"contact_strength": 0.0, "contact_size": 0.9}))
+    assert np.array_equal(reference, unused)
+    off = render(compositor, contact_document(enabled=False))
+    assert np.array_equal(off, render(compositor, contact_document(enabled=False, contact_strength=0.0)))
+
+
+def test_the_contact_shadow_darkens_tightly_around_the_base(compositor):
+    darker, text = darkening(compositor, contact_document())
+    shadowed = (darker > 6) & ~text
+    assert shadowed.sum() > 150
+    rows = np.flatnonzero(text.any(axis=1))
+    top, base = rows.min(), rows.max()
+    shadow_rows = np.nonzero(shadowed)[0]
+    assert (shadow_rows > base - 0.3 * (base - top)).mean() > 0.95  # by the base, not up the text
+    assert shadow_rows.max() <= base + 12  # and only a few pixels out
+    # Darkest right at the base, falling off below it.
+    columns = text[base]
+    assert darker[base + 2, columns].mean() > darker[base + 8, columns].mean()
+
+
+def test_a_larger_contact_size_spreads_further(compositor):
+    small, text = darkening(compositor, contact_document(contact_size=0.05))
+    large, _ = darkening(compositor, contact_document(contact_size=0.5))
+    assert ((large > 6) & ~text).sum() > ((small > 6) & ~text).sum()
+
+
+def test_wall_text_gets_no_contact_shadow(compositor):
+    doc = scene_of(wall_text(), shadow={"enabled": True, "opacity": 0.0, "contact_strength": 1.0}, wall={**WALL, "enabled": False})
+    darker, _ = darkening(compositor, doc)
+    assert not (darker > 1).any()
+
+
+def test_the_contact_shadow_is_in_the_transparent_export(compositor):
+    doc = contact_document()
+    darker, text = darkening(compositor, doc)
+    pixels = render(compositor, doc, transparent=True)
+    shadowed = (darker > 15) & ~dilated(text, 1)
+    assert shadowed.sum() > 20
+    assert (pixels[shadowed][:, 3] > 20).all()
+    assert not pixels[~dilated((darker > 0) | text, 3)][:, 3].any()  # nothing where nothing darkened

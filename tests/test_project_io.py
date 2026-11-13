@@ -36,7 +36,8 @@ def busy_scene() -> Scene:
     scene.ground = dataclasses.replace(scene.ground, pitch=12.5, roll=-3.0, height=2.0)
     scene.grid = dataclasses.replace(scene.grid, visible=True, accent_color=(0.5, 0.25, 1.0))
     scene.light = dataclasses.replace(scene.light, azimuth=80.0, color=(1.0, 0.5, 0.25), reflect_photo=False)
-    scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4))
+    scene.shadow = dataclasses.replace(scene.shadow, enabled=False, color=(0.3, 0.3, 0.4), contact_strength=0.7,
+                                       contact_size=0.3)
     scene.camera = dataclasses.replace(scene.camera, fov=55.0)
     scene.objects[1].transform = dataclasses.replace(scene.objects[1].transform, mount="wall", wall_x=-2.5, wall_y=1.25)
     scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5, enabled=True)
@@ -517,3 +518,26 @@ def test_brush_values_are_clamped_or_defaulted_on_load(qapp, tmp_path, value, ex
     brush = load_project(str(path)).document.scene.mask
     assert brush.brush_size == expected
     assert brush.feather == 1.0
+
+
+SECTION_NAMES = {type(getattr(Scene(), f.name)): f.name for f in dataclasses.fields(Scene) if f.name != "objects"}
+
+
+@pytest.mark.parametrize("cls", list(model.FIELD_RANGES))
+@pytest.mark.parametrize("value, end", [(1e12, 1), (-1e12, 0), ("NaN", None), ("x", None), (None, None), ([1], None)])
+def test_every_ranged_field_loads_clamped_or_defaulted(qapp, tmp_path, cls, value, end):
+    section = SECTION_NAMES[cls]
+    ranges = model.FIELD_RANGES[cls]
+    text = json.dumps(project_dict(scene={section: {name: value for name in ranges}}))
+    path = tmp_path / "ranged.t3d"
+    path.write_text(text.replace('"NaN"', "NaN"))
+    params = getattr(load_project(str(path)).document.scene, section)
+    for name, bounds in ranges.items():
+        expected = getattr(cls(), name) if end is None else bounds[end]
+        assert getattr(params, name) == expected, name
+
+
+def test_every_ranged_field_has_a_default_inside_its_range():
+    for cls, ranges in model.FIELD_RANGES.items():
+        for name, (low, high) in ranges.items():
+            assert low <= getattr(cls(), name) <= high, (cls.__name__, name)

@@ -18,7 +18,7 @@ from ..model import Scene, TextObject
 from ..text_raster import GlyphRaster
 from . import shaders
 from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
-from .shadow_renderer import ShadowRenderer
+from .shadow_renderer import ShadowRenderer, casts_shadow
 from .text3d_renderer import Glyph, Text3DRenderer
 
 NEAR, FAR = 0.1, 1000.0
@@ -108,7 +108,7 @@ class Compositor:
         lighting = self.lighting.compute(scene.light, scene.ground)
         drawn = [(obj, self.glyphs[obj.id]) for obj in scene.objects if obj.id in self.glyphs]
 
-        draw_shadow = scene.shadow.enabled and scene.shadow.opacity > 0 and bool(drawn)
+        draw_shadow = casts_shadow(scene) and bool(drawn)
         if draw_shadow:
             self.shadows.render_mask(self.text, scene, drawn, proj, lighting, viewport)
 
@@ -149,7 +149,7 @@ class Compositor:
         hold 1 − opacity × strength. Returns False, drawing nothing, when the scene casts no shadow."""
         x, y, width, height = viewport
         drawn = [(obj, self.glyphs[obj.id]) for obj in scene.objects if obj.id in self.glyphs]
-        if not (scene.shadow.enabled and scene.shadow.opacity > 0 and drawn):
+        if not (casts_shadow(scene) and drawn):
             return False
         proj = math3d.perspective(scene.camera.fov, width / height, NEAR, FAR)
         lighting = self.lighting.compute(scene.light, scene.ground)

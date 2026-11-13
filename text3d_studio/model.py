@@ -109,6 +109,8 @@ class ShadowParams:
     softness: float = 0.2
     falloff: float = 0.8  # how quickly the shadow fades for parts of the text far from the ground
     color: Color = (0.08, 0.10, 0.14)
+    contact_strength: float = 0.0  # a tight, dark shadow where floor text meets the ground; 0 = off
+    contact_size: float = 0.15  # how far up the text (in em) the contact shadow reaches, and so how far it spreads
 
 
 @dataclass
@@ -168,5 +170,6 @@ class Document:
 
 # Ranges of numeric fields, shared by the panel's sliders and project loading (which clamps to them).
 FIELD_RANGES = {
+    ShadowParams: {"contact_strength": (0.0, 1.0), "contact_size": (0.02, 1.0)},
     MaskParams: {"brush_size": (0.005, 0.5), "feather": (0.0, 1.0)},
 }

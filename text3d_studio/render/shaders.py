@@ -653,15 +653,17 @@ void main() {
 """
 
 # Multiplies the shadows onto the surfaces that catch them. Each pixel's camera ray finds what it shows: the floor
-# when it meets the floor in front of the wall, else the wall. The floor shadow darkens only the floor and the
-# wall's shadow only the wall, so a floor shadow stops at the wall's base instead of carrying
-# on behind it. Masks hold each channel's darkening (see SHADOW_FS).
+# when it meets the floor in front of the wall, else the wall. The floor shadow and the contact shadow darken only
+# the floor and the wall's shadow only the wall, so a floor shadow stops at the wall's base instead of carrying
+# on behind it. Without a wall everything is floor. Masks hold each channel's darkening (see SHADOW_FS).
 SHADOW_SURFACES_FS = """
 #version 410 core
 in vec2 v_uv;
 uniform sampler2D u_floor;
 uniform sampler2D u_wall;
+uniform sampler2D u_contact;
 uniform float u_opacity;
+uniform float u_contact_strength;
 uniform bool u_has_wall;
 uniform vec2 u_tan_half;      // tan(fov / 2) * aspect, tan(fov / 2): turns the viewport into camera rays
 uniform vec4 u_ground_plane;
@@ -669,6 +671,7 @@ uniform vec4 u_wall_plane;    // normal toward the camera's side
 out vec4 frag;
 void main() {
     vec3 floor_dark = texture(u_floor, v_uv).rgb * u_opacity;
+    vec3 contact_dark = texture(u_contact, v_uv).rgb * u_contact_strength;
     vec3 wall_dark = vec3(0.0);
     if (u_has_wall) {
         vec3 dir = vec3((v_uv * 2.0 - 1.0) * u_tan_half, -1.0);
@@ -680,10 +683,11 @@ void main() {
         }
         if (!on_floor) {
             floor_dark = vec3(0.0);
+            contact_dark = vec3(0.0);
             if (dot(u_wall_plane.xyz, dir) < 0.0) wall_dark = texture(u_wall, v_uv).rgb * u_opacity;
         }
     }
-    frag = vec4((1.0 - floor_dark) * (1.0 - wall_dark), 1.0);
+    frag = vec4((1.0 - floor_dark) * (1.0 - contact_dark) * (1.0 - wall_dark), 1.0);
 }
 """
 
