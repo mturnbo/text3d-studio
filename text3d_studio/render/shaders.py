@@ -895,3 +895,42 @@ void main() {
     frag = vec4(bright, 0.0);
 }
 """
+
+
+# Passes on the text itself, over the resolved text layer (premultiplied), one texel per pixel: film grain. The
+# grain is value noise on a fixed lattice of u_grain_cell pixels, seeded, so it is the same in every frame.
+TEXT_FINISH_FS = """
+#version 410 core
+uniform sampler2D u_image;
+uniform float u_grain_amount;
+uniform float u_grain_cell;
+uniform uint u_seed;
+out vec4 frag;
+
+float lattice(ivec2 p) {
+    uint n = uint(p.x) * 1597334677u ^ uint(p.y) * 3812015801u ^ u_seed;
+    n = (n ^ (n >> 16)) * 0x7feb352du;
+    n = (n ^ (n >> 15)) * 0x846ca68bu;
+    n ^= n >> 16;
+    return float(n) / 4294967295.0 * 2.0 - 1.0;
+}
+
+float grain(vec2 position) {
+    vec2 cell = position / u_grain_cell;
+    ivec2 i = ivec2(floor(cell));
+    vec2 f = smoothstep(0.0, 1.0, fract(cell));
+    return mix(mix(lattice(i), lattice(i + ivec2(1, 0)), f.x),
+               mix(lattice(i + ivec2(0, 1)), lattice(i + ivec2(1, 1)), f.x), f.y);
+}
+
+void main() {
+    vec4 color = texelFetch(u_image, ivec2(gl_FragCoord.xy), 0);
+    if (color.a <= 0.0) {
+        frag = color;
+        return;
+    }
+    vec3 rgb = color.rgb / color.a;
+    rgb = clamp(rgb + u_grain_amount * grain(gl_FragCoord.xy), 0.0, 1.0);
+    frag = vec4(rgb * color.a, color.a);
+}
+"""

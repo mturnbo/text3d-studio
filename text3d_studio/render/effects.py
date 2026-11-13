@@ -3,6 +3,8 @@
 - Ground reflection: floor text drawn again, mirrored across the ground plane (light mirrored too), into a
   half-resolution layer; faded with depth below the ground and blurred by roughness, then put over the floor before
   the text.
+- Text finishing: passes on the resolved text layer alone, each into a full-size copy (ping-pong), so the composite,
+  the bloom and the transparent export all see the finished text: film grain (seeded value noise, fixed to the image).
 - Bloom: what is brighter than the threshold in the text layer, at half resolution, blurred and added over the
   composite. It is light, with no alpha of its own; the transparent export gives it its brightest channel as alpha.
 """
@@ -16,13 +18,15 @@ from .. import ground as ground_model
 from .. import math3d
 from ..model import Scene
 from . import shaders
-from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, UnitQuad
+from .gl_utils import ColorTarget, LayerTarget, ShaderProgram, Texture2D, UnitQuad
 
 BLUR_TAPS = 12  # one-sided tap count in BLUR_RGBA_FS
 BLUR_ITERATIONS = 2
 REFLECTION_SAMPLES = 4
 REFLECTION_BLUR = 0.04  # the reflection's blur radius at roughness 1, as a fraction of the image height
 BLOOM_SPREAD = 0.15  # the glow's blur radius at bloom_radius 1, as a fraction of the image height
+GRAIN_CONTRAST = 0.3  # how far grain at amount 1 moves a channel (0-1) either way
+GRAIN_SEED = 0x7E47  # the same grain in every frame and export
 
 
 class EffectsRenderer:
@@ -32,10 +36,12 @@ class EffectsRenderer:
         self.scaled = ShaderProgram(shaders.FULLSCREEN_VS, shaders.SCALED_TEXTURE_FS)
         self.reflection_fade = ShaderProgram(shaders.FULLSCREEN_VS, shaders.REFLECTION_FADE_FS)
         self.bloom_extract = ShaderProgram(shaders.FULLSCREEN_VS, shaders.BLOOM_EXTRACT_FS)
+        self.text_finish = ShaderProgram(shaders.FULLSCREEN_VS, shaders.TEXT_FINISH_FS)
         self.reflection_layer = LayerTarget()
         self.reflection = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)  # faded and blurred, premultiplied
         self.half_scratch = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
         self.bloom = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA)
+        self.finished = (ColorTarget(GL.GL_RGBA8, GL.GL_RGBA), ColorTarget(GL.GL_RGBA8, GL.GL_RGBA))  # ping-pong
         self.has_reflection = False
         self.has_bloom = False
 
@@ -96,6 +102,34 @@ class EffectsRenderer:
         self._composite(
             self.reflection, scene.effects.reflection_strength, (GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA), write_alpha
         )
+
+    # ----- Text finishing ----------------------------------------------------------------------------
+
+    def finish_text_layer(self, scene: Scene, layer: LayerTarget) -> Texture2D:
+        """Runs the passes that change the text itself on the resolved `layer` and returns the texture to composite:
+        the layer's own color, untouched, when they are all off."""
+        effects = scene.effects
+        color = layer.color
+        if effects.grain_amount > 0:
+            target = self._spare(color, layer)
+            program = self.text_finish
+            program.use()
+            program.set_int("u_image", 0)
+            program.set_float("u_grain_amount", effects.grain_amount * GRAIN_CONTRAST)
+            program.set_float("u_grain_cell", effects.grain_size / 1000 * layer.height)
+            program.set_uint("u_seed", GRAIN_SEED)
+            color.bind(0)
+            self.quad.draw()
+            color = target.texture
+        return color
+
+    def _spare(self, current: Texture2D, layer: LayerTarget) -> ColorTarget:
+        """The finishing target not holding `current`, sized to the layer and bound as the draw target."""
+        target = self.finished[1] if current is self.finished[0].texture else self.finished[0]
+        target.resize(layer.width, layer.height)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.fbo)
+        GL.glViewport(0, 0, layer.width, layer.height)
+        return target
 
     # ----- Bloom ----------------------------------------------------------------------------------
 
@@ -166,6 +200,9 @@ class EffectsRenderer:
         self.scaled.delete()
         self.reflection_fade.delete()
         self.bloom_extract.delete()
+        self.text_finish.delete()
+        for target in self.finished:
+            target.delete()
         self.bloom.delete()
         self.reflection_layer.delete()
         self.reflection.delete()

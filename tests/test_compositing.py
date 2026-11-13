@@ -509,6 +509,68 @@ def test_the_glow_is_in_the_transparent_export_as_light_over_nothing(compositor)
     assert not glowing[~dilated(text, 150)][:, 3].any()
 
 
+# ----- Text finishing: grain, blur, grade, depth of field ------------------------------------------
+
+PLAIN = {"kind": "plastic", **{k: v for k, v in PRESETS["plastic"].items()}, "face_color": (0.55, 0.45, 0.35)}
+
+
+def finish_document(**effects):
+    return make_document(shadow=NO_SHADOW, material=PLAIN, effects=effects)
+
+
+def text_and_photo(compositor):
+    """The plain text's pixels and the untouched photo's."""
+    plain = render(compositor, finish_document())
+    text = changed(plain, np.array(BG_COLOR)[None, None])
+    return plain, text
+
+
+def local_variance(pixels, mask):
+    """Mean squared difference between horizontal neighbours inside the mask: high for fine noise."""
+    lum = luminance(pixels)
+    inside = mask[:, 1:] & mask[:, :-1]
+    return (np.diff(lum, axis=1)[inside] ** 2).mean()
+
+
+def test_grain_raises_the_local_variance_inside_the_text_only(compositor):
+    plain, text = text_and_photo(compositor)
+    grainy = render(compositor, finish_document(grain_amount=0.5))
+    inside = eroded(text, 3)
+    assert local_variance(grainy, inside) > 4 * local_variance(plain, inside) + 10
+    assert np.array_equal(grainy[~text], plain[~text])  # the photo is untouched
+    assert abs(luminance(grainy)[inside].mean() - luminance(plain)[inside].mean()) < 3  # no overall shift
+
+
+def test_grain_is_the_same_in_every_render_and_coarser_when_larger(compositor):
+    plain, text = text_and_photo(compositor)
+    inside = eroded(text, 3)
+    fine = render(compositor, finish_document(grain_amount=0.5, grain_size=0.5))
+    assert np.array_equal(fine, render(compositor, finish_document(grain_amount=0.5, grain_size=0.5)))
+    coarse = render(compositor, finish_document(grain_amount=0.5, grain_size=5.0))
+
+    def smoothness(pixels):
+        """How alike neighbouring grains are: 0 for independent pixels, toward 1 for grains many pixels wide."""
+        noise = luminance(pixels) - luminance(plain)
+        pairs = inside[:, 1:] & inside[:, :-1]
+        return np.corrcoef(noise[:, 1:][pairs], noise[:, :-1][pairs])[0, 1]
+
+    assert smoothness(fine) < 0.2
+    assert smoothness(coarse) > smoothness(fine) + 0.3
+
+
+def test_full_grain_stays_in_range_and_keeps_the_text_opaque(compositor):
+    _, text = text_and_photo(compositor)
+    pixels = render(compositor, finish_document(grain_amount=1.0, grain_size=0.5), transparent=True)
+    plain = render(compositor, finish_document(), transparent=True)
+    assert np.array_equal(pixels[..., 3], plain[..., 3])  # grain changes colour, never coverage
+    assert changed(pixels, plain)[eroded(text, 3)].mean() > 0.5  # and it is in the transparent export
+
+
+def test_zero_grain_is_identical_to_before(compositor):
+    plain, _ = text_and_photo(compositor)
+    assert np.array_equal(plain, render(compositor, finish_document(grain_amount=0.0, grain_size=4.0)))
+
+
 def test_the_preview_stays_opaque_with_every_effect_on(compositor):
     doc = bloom_document(reflection_strength=1.0)
     doc.scene.shadow.enabled = True

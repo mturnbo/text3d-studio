@@ -43,7 +43,8 @@ def busy_scene() -> Scene:
     scene.wall = dataclasses.replace(scene.wall, angle=-35.0, offset=7.5, enabled=True)
     scene.mask = dataclasses.replace(scene.mask, brush_size=0.12, feather=0.25)
     scene.effects = dataclasses.replace(scene.effects, reflection_strength=0.4, reflection_fade=1.5, bloom_strength=1.2,
-                                        bloom_threshold=0.7, bloom_radius=0.5)
+                                        bloom_threshold=0.7, bloom_radius=0.5, grain_amount=0.3,
+                                        grain_size=2.0)
     return scene
 
 

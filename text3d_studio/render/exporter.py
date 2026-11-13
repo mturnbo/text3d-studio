@@ -62,7 +62,7 @@ def _render_transparent(compositor: Compositor, document: Document, width: int, 
     only) into a float target, and combines them."""
     scene = document.scene
     if any(obj.id in compositor.glyphs for obj in scene.objects):
-        compositor.text_layer.color.bind(0)
+        compositor.text_color.bind(0)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         data = GL.glGetTexImage(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
         text = np.frombuffer(data, np.uint8).reshape(height, width, 4)[::-1]

@@ -41,6 +41,7 @@ class Compositor:
         self.mask_value_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.MASK_VALUE_FS)
         self.backdrop = ColorTarget(GL.GL_RGBA8, GL.GL_RGBA, mipmaps=True)
         self.text_layer = LayerTarget()
+        self.text_color = self.text_layer.color  # the text layer's color after the finishing passes
         self.layer_program = ShaderProgram(shaders.FULLSCREEN_VS, shaders.LAYER_COMPOSITE_FS)
         self.text = Text3DRenderer(self.quad)
         self.glyphs: dict[int, Glyph] = {}  # by TextObject.id; objects without one (no ink) aren't drawn
@@ -142,13 +143,14 @@ class Compositor:
                 environment = self.background if self.has_background and scene.light.reflect_photo else None
                 self.text.draw_far_walls(scene, drawn, proj, lighting, self.backdrop, environment)
             self._draw_text_layer(scene, drawn, proj, lighting, backdrop, max(MIN_LAYER_SAMPLES, target_samples))
+            self.text_color = self.effects.finish_text_layer(scene, self.text_layer)
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
             GL.glViewport(x, y, width, height)
             GL.glEnable(GL.GL_SCISSOR_TEST)
             self._composite_text_layer(viewport)
 
         GL.glDisable(GL.GL_SCISSOR_TEST)  # the bloom's own targets start at the origin
-        if self.effects.render_bloom(scene, drawn, self.text_layer.color, viewport):
+        if self.effects.render_bloom(scene, drawn, self.text_color, viewport):
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target_fbo)
             GL.glViewport(x, y, width, height)
             GL.glEnable(GL.GL_SCISSOR_TEST)
@@ -258,7 +260,7 @@ class Compositor:
         x, y, _, _ = viewport
         program = self.layer_program
         program.use()
-        self.text_layer.color.bind(0)
+        self.text_color.bind(0)
         self.text_layer.depth.bind(1)
         program.set_int("u_color", 0)
         program.set_int("u_depth", 1)

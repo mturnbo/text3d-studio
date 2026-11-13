@@ -40,6 +40,9 @@ class ShaderProgram:
     def set_int(self, name: str, value: int) -> None:
         GL.glUniform1i(self._loc(name), int(value))
 
+    def set_uint(self, name: str, value: int) -> None:
+        GL.glUniform1ui(self._loc(name), value)
+
     def set_float(self, name: str, value: float) -> None:
         GL.glUniform1f(self._loc(name), float(value))
 
