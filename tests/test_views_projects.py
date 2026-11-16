@@ -3,9 +3,9 @@ import os
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
-from PyQt6.QtWidgets import QMessageBox
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtWidgets import QMessageBox
 
 from text3d_studio.app import open_command_line_file
 from text3d_studio.image_io import save_image
@@ -537,7 +537,7 @@ def test_a_painted_mask_saves_reopens_and_covers_the_text_in_the_export(window, 
 
 
 def test_hostile_shading_values_open_safely_and_show_in_range(window, tmp_path, qapp):
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     path = write_project_text(tmp_path / "hostile-shading.t3d", """{
         "objects": [{"id": 0, "material": {"kind": "neon", "side_kind": "cheese", "outline_width": NaN,
@@ -584,7 +584,7 @@ def test_hostile_effect_values_open_safely_and_paint(window, tmp_path, qapp):
 def test_an_unknown_material_kind_opens_as_the_default_kind(window, tmp_path, qapp, kind):
     import json
 
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     path = write_project_text(tmp_path / "unknown-kind.t3d", '{"objects": [{"id": 0, "material": {"kind": %s}}]}'
                               % json.dumps(kind))

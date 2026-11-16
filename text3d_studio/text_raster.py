@@ -11,8 +11,8 @@ import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QGlyphRun, QImage, QPainter, QTextLayout, QTransform
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGlyphRun, QImage, QPainter, QTextLayout, QTransform
 
 from .image_io import qimage_to_rgba
 from .model import TextParams

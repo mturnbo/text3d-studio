@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from PyQt6.QtCore import QSettings
+from PySide6.QtCore import QSettings
 
 from text3d_studio.preferences import MAX_RECENT_FILES, Preferences
 

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI coding agents (and humans) working on **Text3D Studio**: a PyQt6 + OpenGL 4.1 core
+Guidance for AI coding agents (and humans) working on **Text3D Studio**: a PySide6 + OpenGL 4.1 core
 desktop app that composites extruded 3D text into a photo with the *layer-stack duplication*
 technique, then exports at the photo's native resolution. See `README.md` for the user-facing
 overview and roadmap.
@@ -17,7 +17,7 @@ uv run pytest -q tests/test_render.py                 # GPU/render tests only
 
 - `uv run` only finds the console script from inside the project directory; elsewhere use
   `uv run --project /path/to/text3d-studio text3d-studio`.
-- Python ≥ 3.11. Dependencies: `PyQt6`, `PyOpenGL`, `numpy`; dev: `pytest`. Do not add `scipy`,
+- Python ≥ 3.11. Dependencies: `PySide6`, `PyOpenGL`, `numpy`; dev: `pytest`. Do not add `scipy`,
   `Pillow`, `moderngl`, etc. without a clear need. Blurs are implemented in numpy, and image I/O goes through `QImage`.
 
 ## Architecture (MVVM)
@@ -330,7 +330,7 @@ The full order, with the compositing passes, is under *Compositing*.
   stay cheap. Never re-rasterize per frame.
 - **Object ids key the rasters and glyphs**, not list indices (which shift on delete). The viewmodel never
   reuses an id, so a stale cache entry can't match a new object.
-- **PyQt signal arguments.** `QAction.triggered` and `QAbstractButton.clicked` pass a `checked`
+- **Qt signal arguments.** `QAction.triggered` and `QAbstractButton.clicked` pass a `checked`
   bool. Don't connect them directly to methods with optional parameters; wrap them in a lambda.
 - **Never write alpha < 1 into the canvas framebuffer.** Qt composites the QOpenGLWidget as premultiplied
   color, so a pixel brighter than its alpha overflows and *wraps* (a 245 blue shows as 9): bright reflections

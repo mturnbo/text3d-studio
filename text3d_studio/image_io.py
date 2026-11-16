@@ -1,7 +1,7 @@
 """Image loading/saving via QImage (no widget dependency), exchanged as numpy RGBA arrays."""
 
 import numpy as np
-from PyQt6.QtGui import QImage
+from PySide6.QtGui import QImage
 
 SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
 SUPPORTED_LOAD = "Images (" + " ".join(f"*{ext}" for ext in SUPPORTED_EXTENSIONS) + ")"
@@ -10,8 +10,7 @@ SUPPORTED_LOAD = "Images (" + " ".join(f"*{ext}" for ext in SUPPORTED_EXTENSIONS
 def qimage_to_rgba(image: QImage) -> np.ndarray:
     image = image.convertToFormat(QImage.Format.Format_RGBA8888)
     width, height = image.width(), image.height()
-    ptr = image.constBits()
-    ptr.setsize(image.sizeInBytes())
+    ptr = image.constBits()  # a memoryview of the whole image
     rows = np.frombuffer(ptr, dtype=np.uint8).reshape(height, image.bytesPerLine())
     return rows[:, : width * 4].reshape(height, width, 4).copy()
 

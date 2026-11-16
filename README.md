@@ -1,6 +1,6 @@
 # Text3D Studio
 
-Desktop app (PyQt6 + OpenGL 4.1 core) for compositing extruded 3D text into a photo using the
+Desktop app (PySide6 + OpenGL 4.1 core) for compositing extruded 3D text into a photo using the
 **layer-stack duplication** technique, with system fonts, perspective matching, directional lighting
 and soft ground shadows. Exports at the photo's native resolution.
 
@@ -12,7 +12,7 @@ uv run text3d-studio path/to/photo.jpg   # or a .t3d project; the argument is op
 uv run pytest                            # 47 tests, including GPU render tests
 ```
 
-Without uv: `pip install "PyQt6>=6.6" "PyOpenGL>=3.1.7" "numpy>=1.26"`, then `python -m text3d_studio`.
+Without uv: `pip install "PySide6>=6.8" "PyOpenGL>=3.1.7" "numpy>=1.26"`, then `python -m text3d_studio`.
 
 ## Architecture (MVVM)
 

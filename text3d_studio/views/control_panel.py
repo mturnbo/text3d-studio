@@ -2,9 +2,9 @@
 
 import math
 
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QKeySequence
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QKeySequence
+from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QCheckBox,
@@ -257,7 +257,7 @@ class SliderUndoGroups(QObject):
 class SliderRow(QWidget):
     """A slider paired with a spin box, emitting floats (ints when decimals == 0)."""
 
-    value_changed = pyqtSignal(object)
+    value_changed = Signal(object)
 
     def __init__(self, minimum: float, maximum: float, decimals: int):
         super().__init__()
@@ -298,7 +298,7 @@ class SliderRow(QWidget):
 
 
 class ColorButton(QPushButton):
-    color_changed = pyqtSignal(tuple)
+    color_changed = Signal(tuple)
 
     def __init__(self):
         super().__init__()
@@ -321,7 +321,7 @@ class ColorButton(QPushButton):
 
 
 class ControlPanel(QScrollArea):
-    eyedropper_requested = pyqtSignal(str, str)  # (section, field): the next canvas click picks that colour
+    eyedropper_requested = Signal(str, str)  # (section, field): the next canvas click picks that colour
 
     def __init__(self, viewmodel: SceneViewModel):
         super().__init__()
@@ -362,14 +362,14 @@ class ControlPanel(QScrollArea):
             column.addWidget(group)
         column.addStretch(1)
         self.setWidget(content)
-        for control in content.findChildren((QSlider, QAbstractSpinBox, QComboBox)):
+        for control in [w for cls in (QSlider, QAbstractSpinBox, QComboBox) for w in content.findChildren(cls)]:
             control.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # focus by click or Tab, never by wheel
             control.installEventFilter(self.wheel_guard)
         self.letter_shortcuts = LetterShortcuts(self)
         for spin in content.findChildren(QAbstractSpinBox):
             spin.installEventFilter(self.letter_shortcuts)
         self.undo_shortcuts = UndoShortcuts(self)
-        for field in content.findChildren((QAbstractSpinBox, QComboBox)):
+        for field in [w for cls in (QAbstractSpinBox, QComboBox) for w in content.findChildren(cls)]:
             field.installEventFilter(self.undo_shortcuts)
         self.slider_undo_groups = SliderUndoGroups(self, self.vm)
         for slider in content.findChildren(QSlider):
