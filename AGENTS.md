@@ -13,11 +13,12 @@ uv run text3d-studio [image | project.t3d]            # launch the app; must run
 uv run python -m text3d_studio [image | project.t3d]  # same, without the console script
 uv run pytest -q                                      # full suite (~2–5 s), includes real-GPU tests
 uv run pytest -q tests/test_render.py                 # GPU/render tests only
+uv run ruff check .                                   # lint (CI runs this, plus tests and dependency audits)
 ```
 
 - `uv run` only finds the console script from inside the project directory; elsewhere use
   `uv run --project /path/to/text3d-studio text3d-studio`.
-- Python ≥ 3.11. Dependencies: `PySide6`, `PyOpenGL`, `numpy`; dev: `pytest`. Do not add `scipy`,
+- Python ≥ 3.12 (on 3.11 shiboken6 over-releases `True`/`False` and crashes). Dependencies: `PySide6`, `PyOpenGL`, `numpy`; dev: `pytest`, `pytest-timeout`, `ruff`. Do not add `scipy`,
   `Pillow`, `moderngl`, etc. without a clear need. Blurs are implemented in numpy, and image I/O goes through `QImage`.
 
 ## Architecture (MVVM)

@@ -517,7 +517,7 @@ def test_varnish_adds_a_sharp_highlight(compositor):
         doc.scene.light.azimuth, doc.scene.light.elevation = 0.0, 12.0
         return np.sort(text_pixels(compositor, doc).sum(-1))[-30:].mean()
 
-    assert highlight(1.0) > highlight(0.0) + 150
+    assert highlight(1.0) > highlight(0.0) + 100  # about 260 on a Mac GPU, 140 with Mesa's software renderer
 
 
 # ----- Glass --------------------------------------------------------------------------------------

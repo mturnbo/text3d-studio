@@ -2,9 +2,10 @@ import dataclasses
 
 import numpy as np
 import pytest
+from PySide6.QtGui import QFontMetricsF
 
 from text3d_studio.model import TextParams
-from text3d_studio.text_raster import MAX_TEXTURE_WIDTH, extract_walls, rasterize_text
+from text3d_studio.text_raster import MAX_TEXTURE_WIDTH, _make_font, extract_walls, rasterize_text
 
 
 def decode_direction(rgba):
@@ -108,6 +109,11 @@ def test_covers_is_false_off_the_raster(qapp, point):
 # ----- Multi-line text ----------------------------------------------------------------------------------
 
 
+def line_spacing_em():
+    """The font's own line spacing in ems: 1.0 for Helvetica on macOS, more where another font stands in."""
+    return QFontMetricsF(_make_font(TextParams(), 100)).lineSpacing() / 100
+
+
 def ink_bands(raster):
     """The (first, last) row of each horizontal band of ink, top to bottom."""
     rows = raster.rgba[..., 3].max(axis=1) > 5
@@ -159,7 +165,7 @@ def test_lines_are_one_line_spacing_apart(qapp):
     raster = rasterize_text(TextParams(content="HI\nHI"))
     first, second = ink_bands(raster)
     em_rows = raster.rgba.shape[0] / raster.size[1]  # pixels per em
-    assert (second[0] - first[0]) / em_rows == pytest.approx(1.0, abs=0.02)  # Helvetica's line spacing is 1 em
+    assert (second[0] - first[0]) / em_rows == pytest.approx(line_spacing_em(), abs=0.02)
 
 
 def test_blank_line_keeps_its_height(qapp):
@@ -168,7 +174,8 @@ def test_blank_line_keeps_its_height(qapp):
     spaced = ink_bands(spaced_raster)
     em_rows = spaced_raster.rgba.shape[0] / spaced_raster.size[1]
     assert len(spaced) == 2
-    assert ((spaced[1][0] - spaced[0][0]) - (tight[1][0] - tight[0][0])) / em_rows == pytest.approx(1.0, abs=0.02)
+    assert ((spaced[1][0] - spaced[0][0]) - (tight[1][0] - tight[0][0])) / em_rows == pytest.approx(
+        line_spacing_em(), abs=0.02)
 
 
 @pytest.mark.parametrize("content", ["HI\n", "HI\n\n", "\nHI", "\n\nHI\n"])
@@ -240,7 +247,8 @@ def test_left_and_right_alignment_mirror_the_short_lines(qapp):
     short_left = ink_columns(left, ink_bands(left)[1])
     short_right = ink_columns(right, ink_bands(right)[1])
     assert short_left[0] < width / 3 and short_right[1] > width * 2 / 3
-    assert left.rgba.shape == right.rgba.shape
+    assert left.rgba.shape[0] == right.rgba.shape[0]
+    assert abs(left.rgba.shape[1] - right.rgba.shape[1]) <= 1  # rounding the float bounds up can differ by a pixel
 
 
 def test_unknown_alignment_falls_back_to_center(qapp):
@@ -316,13 +324,13 @@ def test_line_height_sets_the_distance_between_lines(qapp, line_height):
     raster = rasterize_text(TextParams(content="HI\nHI", line_height=line_height))
     first, second = ink_bands(raster)
     em_rows = raster.rgba.shape[0] / raster.size[1]
-    assert (second[0] - first[0]) / em_rows == pytest.approx(line_height, abs=0.02)
+    assert (second[0] - first[0]) / em_rows == pytest.approx(line_height * line_spacing_em(), abs=0.02)
 
 
 def test_tight_line_height_shrinks_the_mask_and_keeps_walls_closed(qapp):
     normal = rasterize_text(TextParams(content="HI\nHI\nHI"))
     tight = rasterize_text(TextParams(content="HI\nHI\nHI", line_height=0.7))
-    assert tight.size[1] == pytest.approx(normal.size[1] - 2 * 0.3, abs=0.02)
+    assert tight.size[1] == pytest.approx(normal.size[1] - 2 * 0.3 * line_spacing_em(), abs=0.02)
     assert_walls_closed(tight)
 
 

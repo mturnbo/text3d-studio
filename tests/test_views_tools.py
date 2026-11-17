@@ -7,6 +7,7 @@ import pytest
 from PySide6.QtCore import QEvent, QPointF, QSettings, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QMessageBox
+from test_views import drag, mouse, sized_canvas
 
 from text3d_studio import ground as ground_model
 from text3d_studio import math3d
@@ -15,7 +16,6 @@ from text3d_studio.preferences import Preferences
 from text3d_studio.viewmodel import SceneViewModel
 from text3d_studio.views.image_canvas import TEXT_TOOL, WALL_TOOL
 from text3d_studio.views.main_window import MainWindow
-from test_views import drag, mouse, sized_canvas
 
 
 @pytest.fixture

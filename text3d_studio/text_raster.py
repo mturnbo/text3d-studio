@@ -6,8 +6,8 @@ Output RGBA channels:
   A     glyph coverage
 """
 
-import math
 import dataclasses
+import math
 from dataclasses import dataclass
 
 import numpy as np
