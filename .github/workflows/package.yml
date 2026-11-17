@@ -33,7 +33,7 @@ jobs:
           - name: linux-x64
             os: ubuntu-22.04  # the oldest supported glibc, so the binary runs on more distributions
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
@@ -98,7 +98,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: text3d-studio-${{ matrix.name }}
           path: dist/*
@@ -112,7 +112,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
