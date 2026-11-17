@@ -18,7 +18,7 @@ uv run ruff check .                                   # lint (CI runs this, plus
 
 - `uv run` only finds the console script from inside the project directory; elsewhere use
   `uv run --project /path/to/text3d-studio text3d-studio`.
-- Python ≥ 3.11. Dependencies: `PySide6`, `PyOpenGL`, `numpy`; dev: `pytest`. Do not add `scipy`,
+- Python ≥ 3.12 (on 3.11 shiboken6 over-releases `True`/`False` and crashes). Dependencies: `PySide6`, `PyOpenGL`, `numpy`; dev: `pytest`, `pytest-timeout`, `ruff`. Do not add `scipy`,
   `Pillow`, `moderngl`, etc. without a clear need. Blurs are implemented in numpy, and image I/O goes through `QImage`.
 
 ## Architecture (MVVM)
