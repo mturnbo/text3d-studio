@@ -1,0 +1,40 @@
+name: Dependencies
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "17 6 * * 1"  # weekly, so new advisories against unchanged dependencies still surface
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          python-version: "3.13"
+      # Audits exactly what uv.lock pins, every group included (the Nuitka build tools ship the binaries).
+      - run: uv export --frozen --all-groups --no-emit-project -o requirements-audit.txt
+      - run: uvx pip-audit@2.10.1 --disable-pip --strict -r requirements-audit.txt
+
+  review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: on-failure
