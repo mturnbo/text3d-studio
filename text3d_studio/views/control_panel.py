@@ -26,9 +26,8 @@ from PySide6.QtWidgets import (
 
 from ..ground import MAX_FOV, MAX_PITCH, MAX_ROLL, MIN_FOV, MOUNTS
 from ..materials import KINDS, SHADING_RANGES, SIDE_KINDS
-from ..text_raster import ALIGNMENTS
-from ..text_raster import LAYOUT_RANGES
 from ..model import FIELD_RANGES, EffectsParams, MaskParams, ShadowParams
+from ..text_raster import ALIGNMENTS, LAYOUT_RANGES
 from ..viewmodel import OBJECT_SECTIONS, SceneViewModel
 
 # (field, label, minimum, maximum, decimals)

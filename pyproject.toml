@@ -16,7 +16,10 @@ text3d-studio = "text3d_studio.app:main"
 build = [
     "nuitka>=4.3.5",
 ]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.17.5",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -24,3 +27,15 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]
+ignore = [
+    "E501",  # long lines: some docstrings and test tables run past 120 on purpose
+    "E731",  # small lambdas bound to names read clearly here
+    "E741",  # `l` is a natural name for a length/lightness in the math
+    "B905",  # zip(strict=...) would change behaviour where lengths differ on purpose
+]

@@ -14,13 +14,13 @@ from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .. import ground as ground_model
 from .. import math3d
-from ..lighting import solve_sun
 from ..image_io import SUPPORTED_EXTENSIONS
+from ..lighting import solve_sun
+from ..model import TextObject, TextParams
+from ..project_io import PROJECT_EXTENSION
 from ..render.compositor import Compositor
 from ..render.exporter import render_document
 from ..render.grid_renderer import GridRenderer
-from ..model import TextObject, TextParams
-from ..project_io import PROJECT_EXTENSION
 from ..text_raster import GlyphRaster, rasterize_text
 from ..viewmodel import SceneViewModel
 

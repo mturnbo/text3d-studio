@@ -16,12 +16,12 @@ from PySide6.QtGui import QImage, QImageReader
 from .image_io import SUPPORTED_EXTENSIONS, load_image, qimage_to_rgba, rgba_to_qimage
 from .materials import sanitized_material_params
 from .model import (
+    FIELD_RANGES,
     CameraParams,
     Document,
     EffectsParams,
     GridParams,
     GroundParams,
-    FIELD_RANGES,
     LightParams,
     MaskParams,
     MaterialParams,

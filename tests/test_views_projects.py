@@ -586,8 +586,8 @@ def test_an_unknown_material_kind_opens_as_the_default_kind(window, tmp_path, qa
 
     from PySide6.QtWidgets import QComboBox
 
-    path = write_project_text(tmp_path / "unknown-kind.t3d", '{"objects": [{"id": 0, "material": {"kind": %s}}]}'
-                              % json.dumps(kind))
+    scene = json.dumps({"objects": [{"id": 0, "material": {"kind": kind}}]})
+    path = write_project_text(tmp_path / "unknown-kind.t3d", scene)
     window.show()
     window.open_project_path(path)
     qapp.processEvents()

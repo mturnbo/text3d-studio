@@ -641,7 +641,7 @@ def test_undo_is_refused_during_a_group(uvm):
 
 def test_quick_changes_to_one_field_merge_into_one_step(uvm, clock):
     original = scene_copy(uvm)
-    for i in range(10):
+    for _ in range(10):
         uvm.nudge("transform", "size", 0.1)
         clock.now += 0.5
     assert undo_count(uvm) == 1
