@@ -57,11 +57,15 @@ jobs:
       - run: uv sync --locked
 
       # Frame-rate tests measure the machine, not the code: they're left to local runs on real GPUs.
+      # A test stuck for 2 minutes (a modal dialog, a driver) fails with its stack instead of stalling the job.
       - name: Test
         shell: bash
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
+          args=(-q -k "not fps" -rs --timeout=120 --timeout-method=thread)
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a -s "-screen 0 1920x1080x24" uv run pytest -q -k "not fps" -rs
+            xvfb-run -a -s "-screen 0 1920x1080x24" uv run pytest "${args[@]}"
           else
-            uv run pytest -q -k "not fps" -rs
+            uv run pytest "${args[@]}"
           fi
