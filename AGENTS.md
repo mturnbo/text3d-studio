@@ -564,7 +564,8 @@ fixes (constant-size text drag with Shift/Option/Cmd modes, pinch, panel wheel s
 v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save and open) · v0.9.0 workflow and
 layout (looks, transparent/batch export, zoom, multi-line and arc text, wall mounting, Match Sun, eyedropper) ·
 v0.10.0 rendering (side materials, outline, neon, occlusion masks, wall and contact shadows, reflection,
-bloom, grain, grade, depth of field) · v0.10.1 fix (a .t3d project passed on the command line opens).
+bloom, grain, grade, depth of field) · v0.10.1 fix (a .t3d project passed on the command line opens) ·
+v0.11.0 packaging (PySide6 port, Nuitka builds for macOS, Windows and Linux published with each release).
 
 ### Project files (.t3d)
 
