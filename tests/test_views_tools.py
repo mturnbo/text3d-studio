@@ -4,9 +4,9 @@ import dataclasses
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QEvent, QPointF, QSettings, Qt
-from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import QMessageBox
+from PySide6.QtCore import QEvent, QPointF, QSettings, Qt
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import QMessageBox
 
 from text3d_studio import ground as ground_model
 from text3d_studio import math3d
@@ -279,7 +279,7 @@ def test_wall_text_can_be_picked(vm):
 
 
 def mount_combo(panel):
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     return panel.findChild(QComboBox, "transform.mount")
 
@@ -525,7 +525,7 @@ def test_eyedropper_maps_through_the_letterboxed_image_rect(vm):
 
 
 def test_escape_cancels_the_eyedropper(vm):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     canvas, statuses = picking_canvas(vm)
     before = vm.scene.light.color
@@ -567,7 +567,7 @@ def test_eyedropper_click_does_not_move_the_text_and_is_one_undo_step(vm):
 
 
 def test_pick_buttons_sit_next_to_the_light_and_ambient_colours(window):
-    from PyQt6.QtWidgets import QPushButton
+    from PySide6.QtWidgets import QPushButton
 
     vm = window.vm
     vm.set_background(photo())
@@ -594,9 +594,9 @@ def test_picked_colour_shows_on_the_panels_colour_button(window):
 
 
 def test_wall_preview_is_clipped_to_the_photo(vm):
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QImage, QRegion
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QImage, QRegion
+    from PySide6.QtWidgets import QWidget
 
     vm.set_background(np.full((100, 400, 4), 255, np.uint8))  # wide: bars above and below the photo
     canvas = wall_canvas(vm)
@@ -692,7 +692,7 @@ def test_mask_tool_is_in_the_tools_menu_with_shortcut_m(window):
 
 
 def test_the_panel_sets_the_brush_and_clears_the_mask(window):
-    from PyQt6.QtWidgets import QPushButton
+    from PySide6.QtWidgets import QPushButton
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -732,7 +732,7 @@ def test_setting_the_wall_says_the_photo_shows_one_in_the_same_undo_step(vm):
 
 
 def test_the_wall_group_has_a_checkbox_for_a_wall_in_the_photo(window):
-    from PyQt6.QtWidgets import QCheckBox
+    from PySide6.QtWidgets import QCheckBox
 
     box = next(b for b in window.panel.findChildren(QCheckBox) if "Wall in the photo" in b.text())
     assert not box.isChecked()
@@ -760,7 +760,7 @@ def test_every_effect_and_the_contact_shadow_have_a_slider_over_their_range(wind
 
 
 def test_the_effects_group_holds_the_effects_and_the_shadow_group_the_contact_shadow(window):
-    from PyQt6.QtWidgets import QGroupBox
+    from PySide6.QtWidgets import QGroupBox
 
     from text3d_studio.views.control_panel import SliderRow
 

@@ -10,8 +10,8 @@ import tempfile
 from dataclasses import dataclass, field
 
 import numpy as np
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
-from PyQt6.QtGui import QImage, QImageReader
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+from PySide6.QtGui import QImage, QImageReader
 
 from .image_io import SUPPORTED_EXTENSIONS, load_image, qimage_to_rgba, rgba_to_qimage
 from .materials import sanitized_material_params
@@ -293,8 +293,7 @@ def _load_mask(entry, loaded: LoadedProject) -> None:
         return
     image = image.convertToFormat(QImage.Format.Format_Grayscale8)
     width, height = image.width(), image.height()
-    ptr = image.constBits()
-    ptr.setsize(image.sizeInBytes())
+    ptr = image.constBits()  # a memoryview of the whole image
     loaded.document.mask = np.frombuffer(ptr, np.uint8).reshape(height, image.bytesPerLine())[:, :width].copy()
 
 

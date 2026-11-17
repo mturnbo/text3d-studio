@@ -5,8 +5,8 @@ import os
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QMessageBox
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QMessageBox
 
 from text3d_studio import presets
 from text3d_studio.model import Document
@@ -284,7 +284,7 @@ def test_batch_dialog_collects_sizes_and_formats(window):
 
 
 def test_batch_dialog_needs_a_size_a_format_and_a_folder(window):
-    from PyQt6.QtWidgets import QDialogButtonBox
+    from PySide6.QtWidgets import QDialogButtonBox
 
     dialog = batch_dialog(window)
     ok = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
@@ -301,7 +301,7 @@ def test_batch_dialog_needs_a_size_a_format_and_a_folder(window):
 
 
 def test_batch_dialog_choose_button_picks_a_folder(window, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QPushButton
+    from PySide6.QtWidgets import QPushButton
 
     monkeypatch.setattr(f"{MAIN}.QFileDialog.getExistingDirectory", lambda *args: str(tmp_path))
     dialog = batch_dialog(window)
@@ -310,7 +310,7 @@ def test_batch_dialog_choose_button_picks_a_folder(window, monkeypatch, tmp_path
 
 
 def test_batch_export_action_runs_what_the_dialog_chose(window, monkeypatch, tmp_path, qapp):
-    from PyQt6.QtWidgets import QDialog
+    from PySide6.QtWidgets import QDialog
 
     photo(window, 160, 100)
     window.show()
@@ -328,7 +328,7 @@ def test_batch_export_action_runs_what_the_dialog_chose(window, monkeypatch, tmp
 
 
 def test_cancelled_batch_dialog_exports_nothing(window, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QDialog
+    from PySide6.QtWidgets import QDialog
 
     photo(window, 160, 100)
     monkeypatch.setattr(f"{MAIN}.BatchExportDialog.exec", lambda dialog: QDialog.DialogCode.Rejected)
@@ -341,7 +341,7 @@ def test_cancelled_batch_dialog_exports_nothing(window, monkeypatch, tmp_path):
 
 def activate(window, qapp):
     """Shows the window and makes it Qt's active window (see AGENTS.md, Focus in tests)."""
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
 
     window.show()
     qapp.processEvents()
@@ -369,8 +369,8 @@ def changed_from_photo(pixels):
 
 
 def test_holding_backslash_shows_the_photo_alone(window, qapp):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
 
     photo(window, 320, 200)
     window.vm.set("shadow", "enabled", False)
@@ -390,13 +390,13 @@ def test_holding_backslash_shows_the_photo_alone(window, qapp):
 
 
 def test_auto_repeat_keeps_showing_the_photo_until_the_real_release(window, qapp):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
 
     canvas = focused_canvas(window, qapp)
     QTest.keyPress(canvas, Qt.Key.Key_Backslash)
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtGui import QKeyEvent
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
 
     repeat_release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Backslash, Qt.KeyboardModifier.NoModifier, "\\", True)
     repeat_press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backslash, Qt.KeyboardModifier.NoModifier, "\\", True)
@@ -408,9 +408,9 @@ def test_auto_repeat_keeps_showing_the_photo_until_the_real_release(window, qapp
 
 
 def test_losing_focus_while_holding_backslash_stops_showing_the_photo(window, qapp):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QLineEdit
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QLineEdit
 
     canvas = focused_canvas(window, qapp)
     QTest.keyPress(canvas, Qt.Key.Key_Backslash)
@@ -420,8 +420,8 @@ def test_losing_focus_while_holding_backslash_stops_showing_the_photo(window, qa
 
 
 def test_view_menu_toggle_shows_the_photo_and_holding_does_not_end_it(window, qapp):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
 
     canvas = focused_canvas(window, qapp)
     assert window.original_action in window.view_menu.actions()
@@ -479,8 +479,8 @@ def zoom_canvas(qapp, width=800, height=500, image=(1600, 1000)):
 
 
 def mouse(canvas, kind, pos, button, buttons=None, modifiers=None):
-    from PyQt6.QtCore import QEvent, QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
 
     modifiers = Qt.KeyboardModifier.NoModifier if modifiers is None else modifiers
     event = QMouseEvent(kind, QPointF(*pos), QPointF(*pos), button, button if buttons is None else buttons, modifiers)
@@ -492,7 +492,7 @@ def mouse(canvas, kind, pos, button, buttons=None, modifiers=None):
 
 
 def drag(canvas, start, end, modifiers=None):
-    from PyQt6.QtCore import QEvent, Qt
+    from PySide6.QtCore import QEvent, Qt
 
     left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
     mouse(canvas, QEvent.Type.MouseButtonPress, start, left, modifiers=modifiers)
@@ -501,8 +501,8 @@ def drag(canvas, start, end, modifiers=None):
 
 
 def key(canvas, qapp, kind, which):
-    from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtGui import QKeyEvent
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
 
     event_type = QEvent.Type.KeyPress if kind == "press" else QEvent.Type.KeyRelease
     qapp.sendEvent(canvas, QKeyEvent(event_type, which, Qt.KeyboardModifier.NoModifier))
@@ -591,7 +591,7 @@ def test_zooming_keeps_the_point_at_the_center(qapp):
 
 
 def test_space_drag_pans_and_is_clamped_to_the_image(qapp):
-    from PyQt6.QtCore import Qt
+    from PySide6.QtCore import Qt
 
     canvas = zoom_canvas(qapp, image=(3200, 2000))  # larger than the canvas at 100% on any screen
     canvas.zoom_actual_size()
@@ -610,7 +610,7 @@ def test_space_drag_pans_and_is_clamped_to_the_image(qapp):
 
 
 def test_panning_does_nothing_while_the_image_fits(qapp):
-    from PyQt6.QtCore import Qt
+    from PySide6.QtCore import Qt
 
     canvas = zoom_canvas(qapp)
     before = canvas._image_rect()
@@ -622,7 +622,7 @@ def test_panning_does_nothing_while_the_image_fits(qapp):
 
 
 def test_panning_is_not_an_undo_step_and_moves_no_text(qapp):
-    from PyQt6.QtCore import Qt
+    from PySide6.QtCore import Qt
 
     canvas = zoom_canvas(qapp)
     canvas.zoom_actual_size()
@@ -661,7 +661,7 @@ def test_dragging_the_text_while_zoomed_follows_the_cursor(qapp):
 
 
 def test_option_slide_keeps_the_grabbed_ground_point_under_the_cursor_when_zoomed(qapp):
-    from PyQt6.QtCore import Qt
+    from PySide6.QtCore import Qt
 
     canvas = zoom_canvas(qapp)
     canvas.vm.set("ground", "pitch", 12.0)
@@ -680,13 +680,13 @@ def test_option_slide_keeps_the_grabbed_ground_point_under_the_cursor_when_zoome
 
 
 def QPointF_(pos):
-    from PyQt6.QtCore import QPointF
+    from PySide6.QtCore import QPointF
 
     return QPointF(*pos)
 
 
 def test_picking_selects_the_object_under_the_cursor_when_zoomed(qapp):
-    from PyQt6.QtCore import QEvent, Qt
+    from PySide6.QtCore import QEvent, Qt
 
     canvas = zoom_canvas(qapp)
     vm = canvas.vm
@@ -730,7 +730,7 @@ def test_export_ignores_the_zoom(window, qapp):
 
 
 def test_view_menu_zoom_actions_and_shortcuts(window):
-    from PyQt6.QtGui import QKeySequence
+    from PySide6.QtGui import QKeySequence
 
     actions = window.view_menu.actions()
     expected = {

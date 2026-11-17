@@ -7,10 +7,10 @@ from collections import deque
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .. import ground as ground_model
 from .. import math3d
@@ -75,7 +75,7 @@ def dropped_image_path(mime_data) -> str | None:
 class EmptyStateOverlay(QFrame):
     """Centered prompt shown over the canvas until a background image is loaded."""
 
-    open_requested = pyqtSignal()
+    open_requested = Signal()
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -213,7 +213,7 @@ class ToolOverlay(QWidget):
 class PinchFilter(QObject):
     """Turns trackpad pinches (macOS native zoom gestures) into scale factors."""
 
-    pinched = pyqtSignal(float)
+    pinched = Signal(float)
 
     def eventFilter(self, watched, event) -> bool:
         if (event.type() == QEvent.Type.NativeGesture
@@ -224,14 +224,14 @@ class PinchFilter(QObject):
 
 
 class ImageCanvas(QOpenGLWidget):
-    fps_changed = pyqtSignal(float)
-    error = pyqtSignal(str)
-    open_requested = pyqtSignal()
-    file_dropped = pyqtSignal(str)
-    tool_changed = pyqtSignal(str)
-    fit_status = pyqtSignal(str)  # why the traced corners can't be fitted, or "" when they can
-    zoom_changed = pyqtSignal()
-    tool_status = pyqtSignal(str)  # what the Match Sun tool wants next, its result, or why it failed
+    fps_changed = Signal(float)
+    error = Signal(str)
+    open_requested = Signal()
+    file_dropped = Signal(str)
+    tool_changed = Signal(str)
+    fit_status = Signal(str)  # why the traced corners can't be fitted, or "" when they can
+    zoom_changed = Signal()
+    tool_status = Signal(str)  # what the Match Sun tool wants next, its result, or why it failed
 
     def __init__(self, viewmodel: SceneViewModel, parent=None):
         super().__init__(parent)

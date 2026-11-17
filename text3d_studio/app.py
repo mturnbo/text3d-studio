@@ -3,9 +3,9 @@
 import os
 import sys
 
-from PyQt6.QtCore import QSettings
-from PyQt6.QtGui import QSurfaceFormat
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QSettings
+from PySide6.QtGui import QSurfaceFormat
+from PySide6.QtWidgets import QApplication
 
 from .model import Document
 from .preferences import Preferences

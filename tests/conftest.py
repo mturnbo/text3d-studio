@@ -1,8 +1,8 @@
 import gc
 
 import pytest
-from PyQt6.QtGui import QOffscreenSurface, QOpenGLContext
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtGui import QOffscreenSurface, QOpenGLContext
+from PySide6.QtWidgets import QApplication
 
 from text3d_studio.app import configure_opengl
 

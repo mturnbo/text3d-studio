@@ -5,7 +5,7 @@ import dataclasses
 import time
 
 import numpy as np
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from . import ground as ground_model
 from . import occlusion
@@ -21,15 +21,15 @@ SHARED_SECTIONS = tuple(f.name for f in dataclasses.fields(Scene) if f.name != "
 
 
 class SceneViewModel(QObject):
-    scene_changed = pyqtSignal(str, str)  # (section, field)
-    text_changed = pyqtSignal()
-    background_changed = pyqtSignal()
-    objects_changed = pyqtSignal()  # an object was added or deleted
-    selection_changed = pyqtSignal(int)  # the selected object's index; its text, transform and material changed
-    dirty_changed = pyqtSignal(bool)  # the document gained or lost unsaved changes
-    document_loaded = pyqtSignal()  # load_document replaced the whole document
-    history_changed = pyqtSignal()  # can_undo or can_redo may have changed
-    mask_changed = pyqtSignal(object)  # the occlusion mask's changed rect (x0, y0, x1, y1), or None: all of it
+    scene_changed = Signal(str, str)  # (section, field)
+    text_changed = Signal()
+    background_changed = Signal()
+    objects_changed = Signal()  # an object was added or deleted
+    selection_changed = Signal(int)  # the selected object's index; its text, transform and material changed
+    dirty_changed = Signal(bool)  # the document gained or lost unsaved changes
+    document_loaded = Signal()  # load_document replaced the whole document
+    history_changed = Signal()  # can_undo or can_redo may have changed
+    mask_changed = Signal(object)  # the occlusion mask's changed rect (x0, y0, x1, y1), or None: all of it
 
     def __init__(self, document: Document | None = None, clock=time.monotonic):
         super().__init__()

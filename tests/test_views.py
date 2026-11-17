@@ -4,9 +4,9 @@ import os
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent, QTextCursor
-from PyQt6.QtWidgets import QMessageBox
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QMouseEvent, QTextCursor
+from PySide6.QtWidgets import QMessageBox
 
 from text3d_studio import ground as ground_model
 from text3d_studio import math3d
@@ -532,8 +532,8 @@ def test_plain_drag_stops_before_pushing_the_text_too_far_away(vm):
 
 
 def pinch(canvas, value):
-    from PyQt6.QtGui import QNativeGestureEvent, QPointingDevice
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
+    from PySide6.QtWidgets import QApplication
 
     event = QNativeGestureEvent(
         Qt.NativeGestureType.ZoomNativeGesture, QPointingDevice.primaryPointingDevice(), 2,
@@ -629,7 +629,7 @@ def test_grid_panel_controls_are_bound(vm):
 def activate(window, qapp):
     """Shows the window and makes it Qt's active window, so focus works even while another app holds the
     OS focus (macOS won't let a test steal it)."""
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
 
     window.show()
     qapp.processEvents()  # first let the OS's activation events for this and earlier windows arrive
@@ -638,7 +638,7 @@ def activate(window, qapp):
 
 
 def test_g_key_on_canvas_toggles_grid(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     activate(window, qapp)
     window.canvas.setFocus()
@@ -649,7 +649,7 @@ def test_g_key_on_canvas_toggles_grid(window, qapp):
 
 @pytest.mark.parametrize("field", ["transform.size", "ground.pitch"])
 def test_g_toggles_the_grid_while_a_number_field_has_focus(window, qapp, field):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -665,7 +665,7 @@ def test_g_toggles_the_grid_while_a_number_field_has_focus(window, qapp, field):
 
 
 def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
     from text3d_studio.views.image_canvas import GRID_TOOL
@@ -682,8 +682,8 @@ def test_number_fields_still_take_digits_and_tool_letters_switch_tools(window, q
 
 
 def test_typing_g_in_the_text_field_types_instead_of_toggling(window, qapp):
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QPlainTextEdit
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPlainTextEdit
 
     window.show()
     edit = window.panel.findChild(QPlainTextEdit, "text.content")
@@ -859,8 +859,8 @@ def test_right_drag_rotates_grid_and_keeps_text_in_place(vm):
 
 
 def wheel(canvas, steps):
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QWheelEvent
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QWheelEvent
 
     event = QWheelEvent(
         QPointF(400, 300), QPointF(400, 300), QPoint(), QPoint(0, int(120 * steps)),
@@ -1030,7 +1030,7 @@ def test_horizon_drag_across_the_text_and_back_returns_it(vm):
 
 
 def material_combo(panel):
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     return panel.findChild(QComboBox, "material.kind")
 
@@ -1064,7 +1064,7 @@ def test_dropdown_follows_the_model(vm):
 
 
 def material_row_visible(panel, field):
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QWidget
 
     return panel.findChild(QWidget, f"material.{field}").isVisibleTo(panel)
 
@@ -1081,7 +1081,7 @@ def test_each_material_shows_its_controls_and_hides_metallic(vm, kind):
 
 
 def test_glass_relabels_its_colors_and_others_restore_them(vm):
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QWidget
 
     from text3d_studio.views.control_panel import ControlPanel
 
@@ -1119,7 +1119,7 @@ def test_untextured_materials_hide_texture_controls(vm, kind):
 
 
 def side_combo(panel):
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     return panel.findChild(QComboBox, "material.side_kind")
 
@@ -1135,7 +1135,7 @@ def test_sides_picker_lists_same_and_every_kind(vm):
 
 
 def test_choosing_sides_with_the_keyboard_sets_them_undoably(vm):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import ControlPanel
 
@@ -1166,7 +1166,7 @@ def test_sides_of_another_kind_hide_the_side_color_and_a_new_material_resets_the
 
 @pytest.mark.parametrize("kind", ["metal", "plastic", "stone", "wood", "glass", "neon"])
 def test_every_kind_shows_the_outline_controls_and_typing_a_width_sets_it(vm, kind):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import ControlPanel, SliderRow
 
@@ -1186,7 +1186,7 @@ def test_every_kind_shows_the_outline_controls_and_typing_a_width_sets_it(vm, ki
 
 
 def test_only_neon_shows_the_glow_controls_and_typing_a_glow_sets_it(vm):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import ControlPanel, SliderRow
 
@@ -1221,7 +1221,7 @@ def test_selecting_another_object_shows_its_sides(vm):
 
 
 def test_glass_shows_frost_and_tint_depth_and_other_kinds_hide_them(vm):
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QWidget
 
     from text3d_studio.views.control_panel import ControlPanel
 
@@ -1237,7 +1237,7 @@ def test_glass_shows_frost_and_tint_depth_and_other_kinds_hide_them(vm):
 
 
 def test_wood_shows_grain_controls_and_hides_side_color(vm):
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QWidget
 
     from text3d_studio.views.control_panel import ControlPanel
 
@@ -1256,8 +1256,8 @@ def test_wood_shows_grain_controls_and_hides_side_color(vm):
 
 
 def wheel_over(widget, steps=-1):
-    from PyQt6.QtGui import QWheelEvent
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
 
     center = QPointF(widget.width() / 2, widget.height() / 2)
     event = QWheelEvent(
@@ -1275,7 +1275,7 @@ def scrollable_panel(window, qapp):
 
 @pytest.mark.parametrize("control", ["slider", "spin", "material"])
 def test_wheel_over_an_unfocused_control_scrolls_the_panel_instead(window, qapp, control):
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -1305,7 +1305,7 @@ def test_wheel_over_a_focused_control_changes_its_value(window, qapp, control):
 
 
 def test_clicking_a_slider_gives_it_focus(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -1542,7 +1542,7 @@ def test_add_duplicate_and_delete_buttons_edit_the_objects(vm):
 
 
 def test_choosing_a_row_selects_the_object_and_refreshes_every_control(vm):
-    from PyQt6.QtWidgets import QPlainTextEdit
+    from PySide6.QtWidgets import QPlainTextEdit
 
     from text3d_studio.views.control_panel import ControlPanel, SliderRow
 
@@ -1575,7 +1575,7 @@ def test_controls_edit_the_object_chosen_in_the_list(vm):
 
 
 def test_typing_renames_the_selected_row(vm):
-    from PyQt6.QtWidgets import QPlainTextEdit
+    from PySide6.QtWidgets import QPlainTextEdit
 
     from text3d_studio.views.control_panel import ControlPanel
 
@@ -1725,7 +1725,7 @@ def test_wheel_scaling_burst_is_one_undo_step(qapp):
 
 
 def slider_handle_center(slider):
-    from PyQt6.QtWidgets import QStyle, QStyleOptionSlider
+    from PySide6.QtWidgets import QStyle, QStyleOptionSlider
 
     option = QStyleOptionSlider()
     slider.initStyleOption(option)
@@ -1734,7 +1734,7 @@ def slider_handle_center(slider):
 
 
 def drag_slider(slider, dx, steps=10):
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
 
     start = QPointF(slider_handle_center(slider))
     left = Qt.MouseButton.LeftButton
@@ -1767,7 +1767,7 @@ def test_one_slider_drag_is_one_undo_step(window, qapp):
 
 
 def test_a_slider_click_is_one_undo_step(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -1808,7 +1808,7 @@ def test_undo_and_redo_actions_follow_the_history(window):
 
 
 def test_undo_refreshes_the_panel_list_and_grid_action(window):
-    from PyQt6.QtWidgets import QPlainTextEdit
+    from PySide6.QtWidgets import QPlainTextEdit
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -1845,7 +1845,7 @@ def test_undo_re_rasterizes_the_text_it_restores(vm):
 
 
 def press_undo(widget, redo=False):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     modifiers = Qt.KeyboardModifier.ControlModifier  # Qt's name for macOS's Command key
     if redo:
@@ -1866,7 +1866,7 @@ def test_cmd_z_on_the_canvas_undoes_and_shift_cmd_z_redoes(window, qapp):
 
 @pytest.mark.parametrize("field", ["transform.size", "ground.pitch"])
 def test_cmd_z_in_a_number_field_undoes_the_scene(window, qapp, field):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -1887,7 +1887,7 @@ def test_cmd_z_in_a_number_field_undoes_the_scene(window, qapp, field):
 
 
 def test_cmd_z_in_the_font_field_undoes_the_scene(window, qapp):
-    from PyQt6.QtWidgets import QFontComboBox
+    from PySide6.QtWidgets import QFontComboBox
 
     activate(window, qapp)
     window.vm.set("light", "azimuth", 10.0)
@@ -1899,8 +1899,8 @@ def test_cmd_z_in_the_font_field_undoes_the_scene(window, qapp):
 
 
 def test_cmd_z_in_the_text_field_undoes_typing_not_the_scene(window, qapp):
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QPlainTextEdit
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPlainTextEdit
 
     activate(window, qapp)
     window.vm.set("light", "azimuth", 10.0)
@@ -1920,7 +1920,7 @@ def test_cmd_z_in_the_text_field_undoes_typing_not_the_scene(window, qapp):
 
 
 def text_field(panel):
-    from PyQt6.QtWidgets import QPlainTextEdit
+    from PySide6.QtWidgets import QPlainTextEdit
 
     return panel.findChild(QPlainTextEdit, "text.content")
 
@@ -1936,7 +1936,7 @@ def test_text_field_round_trips_text_with_newlines(vm):
 
 
 def test_return_in_the_text_field_starts_a_new_line(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     activate(window, qapp)
     edit = text_field(window.panel)
@@ -1950,7 +1950,7 @@ def test_return_in_the_text_field_starts_a_new_line(window, qapp):
 
 
 def test_tab_in_the_text_field_moves_focus_instead_of_typing(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     activate(window, qapp)
     edit = text_field(window.panel)
@@ -1962,7 +1962,7 @@ def test_tab_in_the_text_field_moves_focus_instead_of_typing(window, qapp):
 
 
 def test_typing_lines_is_one_undo_step_per_burst(qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import ControlPanel
 
@@ -1982,7 +1982,7 @@ def test_typing_lines_is_one_undo_step_per_burst(qapp):
 
 
 def test_cmd_z_in_the_text_field_undoes_a_typed_newline(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     activate(window, qapp)
     window.vm.set("light", "azimuth", 10.0)
@@ -2044,7 +2044,7 @@ def test_clicking_arced_text_picks_it(vm):
 
 
 def align_combo(panel):
-    from PyQt6.QtWidgets import QComboBox
+    from PySide6.QtWidgets import QComboBox
 
     return panel.findChild(QComboBox, "text.align")
 
@@ -2059,7 +2059,7 @@ def test_align_dropdown_lists_the_alignments(vm):
 
 
 def test_arrow_keys_in_the_align_dropdown_set_the_alignment(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     activate(window, qapp)
     combo = align_combo(window.panel)
@@ -2088,7 +2088,7 @@ def test_arrow_keys_in_the_align_dropdown_set_the_alignment(window, qapp):
     ("arc", "-180", -180),
 ])
 def test_typing_a_text_layout_value_sets_it(window, qapp, field, typed, expected):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
 
@@ -2103,7 +2103,7 @@ def test_typing_a_text_layout_value_sets_it(window, qapp, field, typed, expected
 
 
 def test_out_of_range_text_layout_values_cannot_be_typed(window, qapp):
-    from PyQt6.QtTest import QTest
+    from PySide6.QtTest import QTest
 
     from text3d_studio.views.control_panel import SliderRow
 
