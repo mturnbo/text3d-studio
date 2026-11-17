@@ -13,6 +13,7 @@ uv run text3d-studio [image | project.t3d]            # launch the app; must run
 uv run python -m text3d_studio [image | project.t3d]  # same, without the console script
 uv run pytest -q                                      # full suite (~2–5 s), includes real-GPU tests
 uv run pytest -q tests/test_render.py                 # GPU/render tests only
+uv run ruff check .                                   # lint (CI runs this, plus tests and dependency audits)
 ```
 
 - `uv run` only finds the console script from inside the project directory; elsewhere use
