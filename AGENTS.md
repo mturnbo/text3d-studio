@@ -89,7 +89,11 @@ preferences.py      QSettings-backed last folder + recent files (images and proj
 presets.py          Looks: material + light + shadow. BUILTIN_LOOKS, apply_look(vm, look) (one undo step),
                     capture_look, user looks as JSON files: load_user_looks / save_user_look / delete_user_look
 project_io.py       .t3d project files: save_project(path, document, embed_photo) / load_project(path) -> LoadedProject
-app.py              configure_opengl() + main()
+app.py              configure_opengl() + main(); FileOpenFilter (macOS Finder opens arrive as FileOpen events);
+                    ICON_PATH (resources/icon.png, also the .icns/.ico Nuitka embeds)
+packaging/          per-OS install glue used by .github/workflows/package.yml: macos/register-t3d.sh (Info.plist
+                    document type + ad hoc re-sign), windows/text3d-studio.iss (Inno Setup, per-user, .t3d ProgId),
+                    linux/ (install.sh, .desktop, shared-mime-info XML)
 ```
 
 Data flow: widget → `vm.set()` → `scene_changed` → `canvas.update()` → `paintGL()` →

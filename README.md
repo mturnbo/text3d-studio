@@ -6,6 +6,19 @@ and soft ground shadows. Exports at the photo's native resolution.
 
 ## Install & run
 
+Each [release](https://github.com/mturnbo/text3d-studio/releases) has ready-made builds. Each one registers `.t3d`
+projects, so double-clicking one opens it in the app:
+
+- **macOS** (Apple silicon): unzip and move *Text3D Studio* to Applications. The build isn't signed yet, so open
+  it the first time with right-click › Open.
+- **Windows**: run `…-setup.exe`. It installs for the current user, with no administrator rights needed.
+  SmartScreen warns about an unsigned app: choose *More info* › *Run anyway*. `…-portable.exe` runs without
+  installing, but doesn't register `.t3d`.
+- **Linux**: extract the `.tar.gz` and run `./install.sh`, which installs to `~/.local`.
+  `./install.sh --uninstall` removes it.
+
+From source:
+
 ```bash
 uv sync
 uv run text3d-studio path/to/photo.jpg   # or a .t3d project; the argument is optional
