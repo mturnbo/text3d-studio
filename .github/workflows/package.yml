@@ -10,6 +10,8 @@ on:
     paths:
       - ".github/workflows/package.yml"
       - "text3d_studio/__main__.py"
+      - "text3d_studio/resources/**"
+      - "packaging/**"
       - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch:
@@ -58,23 +60,40 @@ jobs:
           uv run --no-sync python -m nuitka text3d_studio \
             --product-version="$VERSION" --file-version="$VERSION" --macos-app-version="$VERSION"
 
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
       - name: Collect the build
         id: collect
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ matrix.name }}
         run: |
-          name="text3d-studio-$VERSION-${{ matrix.name }}"
+          name="text3d-studio-$VERSION-$TARGET"
           mkdir dist
           case "$RUNNER_OS" in
             macOS)
+              test -f build/text3d_studio.app/Contents/MacOS/text3d_studio/resources/icon.png
+              packaging/macos/register-t3d.sh build/text3d_studio.app
               ditto -c -k --keepParent build/text3d_studio.app "dist/$name.zip"
               echo "binary=build/text3d_studio.app/Contents/MacOS/text3d-studio" >> "$GITHUB_OUTPUT" ;;
             Windows)
-              cp build/text3d-studio.exe "dist/$name.exe"
+              cp build/text3d-studio.exe "dist/$name-portable.exe"
+              "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" -DAppVersion="$VERSION" -O"$(cygpath -w "$PWD/dist")" \
+                -F"$name-setup" packaging/windows/text3d-studio.iss
               echo "binary=build/text3d-studio.exe" >> "$GITHUB_OUTPUT" ;;
             Linux)
-              cp build/text3d-studio "dist/$name"
+              mkdir "dist/$name"
+              cp build/text3d-studio packaging/linux/install.sh packaging/linux/text3d-studio.desktop \
+                packaging/linux/text3d-studio.xml "dist/$name/"
+              uv run --no-sync python -c "from PySide6.QtGui import QImage; from PySide6.QtCore import Qt
+          QImage('text3d_studio/resources/icon.png').scaled(256, 256, mode=Qt.TransformationMode.SmoothTransformation).save('dist/$name/text3d-studio.png')"
+              tar -czf "dist/$name.tar.gz" -C dist "$name"
+              rm -r "dist/$name"
               echo "binary=build/text3d-studio" >> "$GITHUB_OUTPUT" ;;
           esac
           ls -la dist
@@ -97,6 +116,67 @@ jobs:
             echo "Exited during startup with status $status"
             exit 1
           fi
+
+      # Double-clicking a .t3d goes through the association, so check it is registered and removed again.
+      - name: Test the macOS document type
+        if: runner.os == 'macOS'
+        run: |
+          plist=build/text3d_studio.app/Contents/Info.plist
+          test "$(plutil -extract UTExportedTypeDeclarations.0.UTTypeTagSpecification.public\\.filename-extension.0 raw "$plist")" = t3d
+          test "$(plutil -extract CFBundleDocumentTypes.0.LSHandlerRank raw "$plist")" = Owner
+          test -f "build/text3d_studio.app/Contents/Resources/$(plutil -extract CFBundleDocumentTypes.0.CFBundleTypeIconFile raw "$plist")"
+
+      - name: Test the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $setup = (Get-ChildItem dist\*-setup.exe).FullName
+          Start-Process -Wait $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/NORESTART'
+          $folder = "$env:LOCALAPPDATA\Programs\Text3D Studio"
+          $exe = "$folder\text3d-studio.exe"
+          if (-not (Test-Path $exe)) { throw "Not installed at $exe" }
+          $progid = (Get-ItemProperty 'HKCU:\Software\Classes\.t3d').'(default)'
+          if ($progid -ne 'Text3DStudio.Project') { throw ".t3d is mapped to '$progid'" }
+          $open = (Get-ItemProperty 'HKCU:\Software\Classes\Text3DStudio.Project\shell\open\command').'(default)'
+          if ($open -ne "`"$exe`" `"%1`"") { throw "The open command is '$open'" }
+
+          # Opening a project through the shell must start the installed app.
+          Set-Content -Path "$env:RUNNER_TEMP\scene.t3d" -Value '{}'
+          Start-Process "$env:RUNNER_TEMP\scene.t3d"
+          $started = $false
+          foreach ($i in 1..30) {
+            if (Get-Process text3d-studio -ErrorAction SilentlyContinue) { $started = $true; break }
+            Start-Sleep 1
+          }
+          if (-not $started) { throw "Opening a .t3d file did not start the app" }
+          Stop-Process -Name text3d-studio -Force
+          Start-Sleep 2
+
+          Start-Process -Wait "$folder\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          foreach ($i in 1..30) { if (-not (Test-Path $exe)) { break }; Start-Sleep 1 }
+          if (Test-Path $exe) { throw "Still installed after uninstalling" }
+          if (Test-Path 'HKCU:\Software\Classes\Text3DStudio.Project') { throw "The file type is still registered" }
+
+      - name: Test the Linux install script
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y shared-mime-info desktop-file-utils xdg-utils
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP"
+          package=$(echo "$RUNNER_TEMP"/text3d-studio-*/)
+          "$package/install.sh"
+          desktop-file-validate "$HOME/.local/share/applications/text3d-studio.desktop"
+          grep -q 'application/x-text3d-project:\*\.t3d' "$HOME/.local/share/mime/globs2"
+          test "$(xdg-mime query default application/x-text3d-project)" = text3d-studio.desktop
+          test -x "$HOME/.local/bin/text3d-studio"
+          "$package/install.sh" --uninstall
+          test ! -e "$HOME/.local/bin/text3d-studio"
+          test ! -e "$HOME/.local/share/applications/text3d-studio.desktop"
+          test ! -e "$HOME/.local/share/mime/packages/text3d-studio.xml"
 
       - uses: actions/upload-artifact@v7
         with:
