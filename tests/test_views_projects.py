@@ -3,11 +3,11 @@ import os
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFileOpenEvent, QIcon, QKeySequence
 from PySide6.QtWidgets import QMessageBox
 
-from text3d_studio.app import open_command_line_file
+from text3d_studio.app import ICON_PATH, FileOpenFilter, open_command_line_file
 from text3d_studio.image_io import save_image
 from text3d_studio.model import Document, LightParams
 from text3d_studio.preferences import Preferences
@@ -654,3 +654,45 @@ def test_command_line_no_argument_opens_nothing(window, monkeypatch):
     warned = errors(monkeypatch)
     open_command_line_file(window, [])
     assert warned == [] and window.vm.document.background is None
+
+
+@pytest.fixture
+def file_open_filter(qapp, window):
+    watcher = FileOpenFilter(window)
+    qapp.installEventFilter(watcher)
+    yield watcher
+    qapp.removeEventFilter(watcher)
+
+
+def test_file_open_event_opens_the_project(qapp, window, file_open_filter, tmp_path, monkeypatch, preferences):
+    path = saved_project(tmp_path, monkeypatch, preferences)
+    warned = errors(monkeypatch)
+    qapp.sendEvent(qapp, QFileOpenEvent(path))
+    assert warned == []
+    assert window.project_path == path
+    assert [o.text.content for o in window.vm.scene.objects] == ["HELLO", "SECOND"]
+
+
+def test_file_open_event_with_an_image_loads_the_photo(qapp, window, file_open_filter, tmp_path):
+    photo = image_file(tmp_path)
+    qapp.sendEvent(qapp, QFileOpenEvent(photo))
+    assert window.vm.document.background_path == photo and window.project_path is None
+
+
+def test_file_open_event_for_a_missing_project_shows_the_project_warning(qapp, window, file_open_filter, tmp_path,
+                                                                         monkeypatch):
+    warned = errors(monkeypatch)
+    qapp.sendEvent(qapp, QFileOpenEvent(str(tmp_path / "gone.t3d")))
+    assert [args[1] for args in warned] == ["Could not open project"]
+    assert window.project_path is None
+
+
+def test_file_open_filter_passes_other_events_through(window, file_open_filter):
+    assert file_open_filter.eventFilter(window, QEvent(QEvent.Type.Show)) is False
+    assert window.project_path is None and window.vm.document.background is None
+
+
+def test_app_icon_is_a_square_1024_image():
+    icon = QIcon(ICON_PATH)
+    assert not icon.isNull()
+    assert [(s.width(), s.height()) for s in icon.availableSizes()] == [(1024, 1024)]
