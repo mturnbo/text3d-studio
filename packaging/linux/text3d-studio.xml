@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-text3d-project">
+    <comment>Text3D Studio project</comment>
+    <sub-class-of type="application/json"/>
+    <icon name="text3d-studio"/>
+    <glob pattern="*.t3d"/>
+  </mime-type>
+</mime-info>

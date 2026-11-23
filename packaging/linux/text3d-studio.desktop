@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Text3D Studio
+Comment=Add 3D text to photos
+Exec=@BIN@ %f
+TryExec=@BIN@
+Icon=text3d-studio
+Terminal=false
+Categories=Graphics;2DGraphics;
+MimeType=application/x-text3d-project;
