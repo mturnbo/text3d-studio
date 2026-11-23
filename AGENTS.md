@@ -570,7 +570,8 @@ v0.8.0 foundations (text layer, multiple text objects, undo/redo, project save a
 layout (looks, transparent/batch export, zoom, multi-line and arc text, wall mounting, Match Sun, eyedropper) ·
 v0.10.0 rendering (side materials, outline, neon, occlusion masks, wall and contact shadows, reflection,
 bloom, grain, grade, depth of field) · v0.10.1 fix (a .t3d project passed on the command line opens) ·
-v0.11.0 packaging (PySide6 port, Nuitka builds for macOS, Windows and Linux published with each release).
+v0.11.0 packaging (PySide6 port, Nuitka builds for macOS, Windows and Linux published with each release) · v0.12.0 installers
+(app icon, Windows setup, Linux install script, .t3d file association on every OS).
 
 ### Project files (.t3d)
 
